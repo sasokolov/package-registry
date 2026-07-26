@@ -197,9 +197,11 @@ func (s *Server) handleJournal(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	// The cursor is behind what we still retain: the peer must re-bootstrap
-	// from a snapshot instead of silently missing events.
-	if oldest > 0 && after > 0 && after < oldest-1 {
+	// The cursor points before the oldest entry we still retain, so the
+	// entries in between are gone: the peer must re-bootstrap from a
+	// snapshot rather than silently skip them. This covers a cursor of 0
+	// too — a fresh site pointed at a pruned journal has the same gap.
+	if oldest > after+1 {
 		http.Error(w, "cursor is beyond the retained journal; resync from /snapshot", http.StatusGone)
 		return
 	}

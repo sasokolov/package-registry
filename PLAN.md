@@ -256,13 +256,13 @@ kind-кластер скриптом `deploy/helm/smoke.sh` и проходит 
       tombstone-типы зарезервированы; неизвестный тип → park + алерт.
       Property-тест: случайные перестановки/дубли событий → байт-идентичное
       состояние на всех «сайтах».
-- [ ] Миграция replication: `repl_journal` (UNIQUE(origin_site, origin_seq)),
+- [x] Миграция replication: `repl_journal` (UNIQUE(origin_site, origin_seq)),
       `repl_cursors`, peer_acks + durability watermark, `publish_conflicts`,
       dead-letter, parked, `hlc_state` + `repl_hlc_next()/repl_hlc_recv()`,
       site UUID. Seq выделяется внутри `repl_hlc_next()` под замком строки
       hlc_state → порядок коммитов == порядок seq (конкурентный тест:
       писатели молотят, читатель пагинирует — потерь ноль).
-- [ ] JournalWriter (transactional outbox) в `CoreServices.Publish`;
+- [x] JournalWriter (transactional outbox) в `CoreServices.Publish`;
       projection-outbox для S3-проекции манифестов + continuous repair +
       метрика дивергенции проекции.
 - [x] Applier: идемпотентный порядконезависимый merge; правило K1
@@ -275,30 +275,30 @@ kind-кластер скриптом `deploy/helm/smoke.sh` и проходит 
       (обязателен при enabled); mTLS (prod) / bearer из token_file (dev);
       пиннинг (site, UUID) при handshake; origin-pinning событий
       (mesh-only, relay в v1 нет); peer-креды в логах — 8 символов хэша.
-- [ ] Puller per (peer, origin): выборы через pg_try_advisory_lock с lease;
+- [x] Puller per (peer, origin): выборы через pg_try_advisory_lock с lease;
       advance курсора в одной транзакции с apply; 410 за горизонтом →
       авто snapshot-ресинк; GC журнала по min(ack peers, watermark) с
       потолком journal_retention; приёмник nudge.
-- [ ] Блоб-перенос по digest: стриминг с проверкой sha256 всего тела,
+- [x] Блоб-перенос по digest: стриминг с проверкой sha256 всего тела,
       Range-докачка, multi-peer fallback; режимы eager (блоб до манифеста,
       watermark = RPO) / lazy per feed.
-- [ ] `core/config`: `site{}`, `replication{}` (peers, auth file-refs,
+- [x] `core/config`: `site{}`, `replication{}` (peers, auth file-refs,
       internal_listen, retention, skew, blob_fetch), per-feed
       `publish_policy` (дефолт `forward:<home>`), `replication_mode`,
       `peer_fallback`; `s3.*_file`-варианты кредов; валидация + hot-reload
       набора peer'ов.
-- [ ] Publish-форвардинг: на не-home сайте локальная аутентификация +
+- [x] Publish-форвардинг: на не-home сайте локальная аутентификация +
       реверс-прокси на home с on-behalf-of identity; home недоступен →
       503 + Retry-After + указатель; НИКАКИХ 307 наружу. Конформанс с
       настоящими клиентами: `mvn deploy` и `npm publish` через не-home сайт.
-- [ ] Peer-fallback в `core/pipeline` (per-feed): miss манифеста ИЛИ блоба →
+- [x] Peer-fallback в `core/pipeline` (per-feed): miss манифеста ИЛИ блоба →
       sha-пинованный fetch у peer'ов; `api.SourcePeer` + `X-Registry-Site`;
       negative cache с TTL.
-- [ ] CLI: `registry repl status | backfill | resync | retry-dead-letter |
+- [x] CLI: `registry repl status | backfill | resync | retry-dead-letter |
       resolve --feed --path --keep <sha256>` (журналируемое, аудируемое).
-- [ ] Бутстрап нового сайта: snapshot → авто-backfill → Reindex всех
+- [x] Бутстрап нового сайта: snapshot → авто-backfill → Reindex всех
       hosted-фидов; до сходимости фиды живут через peer-fallback.
-- [ ] Наблюдаемость: lag per (peer, origin), durability watermark,
+- [x] Наблюдаемость: lag per (peer, origin), durability watermark,
       конфликты, dead-letter/parked, digest множества манифестов per feed
       (алерт на расхождение дольше окна лага); NetworkPolicy для
       internal listener в helm; Grafana dashboard + alert rules.
@@ -306,7 +306,7 @@ kind-кластер скриптом `deploy/helm/smoke.sh` и проходит 
       (2× minio, 2× postgres, 2× registry), партиция через iptables:
       - [x] publish@A → install@B до сходимости (source: peer, чексумма
             сверена) и после (cache); индекс на B пересобран Reindex'ом.
-      - [ ] Партиция → конкурентный конфликтующий publish (policy: local) →
+      - [x] Партиция → конкурентный конфликтующий publish (policy: local) →
             heal → идентичный канон (min sha256) на обоих, координата в
             карантине, GET → 409 + X-Registry-Conflict, конфликт в
             publish_conflicts/audit/метриках → `repl resolve` → выдача
@@ -317,10 +317,10 @@ kind-кластер скриптом `deploy/helm/smoke.sh` и проходит 
       - [x] token revoke@A → отказ на B в пределах lag + token_cache_ttl;
             create@A НЕ появляется на B; OIDC работает на обоих без
             репликации.
-      - [ ] Бутстрап пустого третьего сайта → snapshot + backfill →
+      - [x] Бутстрап пустого третьего сайта → snapshot + backfill →
             hosted-фид отдаётся; GC журнала за курсором → 410 →
             авто-ресинк; «манифест есть/блоба нет» → peer-fallback спасает.
-- [ ] Runbook'и: разбор конфликта, долгий ресинк, вывод/возврат peer'а,
+- [x] Runbook'и: разбор конфликта, долгий ресинк, вывод/возврат peer'а,
       ротация peer-кредов, требование NTP; формула окна отзыва токена.
 
 **Acceptance:** `make conformance-geo` зелёный целиком; property-тест

@@ -45,4 +45,27 @@ if ! wait_for 90 revoked_at_us; then
   exit 1
 fi
 
+echo "--> a token CREATED at eu-1 does not appear at us-1"
+# Replication may only remove authority, never grant it (invariant 14):
+# there is no token-create event in the protocol.
+fresh_name="ci-localonly-$(date +%s)"
+fresh="$(geo_token eu "$fresh_name")"
+code="$(publish eu shared "com/example/localonly/1.0.0/localonly-1.0.0.jar" "local" "$fresh")"
+[[ "$code" == "201" ]] || { echo "fresh token does not work at its own site: $code" >&2; exit 1; }
+
+still_rejected_at_us() {
+  local code
+  code="$(publish us shared "com/example/localonly/2.0.0/localonly-2.0.0.jar" "local" "$fresh")"
+  [[ "$code" == "401" || "$code" == "403" ]]
+}
+# Give replication several poll cycles: the point is that it never grants
+# this token, not that it is merely slow.
+for _ in 1 2 3 4 5 6; do
+  if ! still_rejected_at_us; then
+    echo "a token created at eu-1 became valid at us-1: replication granted authority" >&2
+    exit 1
+  fi
+  sleep 2
+done
+
 echo "token revocation replication ok"
