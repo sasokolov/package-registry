@@ -20,7 +20,7 @@
 - [x] `conformance/`: docker compose с сервисами `minio`, `postgres`,
       `registry` (собирается из исходников multi-stage Dockerfile),
       `fake-upstream` (nginx/caddy со статикой из `conformance/fixtures/`).
-- [ ] Скрипт `conformance/run.sh`: поднять compose, дождаться readiness,
+- [x] Скрипт `conformance/run.sh`: поднять compose, дождаться readiness,
       выполнить сценарии из `conformance/scenarios/*.sh`, свести отчёт,
       погасить compose. Ненулевой exit при любом провале.
 - [ ] Первый сценарий-смоук: `curl /healthz` изнутри compose-сети.
