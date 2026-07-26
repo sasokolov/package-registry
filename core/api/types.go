@@ -45,7 +45,8 @@ type Iter[T any] interface {
 
 // BlobStore is the storage contract implemented by storage modules.
 // Writes must be atomic: a concurrent reader sees either the previous state
-// or the complete new object, never a partial write.
+// or the complete new object, never a partial write. List yields keys in
+// lexicographic order (anti-entropy walks rely on it).
 type BlobStore interface {
 	Get(ctx context.Context, key string) (io.ReadCloser, BlobInfo, error)
 	Put(ctx context.Context, key string, r io.Reader, opts PutOpts) error

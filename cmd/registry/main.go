@@ -68,6 +68,8 @@ func serveCmd(args []string, logOut io.Writer) error {
 		return err
 	}
 	cfg := manager.Current()
+	// Site identity in every log record (audit included) — geo groundwork.
+	logger = logger.With("site", cfg.Site.Name)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -97,6 +99,12 @@ func serveCmd(args []string, logOut io.Writer) error {
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
+	siteInfo := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "registry_site_info",
+		Help: "Static info metric carrying the geo-site identity label.",
+	}, []string{"site"})
+	promReg.MustRegister(siteInfo)
+	siteInfo.WithLabelValues(cfg.Site.Name).Set(1)
 	metrics := pipeline.NewMetrics(promReg)
 
 	srv, err := server.New(ctx, server.Options{

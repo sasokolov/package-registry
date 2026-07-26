@@ -29,11 +29,27 @@ const (
 
 // Config is the root of the registry configuration.
 type Config struct {
+	Site     SiteConfig     `yaml:"site"`
 	Server   ServerConfig   `yaml:"server"`
 	Storage  StorageConfig  `yaml:"storage"`
 	Database DatabaseConfig `yaml:"database"`
 	Auth     AuthConfig     `yaml:"auth"`
 	Feeds    []FeedConfig   `yaml:"feeds"`
+	// Replication is reserved for Phase 7 (geo federation, see
+	// docs/geo-replication.md). It is accepted and ignored so configs
+	// prepared for federation never crash older binaries during rolling
+	// upgrades (strict parsing would otherwise reject the key).
+	Replication map[string]any `yaml:"replication"`
+}
+
+// SiteConfig identifies this geo-site (docs/geo-replication.md). Single-site
+// deployments keep the default.
+type SiteConfig struct {
+	// Name is a stable site identifier. Default "default".
+	Name string `yaml:"name"`
+	// ExternalURL is the public base URL of this site (optional until
+	// federation).
+	ExternalURL string `yaml:"external_url"`
 }
 
 // ServerConfig configures the HTTP listener.
@@ -182,6 +198,9 @@ func Parse(r io.Reader) (*Config, error) {
 }
 
 func (c *Config) applyDefaults() {
+	if c.Site.Name == "" {
+		c.Site.Name = "default"
+	}
 	if c.Server.Listen == "" {
 		c.Server.Listen = ":8080"
 	}
@@ -201,6 +220,14 @@ func (c *Config) applyDefaults() {
 func (c *Config) Validate() error {
 	var errs []error
 
+	if !feedNameRE.MatchString(c.Site.Name) {
+		errs = append(errs, fmt.Errorf("site.name %q must match %s", c.Site.Name, feedNameRE))
+	}
+	if c.Site.ExternalURL != "" {
+		if err := validateHTTPURL(c.Site.ExternalURL); err != nil {
+			errs = append(errs, fmt.Errorf("site.external_url: %w", err))
+		}
+	}
 	if _, _, err := net.SplitHostPort(c.Server.Listen); err != nil {
 		errs = append(errs, fmt.Errorf("server.listen %q is not a host:port address: %w", c.Server.Listen, err))
 	}

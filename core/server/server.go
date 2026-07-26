@@ -163,6 +163,31 @@ func (s *Server) buildRuntime(cfg *config.Config) (*runtime, error) {
 		}
 		rt.router.Mount(mount, http.StripPrefix(mount, sub))
 	}
+
+	// Root-level protocol endpoints (e.g. /.well-known/terraform.json)
+	// provided by modules with the RootRouter capability.
+	feedsByFormat := make(map[string][]api.Feed)
+	for _, fc := range cfg.Feeds {
+		feedsByFormat[fc.Format] = append(feedsByFormat[fc.Format], fc.API())
+	}
+	for _, name := range api.Formats() {
+		module, _ := api.Format(name)
+		rootRouter, ok := module.(api.RootRouter)
+		if !ok {
+			continue
+		}
+		feeds := feedsByFormat[name]
+		for _, route := range rootRouter.RootRoutes() {
+			rt.router.Method(route.Method, route.Pattern, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				rootRouter.ServeRoot(w, r, feeds)
+			}))
+		}
+	}
+
+	// Content-addressed blob access for authenticated callers (Terraform
+	// download targets today, the geo peer-fetch path in Phase 7).
+	rt.router.Get("/-/blobs/sha256/{digest}", s.blobHandler(rt))
+
 	return rt, nil
 }
 

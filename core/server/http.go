@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+
+	"github.com/go-chi/chi/v5"
 
 	"github.com/sasokolov/package-registry/core/api"
 	"github.com/sasokolov/package-registry/core/pipeline"
@@ -32,13 +35,21 @@ func (s *Server) feedHandler(rt *runtime, fr *feedRuntime) http.HandlerFunc {
 
 		intent, err := fr.module.Parse(r)
 		if err != nil {
-			s.writeError(w, err, "")
+			// Parse errors are module-authored and client-safe by contract:
+			// they explain protocol-level rejections (e.g. Maven SNAPSHOTs
+			// not being proxied yet).
+			s.writeErrorText(w, err, err.Error())
 			return
 		}
 
 		if d := fr.chain.OnResolve(ctx, id, intent.Coord); !d.Allow {
 			s.auditDeny("resolve", fr, id, intent.Coord, d)
 			s.writeError(w, api.ErrForbidden, d.Reason)
+			return
+		}
+
+		if intent.Kind == api.IntentSynthetic {
+			s.serveSynthetic(w, fr, intent)
 			return
 		}
 
@@ -72,7 +83,11 @@ func (s *Server) feedHandler(rt *runtime, fr *feedRuntime) http.HandlerFunc {
 		if res.Size >= 0 {
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", res.Size))
 		}
-		w.Header().Set("Content-Type", "application/octet-stream")
+		contentType := intent.ContentType
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		w.Header().Set("Content-Type", contentType)
 		if _, err := io.Copy(w, res.Body); err != nil {
 			// Response already started; nothing to send, just record it.
 			s.logger.Debug("client aborted download",
@@ -100,30 +115,115 @@ func (s *Server) updateBreakerGauge(fr *feedRuntime) {
 	}
 }
 
-// writeError maps sentinel errors to HTTP statuses. detail, when non-empty,
-// is a client-safe explanation (e.g. a policy reason).
-func (s *Server) writeError(w http.ResponseWriter, err error, detail string) {
-	status := http.StatusInternalServerError
-	msg := "internal error"
+// serveSynthetic answers protocol-level endpoints from the module alone
+// (no cache, no upstream); labeled X-Registry-Source: local.
+func (s *Server) serveSynthetic(w http.ResponseWriter, fr *feedRuntime, intent api.Intent) {
+	syn, ok := fr.module.(api.Synthesizer)
+	if !ok {
+		s.logger.Error("module returned a synthetic intent without the Synthesizer capability",
+			"format", fr.feed.Format)
+		s.writeError(w, errors.New("module misconfigured"), "")
+		return
+	}
+	resp, err := syn.Synthesize(fr.feed, intent)
+	if err != nil {
+		s.writeErrorText(w, err, err.Error())
+		return
+	}
+	for k, v := range resp.Header {
+		w.Header().Set(k, v)
+	}
+	w.Header().Set(api.SourceHeader, string(api.SourceLocal))
+	status := resp.Status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	w.WriteHeader(status)
+	if len(resp.Body) > 0 {
+		_, _ = w.Write(resp.Body)
+	}
+}
+
+// blobHandler serves content-addressed blobs by digest for authenticated
+// callers: the geo peer-fetch path and Terraform-style download targets.
+func (s *Server) blobHandler(rt *runtime) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := rt.authn.Identify(r.Context(), r)
+		if err != nil {
+			s.writeError(w, err, "")
+			return
+		}
+		if id.IsAnonymous() {
+			s.writeError(w, api.ErrUnauthorized, "authentication required")
+			return
+		}
+		digest := chi.URLParam(r, "digest")
+		if !blobDigestRE.MatchString(digest) {
+			s.writeError(w, api.ErrNotFound, "")
+			return
+		}
+		rc, info, err := s.store.Get(r.Context(), "blobs/sha256/"+digest)
+		if err != nil {
+			s.writeError(w, err, "")
+			return
+		}
+		defer func() { _ = rc.Close() }()
+		w.Header().Set(api.SourceHeader, string(api.SourceCache))
+		w.Header().Set("Content-Type", "application/octet-stream")
+		if info.Size > 0 {
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size))
+		}
+		_, _ = io.Copy(w, rc)
+	}
+}
+
+var blobDigestRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// errorStatus maps sentinel errors to an HTTP status and a generic message.
+func errorStatus(err error) (int, string) {
 	switch {
 	case errors.Is(err, api.ErrNotFound):
-		status, msg = http.StatusNotFound, "not found"
+		return http.StatusNotFound, "not found"
 	case errors.Is(err, api.ErrUnauthorized):
-		status, msg = http.StatusUnauthorized, "unauthorized"
-		w.Header().Set("WWW-Authenticate", `Bearer realm="package-registry"`)
+		return http.StatusUnauthorized, "unauthorized"
 	case errors.Is(err, api.ErrForbidden):
-		status, msg = http.StatusForbidden, "forbidden"
+		return http.StatusForbidden, "forbidden"
 	case errors.Is(err, api.ErrChecksumMismatch):
-		status, msg = http.StatusBadGateway, "upstream artifact failed checksum verification"
+		return http.StatusBadGateway, "upstream artifact failed checksum verification"
 	case errors.Is(err, api.ErrUpstreamUnavailable):
-		status, msg = http.StatusBadGateway, "upstream unavailable and no cached copy"
+		return http.StatusBadGateway, "upstream unavailable and no cached copy"
 	case errors.Is(err, api.ErrUnavailable):
-		status, msg = http.StatusServiceUnavailable, "temporarily unavailable"
+		return http.StatusServiceUnavailable, "temporarily unavailable"
 	case errors.Is(err, api.ErrImmutable):
-		status, msg = http.StatusConflict, "published release is immutable"
+		return http.StatusConflict, "published release is immutable"
+	default:
+		return http.StatusInternalServerError, "internal error"
 	}
+}
+
+// writeError responds with the generic message for err; detail, when
+// non-empty, is appended (e.g. a policy reason).
+func (s *Server) writeError(w http.ResponseWriter, err error, detail string) {
+	status, msg := errorStatus(err)
 	if detail != "" {
 		msg = msg + ": " + detail
+	}
+	s.finishError(w, status, msg)
+}
+
+// writeErrorText responds with a fully client-authored message (module
+// Parse/Synthesize errors are client-safe by contract).
+func (s *Server) writeErrorText(w http.ResponseWriter, err error, text string) {
+	status, msg := errorStatus(err)
+	if text != "" {
+		msg = text
+	}
+	s.finishError(w, status, msg)
+}
+
+func (s *Server) finishError(w http.ResponseWriter, status int, msg string) {
+	if status == http.StatusUnauthorized {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="package-registry"`)
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(status)
