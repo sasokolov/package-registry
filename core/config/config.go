@@ -47,9 +47,9 @@ type ServerConfig struct {
 	ReloadInterval Duration `yaml:"reload_interval"`
 }
 
-// DatabaseConfig configures PostgreSQL. An empty DSN falls back to the
-// standard PG* environment variables; if those are absent too, the registry
-// runs without a database (publish/tokens/audit unavailable, reads work).
+// DatabaseConfig configures PostgreSQL. An empty DSN disables the database
+// entirely: static tokens, audit-to-db and publish are unavailable while
+// reads keep working (invariant 7).
 type DatabaseConfig struct {
 	DSN string `yaml:"dsn"`
 }

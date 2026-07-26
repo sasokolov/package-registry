@@ -1,4 +1,6 @@
-// Command registry runs the package registry HTTP server.
+// Command registry runs the package registry HTTP server and its CLI
+// subcommands. Assembly happens here: storage/format/policy modules are
+// linked via imports (modules.go) and wired through their registries.
 package main
 
 import (
@@ -21,7 +23,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/sasokolov/package-registry/core/api"
 	"github.com/sasokolov/package-registry/core/config"
+	"github.com/sasokolov/package-registry/core/pipeline"
+	"github.com/sasokolov/package-registry/core/server"
+	"github.com/sasokolov/package-registry/core/state"
 )
 
 func main() {
@@ -57,24 +63,89 @@ func serveCmd(args []string, logOut io.Writer) error {
 	}
 	logger := slog.New(slog.NewJSONHandler(logOut, &slog.HandlerOptions{Level: level}))
 
-	cfg, err := config.Load(*configPath)
+	manager, err := config.NewManager(*configPath, logger, server.ValidateConfig)
 	if err != nil {
 		return err
 	}
+	cfg := manager.Current()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	return serve(ctx, cfg, logger)
+	store, err := api.NewStorage(cfg.Storage.Type, cfg.Storage.Options())
+	if err != nil {
+		return err
+	}
+	if init, ok := store.(api.Initializer); ok {
+		go initLoop(ctx, init, logger)
+	}
+
+	var db *state.DB
+	if cfg.Database.DSN != "" {
+		db, err = state.Open(ctx, cfg.Database.DSN, logger)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		go db.MigrateLoop(ctx)
+	} else {
+		logger.Info("database disabled (no dsn): static tokens and publish are unavailable")
+	}
+
+	promReg := prometheus.NewRegistry()
+	promReg.MustRegister(
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+	)
+	metrics := pipeline.NewMetrics(promReg)
+
+	srv, err := server.New(ctx, server.Options{
+		Logger:  logger,
+		Store:   store,
+		DB:      db,
+		Metrics: metrics,
+		Manager: manager,
+	})
+	if err != nil {
+		return err
+	}
+	go manager.Run(ctx)
+
+	return serveHTTP(ctx, cfg, logger, promReg, srv.Handler())
 }
 
-// serve runs the HTTP server until ctx is cancelled, then shuts it down
+// initLoop retries one-time storage initialization (e.g. bucket creation)
+// so a temporarily unavailable backend does not prevent startup.
+func initLoop(ctx context.Context, init api.Initializer, logger *slog.Logger) {
+	backoff := time.Second
+	for {
+		err := init.Init(ctx)
+		if err == nil {
+			logger.Info("storage initialized")
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		logger.Warn("storage init failed, will retry", "error", err, "retry_in", backoff)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff < 30*time.Second {
+			backoff *= 2
+		}
+	}
+}
+
+// serveHTTP runs the HTTP server until ctx is cancelled, then shuts it down
 // gracefully within cfg.Server.ShutdownTimeout.
-func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
+func serveHTTP(ctx context.Context, cfg *config.Config, logger *slog.Logger, promReg *prometheus.Registry, feeds http.Handler) error {
 	var ready atomic.Bool
 
 	srv := &http.Server{
-		Handler:           newRouter(&ready, logger),
+		Handler:           newRouter(&ready, logger, promReg, feeds),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -97,7 +168,7 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	// New readiness probes must fail while in-flight requests drain.
 	ready.Store(false)
 	logger.Info("shutting down", "timeout", cfg.Server.ShutdownTimeout.String())
-	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Duration(cfg.Server.ShutdownTimeout))
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.Server.ShutdownTimeout.Std())
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)
@@ -106,13 +177,8 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	return nil
 }
 
-func newRouter(ready *atomic.Bool, logger *slog.Logger) http.Handler {
-	metrics := prometheus.NewRegistry()
-	metrics.MustRegister(
-		collectors.NewGoCollector(),
-		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-	)
-
+// newRouter combines operational endpoints with the dynamic feed handler.
+func newRouter(ready *atomic.Bool, logger *slog.Logger, promReg *prometheus.Registry, feeds http.Handler) http.Handler {
 	r := chi.NewRouter()
 	r.Use(requestLogger(logger))
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -125,7 +191,10 @@ func newRouter(ready *atomic.Bool, logger *slog.Logger) http.Handler {
 		}
 		writeText(w, http.StatusOK, "ok\n")
 	})
-	r.Method(http.MethodGet, "/metrics", promhttp.HandlerFor(metrics, promhttp.HandlerOpts{}))
+	r.Method(http.MethodGet, "/metrics", promhttp.HandlerFor(promReg, promhttp.HandlerOpts{}))
+	if feeds != nil {
+		r.Handle("/*", feeds)
+	}
 	return r
 }
 

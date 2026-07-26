@@ -26,3 +26,6 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 }
 
 func (d Duration) String() string { return time.Duration(d).String() }
+
+// Std converts to time.Duration.
+func (d Duration) Std() time.Duration { return time.Duration(d) }

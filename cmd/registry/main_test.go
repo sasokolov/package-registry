@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+
 	"github.com/sasokolov/package-registry/core/config"
 )
 
@@ -18,10 +21,19 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(io.Discard, nil))
 }
 
+func testMetricsRegistry() *prometheus.Registry {
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(collectors.NewGoCollector())
+	return reg
+}
+
 func TestRouterEndpoints(t *testing.T) {
 	var ready atomic.Bool
 	ready.Store(true)
-	srv := httptest.NewServer(newRouter(&ready, discardLogger()))
+	feeds := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	})
+	srv := httptest.NewServer(newRouter(&ready, discardLogger(), testMetricsRegistry(), feeds))
 	defer srv.Close()
 
 	get := func(t *testing.T, path string) (int, string) {
@@ -55,6 +67,11 @@ func TestRouterEndpoints(t *testing.T) {
 	if status, _ := get(t, "/healthz"); status != http.StatusOK {
 		t.Errorf("/healthz must stay 200 while draining, got %d", status)
 	}
+
+	// Unmatched paths fall through to the feed handler.
+	if status, _ := get(t, "/echo/test/some/file"); status != http.StatusTeapot {
+		t.Errorf("feed fallthrough status = %d, want 418", status)
+	}
 }
 
 func TestServeShutsDownGracefully(t *testing.T) {
@@ -67,7 +84,7 @@ func TestServeShutsDownGracefully(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, cfg, discardLogger()) }()
+	go func() { done <- serveHTTP(ctx, cfg, discardLogger(), testMetricsRegistry(), nil) }()
 
 	// Give the listener a moment to start, then trigger shutdown.
 	time.Sleep(50 * time.Millisecond)
