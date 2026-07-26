@@ -1,0 +1,401 @@
+package state
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// HLC is a hybrid logical clock reading: wall-clock milliseconds plus a
+// logical counter that breaks ties and preserves causality.
+type HLC struct {
+	Wall    int64 `json:"wall"`
+	Logical int64 `json:"logical"`
+}
+
+// Before orders two readings.
+func (h HLC) Before(other HLC) bool {
+	if h.Wall != other.Wall {
+		return h.Wall < other.Wall
+	}
+	return h.Logical < other.Logical
+}
+
+// Time renders the wall component.
+func (h HLC) Time() time.Time { return time.UnixMilli(h.Wall).UTC() }
+
+// JournalEntry is one replication event.
+type JournalEntry struct {
+	OriginSite    string          `json:"origin_site"`
+	OriginSeq     int64           `json:"origin_seq"`
+	Kind          string          `json:"kind"`
+	Payload       json.RawMessage `json:"payload"`
+	HLC           HLC             `json:"hlc"`
+	SchemaVersion int             `json:"schema_version"`
+}
+
+// SiteIdentity is this site's stable name and UUID.
+type SiteIdentity struct {
+	Site string
+	UUID string
+}
+
+// EnsureSiteIdentity creates the identity row on first start and returns it.
+// A changed site name is rejected: it would let a cloned deployment
+// impersonate another site in the mesh.
+func (db *DB) EnsureSiteIdentity(ctx context.Context, site string) (SiteIdentity, error) {
+	var id SiteIdentity
+	err := db.pool.QueryRow(ctx,
+		"SELECT site, site_uuid::text FROM site_identity WHERE id").Scan(&id.Site, &id.UUID)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		err = db.pool.QueryRow(ctx, `
+			INSERT INTO site_identity (site) VALUES ($1)
+			ON CONFLICT (id) DO NOTHING
+			RETURNING site, site_uuid::text`, site).Scan(&id.Site, &id.UUID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Lost the race with another replica: read what it wrote.
+			err = db.pool.QueryRow(ctx,
+				"SELECT site, site_uuid::text FROM site_identity WHERE id").Scan(&id.Site, &id.UUID)
+		}
+		if err != nil {
+			return SiteIdentity{}, classify(fmt.Errorf("create site identity: %w", err))
+		}
+	case err != nil:
+		return SiteIdentity{}, classify(fmt.Errorf("read site identity: %w", err))
+	}
+	if id.Site != site {
+		return SiteIdentity{}, fmt.Errorf(
+			"this database belongs to site %q but the config says %q: refusing to start with a mismatched site identity",
+			id.Site, site)
+	}
+	return id, nil
+}
+
+// AppendJournal writes a local event inside tx, allocating its sequence and
+// HLC under the hlc_state row lock so journal order equals commit order.
+func AppendJournal(ctx context.Context, tx pgx.Tx, site, kind string, payload any) (JournalEntry, error) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return JournalEntry{}, fmt.Errorf("encode %s payload: %w", kind, err)
+	}
+	var entry JournalEntry
+	err = tx.QueryRow(ctx, `
+		WITH stamp AS (SELECT * FROM repl_hlc_next())
+		INSERT INTO repl_journal (origin_site, origin_seq, kind, payload, hlc_wall, hlc_logical)
+		SELECT $1, stamp.seq, $2, $3, stamp.hlc_wall, stamp.hlc_logical FROM stamp
+		RETURNING origin_site, origin_seq, kind, payload, hlc_wall, hlc_logical, schema_version`,
+		site, kind, raw).
+		Scan(&entry.OriginSite, &entry.OriginSeq, &entry.Kind, &entry.Payload,
+			&entry.HLC.Wall, &entry.HLC.Logical, &entry.SchemaVersion)
+	if err != nil {
+		return JournalEntry{}, classify(fmt.Errorf("append journal entry %s: %w", kind, err))
+	}
+	return entry, nil
+}
+
+// ApplyForeignJournal records an event received from a peer. Re-applying
+// the same (origin_site, origin_seq) is a no-op, which makes the puller
+// idempotent under retries.
+func (db *DB) ApplyForeignJournal(ctx context.Context, tx pgx.Tx, e JournalEntry) (bool, error) {
+	if _, err := tx.Exec(ctx, "SELECT repl_hlc_recv($1, $2)", e.HLC.Wall, e.HLC.Logical); err != nil {
+		return false, classify(fmt.Errorf("advance hlc: %w", err))
+	}
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO repl_journal (origin_site, origin_seq, kind, payload, hlc_wall, hlc_logical, schema_version)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		ON CONFLICT (origin_site, origin_seq) DO NOTHING`,
+		e.OriginSite, e.OriginSeq, e.Kind, e.Payload, e.HLC.Wall, e.HLC.Logical, e.SchemaVersion)
+	if err != nil {
+		return false, classify(fmt.Errorf("store foreign journal entry: %w", err))
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// ReadJournal returns entries of one origin after a sequence, oldest first.
+func (db *DB) ReadJournal(ctx context.Context, origin string, after int64, limit int) ([]JournalEntry, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	rows, err := db.pool.Query(ctx, `
+		SELECT origin_site, origin_seq, kind, payload, hlc_wall, hlc_logical, schema_version
+		  FROM repl_journal
+		 WHERE origin_site = $1 AND origin_seq > $2
+		 ORDER BY origin_seq
+		 LIMIT $3`, origin, after, limit)
+	if err != nil {
+		return nil, classify(fmt.Errorf("read journal: %w", err))
+	}
+	defer rows.Close()
+
+	var out []JournalEntry
+	for rows.Next() {
+		var e JournalEntry
+		if err := rows.Scan(&e.OriginSite, &e.OriginSeq, &e.Kind, &e.Payload,
+			&e.HLC.Wall, &e.HLC.Logical, &e.SchemaVersion); err != nil {
+			return nil, fmt.Errorf("scan journal entry: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// JournalHead reports the newest sequence of an origin and the oldest one
+// still retained (0 when nothing was pruned).
+func (db *DB) JournalHead(ctx context.Context, origin string) (head, oldest int64, err error) {
+	err = db.pool.QueryRow(ctx,
+		"SELECT COALESCE(MAX(origin_seq),0), COALESCE(MIN(origin_seq),0) FROM repl_journal WHERE origin_site=$1",
+		origin).Scan(&head, &oldest)
+	if err != nil {
+		return 0, 0, classify(fmt.Errorf("read journal head: %w", err))
+	}
+	return head, oldest, nil
+}
+
+// KnownOrigins lists every origin site present in the journal.
+func (db *DB) KnownOrigins(ctx context.Context) ([]string, error) {
+	rows, err := db.pool.Query(ctx, "SELECT DISTINCT origin_site FROM repl_journal ORDER BY origin_site")
+	if err != nil {
+		return nil, classify(fmt.Errorf("list journal origins: %w", err))
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// Cursor is how far a peer stream has been applied.
+type Cursor struct {
+	Peer       string
+	Origin     string
+	AppliedSeq int64
+	DurableSeq int64
+	LastOKAt   time.Time
+	LastError  string
+}
+
+// GetCursor reads a cursor, returning zeroes when the stream is new.
+func (db *DB) GetCursor(ctx context.Context, peer, origin string) (Cursor, error) {
+	c := Cursor{Peer: peer, Origin: origin}
+	var lastOK *time.Time
+	err := db.pool.QueryRow(ctx, `
+		SELECT applied_seq, durable_seq, last_ok_at, last_error
+		  FROM repl_cursors WHERE peer=$1 AND origin_site=$2`, peer, origin).
+		Scan(&c.AppliedSeq, &c.DurableSeq, &lastOK, &c.LastError)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return c, nil
+	}
+	if err != nil {
+		return Cursor{}, classify(fmt.Errorf("read cursor: %w", err))
+	}
+	if lastOK != nil {
+		c.LastOKAt = *lastOK
+	}
+	return c, nil
+}
+
+// SetCursorTx advances a cursor inside the same transaction that applied
+// the batch, so a crash can never skip events.
+func SetCursorTx(ctx context.Context, tx pgx.Tx, c Cursor) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO repl_cursors (peer, origin_site, applied_seq, durable_seq, last_ok_at, last_error)
+		VALUES ($1,$2,$3,$4, now(), $5)
+		ON CONFLICT (peer, origin_site) DO UPDATE
+		   SET applied_seq = EXCLUDED.applied_seq,
+		       durable_seq = GREATEST(repl_cursors.durable_seq, EXCLUDED.durable_seq),
+		       last_ok_at  = now(),
+		       last_error  = EXCLUDED.last_error`,
+		c.Peer, c.Origin, c.AppliedSeq, c.DurableSeq, c.LastError)
+	if err != nil {
+		return fmt.Errorf("advance cursor: %w", err)
+	}
+	return nil
+}
+
+// RecordCursorError notes a failed poll without moving the cursor.
+func (db *DB) RecordCursorError(ctx context.Context, peer, origin, msg string) error {
+	_, err := db.pool.Exec(ctx, `
+		INSERT INTO repl_cursors (peer, origin_site, last_error)
+		VALUES ($1,$2,$3)
+		ON CONFLICT (peer, origin_site) DO UPDATE SET last_error = EXCLUDED.last_error`,
+		peer, origin, msg)
+	return err
+}
+
+// ListCursors returns every known cursor (for metrics and `repl status`).
+func (db *DB) ListCursors(ctx context.Context) ([]Cursor, error) {
+	rows, err := db.pool.Query(ctx, `
+		SELECT peer, origin_site, applied_seq, durable_seq, last_ok_at, last_error
+		  FROM repl_cursors ORDER BY peer, origin_site`)
+	if err != nil {
+		return nil, classify(fmt.Errorf("list cursors: %w", err))
+	}
+	defer rows.Close()
+	var out []Cursor
+	for rows.Next() {
+		var c Cursor
+		var lastOK *time.Time
+		if err := rows.Scan(&c.Peer, &c.Origin, &c.AppliedSeq, &c.DurableSeq, &lastOK, &c.LastError); err != nil {
+			return nil, err
+		}
+		if lastOK != nil {
+			c.LastOKAt = *lastOK
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// ---------------------------------------------------------------------------
+// Conflicts and parked events
+
+// RecordConflict stores both sides of a cross-site publish conflict.
+func (db *DB) RecordConflict(ctx context.Context, feed, path, coordinate,
+	winnerSHA, loserSHA, winnerSite, loserSite string) error {
+	_, err := db.pool.Exec(ctx, `
+		INSERT INTO publish_conflicts
+			(feed, path, coordinate, winner_sha256, loser_sha256, winner_site, loser_site)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		feed, path, coordinate, winnerSHA, loserSHA, winnerSite, loserSite)
+	if err != nil {
+		return classify(fmt.Errorf("record publish conflict: %w", err))
+	}
+	return nil
+}
+
+// ConflictRow is an open or resolved conflict.
+type ConflictRow struct {
+	Feed        string
+	Path        string
+	Coordinate  string
+	WinnerSHA   string
+	LoserSHA    string
+	WinnerSite  string
+	LoserSite   string
+	DetectedAt  time.Time
+	Resolved    bool
+	ResolvedSHA string
+}
+
+// ListConflicts returns conflicts, open ones first.
+func (db *DB) ListConflicts(ctx context.Context, openOnly bool) ([]ConflictRow, error) {
+	query := `SELECT feed, path, coordinate, winner_sha256, loser_sha256, winner_site, loser_site,
+	                 detected_at, resolved_at IS NOT NULL, COALESCE(resolved_sha256,'')
+	            FROM publish_conflicts`
+	if openOnly {
+		query += " WHERE resolved_at IS NULL"
+	}
+	query += " ORDER BY detected_at DESC"
+	rows, err := db.pool.Query(ctx, query)
+	if err != nil {
+		return nil, classify(fmt.Errorf("list conflicts: %w", err))
+	}
+	defer rows.Close()
+	var out []ConflictRow
+	for rows.Next() {
+		var c ConflictRow
+		if err := rows.Scan(&c.Feed, &c.Path, &c.Coordinate, &c.WinnerSHA, &c.LoserSHA,
+			&c.WinnerSite, &c.LoserSite, &c.DetectedAt, &c.Resolved, &c.ResolvedSHA); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// ResolveConflict marks the open conflicts of a coordinate as resolved.
+func (db *DB) ResolveConflict(ctx context.Context, feed, path, sha256 string) error {
+	_, err := db.pool.Exec(ctx, `
+		UPDATE publish_conflicts
+		   SET resolved_at = now(), resolved_sha256 = $3
+		 WHERE feed=$1 AND path=$2 AND resolved_at IS NULL`, feed, path, sha256)
+	if err != nil {
+		return classify(fmt.Errorf("resolve conflict: %w", err))
+	}
+	return nil
+}
+
+// ParkEvent stores an event that could not be applied yet.
+func (db *DB) ParkEvent(ctx context.Context, e JournalEntry, reason string) error {
+	_, err := db.pool.Exec(ctx, `
+		INSERT INTO repl_parked (origin_site, origin_seq, kind, payload, reason)
+		VALUES ($1,$2,$3,$4,$5)
+		ON CONFLICT (origin_site, origin_seq)
+		DO UPDATE SET reason = EXCLUDED.reason, retries = repl_parked.retries + 1`,
+		e.OriginSite, e.OriginSeq, e.Kind, e.Payload, reason)
+	if err != nil {
+		return classify(fmt.Errorf("park event: %w", err))
+	}
+	return nil
+}
+
+// ParkedEvents returns parked events for retry, oldest first.
+func (db *DB) ParkedEvents(ctx context.Context, limit int) ([]JournalEntry, []string, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := db.pool.Query(ctx, `
+		SELECT origin_site, origin_seq, kind, payload, reason
+		  FROM repl_parked ORDER BY parked_at LIMIT $1`, limit)
+	if err != nil {
+		return nil, nil, classify(fmt.Errorf("list parked events: %w", err))
+	}
+	defer rows.Close()
+	var entries []JournalEntry
+	var reasons []string
+	for rows.Next() {
+		var e JournalEntry
+		var reason string
+		if err := rows.Scan(&e.OriginSite, &e.OriginSeq, &e.Kind, &e.Payload, &reason); err != nil {
+			return nil, nil, err
+		}
+		entries = append(entries, e)
+		reasons = append(reasons, reason)
+	}
+	return entries, reasons, rows.Err()
+}
+
+// UnparkEvent removes a parked event after a successful retry.
+func (db *DB) UnparkEvent(ctx context.Context, origin string, seq int64) error {
+	_, err := db.pool.Exec(ctx,
+		"DELETE FROM repl_parked WHERE origin_site=$1 AND origin_seq=$2", origin, seq)
+	return err
+}
+
+// CountParked reports how many events are parked (metrics).
+func (db *DB) CountParked(ctx context.Context) (int, error) {
+	var n int
+	err := db.pool.QueryRow(ctx, "SELECT count(*) FROM repl_parked").Scan(&n)
+	return n, err
+}
+
+// PruneJournal drops local entries below a watermark, keeping at least
+// keepMin entries so a briefly disconnected peer does not need a resync.
+func (db *DB) PruneJournal(ctx context.Context, origin string, below int64) (int64, error) {
+	tag, err := db.pool.Exec(ctx,
+		"DELETE FROM repl_journal WHERE origin_site=$1 AND origin_seq < $2", origin, below)
+	if err != nil {
+		return 0, classify(fmt.Errorf("prune journal: %w", err))
+	}
+	return tag.RowsAffected(), nil
+}
+
+// Begin starts a transaction (used by the applier to make apply+cursor
+// advance atomic).
+func (db *DB) Begin(ctx context.Context) (pgx.Tx, error) {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return nil, classify(fmt.Errorf("begin transaction: %w", err))
+	}
+	return tx, nil
+}

@@ -46,6 +46,13 @@ func (s *Server) publishHandler(rt *runtime, fr *feedRuntime, hoster api.Hoster)
 			s.writeError(w, api.ErrForbidden, "identity may not publish to this feed")
 			return
 		}
+		// Write-affinity: a feed homed at another site is published there,
+		// so the immutability check (409) stays authoritative
+		// (docs/geo-replication.md).
+		if !fr.publish.Local {
+			s.forwardPublish(w, r, fr, id)
+			return
+		}
 		if !s.publisher.Enabled() {
 			s.writeError(w, api.ErrUnavailable, "publishing is unavailable: no database")
 			return
@@ -111,4 +118,36 @@ func nonNil(m map[string]string) map[string]string {
 		return map[string]string{}
 	}
 	return m
+}
+
+// forwardPublish proxies a publish to the feed's home site. The client is
+// authenticated HERE and the forwarded request carries an on-behalf-of
+// identity, so the home site audits the real publisher. Never a redirect:
+// package clients drop credentials across hosts.
+func (s *Server) forwardPublish(w http.ResponseWriter, r *http.Request, fr *feedRuntime, id api.Identity) {
+	home := fr.publish.HomeSite
+	if s.forward == nil {
+		s.audit.Warn("publish to a remotely-homed feed refused: forwarding is not configured",
+			"feed", fr.feed.Name, "home_site", home, "identity", id.String())
+		w.Header().Set("Retry-After", "30")
+		w.Header().Set("X-Registry-Home-Site", home)
+		s.finishError(w, http.StatusServiceUnavailable,
+			fmt.Sprintf("feed %s is published at site %s; this site cannot forward writes", fr.feed.Name, home))
+		return
+	}
+	status, body, err := s.forward(r.Context(), home, r, id)
+	if err != nil {
+		s.audit.Warn("publish forwarding failed",
+			"feed", fr.feed.Name, "home_site", home, "identity", id.String(), "error", err)
+		w.Header().Set("Retry-After", "30")
+		w.Header().Set("X-Registry-Home-Site", home)
+		s.finishError(w, http.StatusServiceUnavailable,
+			fmt.Sprintf("home site %s for feed %s is unreachable: %v", home, fr.feed.Name, err))
+		return
+	}
+	s.audit.Info("publish forwarded to home site",
+		"feed", fr.feed.Name, "home_site", home, "identity", id.String(), "status", status)
+	w.Header().Set(api.SiteHeader, home)
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
 }

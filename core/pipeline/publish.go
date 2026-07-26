@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sasokolov/package-registry/core/api"
 	"github.com/sasokolov/package-registry/core/state"
 )
@@ -28,6 +30,24 @@ type Publisher struct {
 	logger *slog.Logger
 	audit  *slog.Logger
 	now    func() time.Time
+	// journal, when set, records every commit as a replication event in the
+	// same transaction as the row (transactional outbox).
+	journal JournalWriter
+	// notify is called after a successful commit so peers can be nudged.
+	notify func()
+}
+
+// JournalWriter appends a replication event inside the caller's
+// transaction. core/repl provides the implementation; the pipeline only
+// knows this narrow contract, so replication stays optional.
+type JournalWriter interface {
+	AppendManifestPut(ctx context.Context, tx pgx.Tx, req api.PublishRequest) error
+}
+
+// SetJournal enables replication journalling.
+func (p *Publisher) SetJournal(j JournalWriter, notify func()) {
+	p.journal = j
+	p.notify = notify
 }
 
 // PublisherOptions wires a Publisher.
@@ -98,7 +118,7 @@ func (p *Publisher) Publish(ctx context.Context, req api.PublishRequest) (api.Pu
 		Site:        p.site,
 		PublishedBy: req.Identity.String(),
 	}
-	created, err := p.db.InsertHosted(ctx, row)
+	created, err := p.insertWithJournal(ctx, row, req)
 	if errors.Is(err, state.ErrAlreadyPublished) {
 		p.audit.Warn("publish rejected: coordinate is immutable",
 			"feed", req.Feed.Name, "coordinate", req.Coord.String(), "path", req.Path,
@@ -124,6 +144,37 @@ func (p *Publisher) Publish(ctx context.Context, req api.PublishRequest) (api.Pu
 		"sha256", req.SHA256, "size", req.Size, "identity", req.Identity.String(),
 		"project_path", req.Identity.ProjectPath, "site", p.site, "created", created)
 	return api.PublishResult{Created: created, SHA256: req.SHA256}, nil
+}
+
+// insertWithJournal commits the coordinate and, when replication is on,
+// its journal event in one transaction: a published package and its
+// announcement can never disagree.
+func (p *Publisher) insertWithJournal(ctx context.Context, row state.HostedRow, req api.PublishRequest) (bool, error) {
+	if p.journal == nil {
+		return p.db.InsertHosted(ctx, row)
+	}
+	tx, err := p.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	created, err := state.InsertHostedTx(ctx, tx, row)
+	if err != nil {
+		return false, err
+	}
+	if created {
+		if err := p.journal.AppendManifestPut(ctx, tx, req); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit publish: %w", err)
+	}
+	if created && p.notify != nil {
+		p.notify()
+	}
+	return created, nil
 }
 
 // writeProjection mirrors the row into the blob store so the read path can

@@ -43,6 +43,18 @@ const ingestTimeout = 15 * time.Minute
 // to running fn without the lock when the lock backend is down (invariant 7).
 type LockFunc func(ctx context.Context, key string, fn func(ctx context.Context) error) error
 
+// PeerSource fetches hosted content from geo peers, hiding replication lag
+// from readers: a coordinate published at another site is served here even
+// before its journal entry arrives (docs/geo-replication.md).
+type PeerSource interface {
+	// FetchManifest asks peers for a hosted coordinate; it returns the
+	// digest and size so the pipeline can fetch the blob next.
+	FetchManifest(ctx context.Context, feed api.Feed, path string) (sha256 string, size int64, err error)
+	// EnsureBlob makes a blob available locally, fetching it from a peer
+	// (self-verifying: the key is the checksum).
+	EnsureBlob(ctx context.Context, sha256 string, size int64, fromPeer string) error
+}
+
 // Options wires a Pipeline.
 type Options struct {
 	Store   api.BlobStore
@@ -61,8 +73,12 @@ type Pipeline struct {
 	metrics *Metrics
 	now     func() time.Time
 	site    string
+	peers   PeerSource
 	sf      singleflight.Group
 }
+
+// SetPeerSource enables peer fallback for hosted feeds.
+func (p *Pipeline) SetPeerSource(src PeerSource) { p.peers = src }
 
 // New builds a Pipeline.
 func New(o Options) *Pipeline {
@@ -94,6 +110,9 @@ type Request struct {
 	Intent   api.Intent
 	Module   api.FormatModule
 	Upstream *Upstream // nil for hosted-only feeds
+	// PeerFallback allows fetching this feed's hosted content from geo
+	// peers when it is not here yet.
+	PeerFallback bool
 }
 
 // Result is a streamable response with its provenance.
@@ -190,9 +209,21 @@ func (p *Pipeline) serveArtifact(ctx context.Context, req Request) (*Result, err
 	mkey := manifestKey(req.Feed, req.Intent)
 
 	if m, err := p.loadManifest(ctx, mkey); err == nil {
-		return p.artifactResult(ctx, req, m, api.SourceCache)
+		res, err := p.artifactResult(ctx, req, m, api.SourceCache)
+		if err == nil {
+			return res, nil
+		}
+		// The manifest is here but its blob is not: a peer may hold it.
+		if peerRes, peerErr := p.fromPeerBlob(ctx, req, m); peerErr == nil {
+			return peerRes, nil
+		}
+		return nil, err
 	} else if !errors.Is(err, api.ErrNotFound) {
 		return nil, err
+	}
+
+	if res, err := p.fromPeer(ctx, req); err == nil {
+		return res, nil
 	}
 
 	if req.Upstream == nil {
@@ -211,6 +242,37 @@ func (p *Pipeline) serveArtifact(ctx context.Context, req Request) (*Result, err
 		return nil, err
 	}
 	return p.artifactResult(ctx, req, v.(manifest), api.SourceUpstream)
+}
+
+// fromPeer asks geo peers for a hosted coordinate this site has not
+// received yet, fetches its blob and serves it as X-Registry-Source: peer.
+func (p *Pipeline) fromPeer(ctx context.Context, req Request) (*Result, error) {
+	if !req.PeerFallback || p.peers == nil {
+		return nil, api.ErrNotFound
+	}
+	sha256hex, size, err := p.peers.FetchManifest(ctx, req.Feed, req.Intent.RemotePath)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.peers.EnsureBlob(ctx, sha256hex, size, ""); err != nil {
+		return nil, err
+	}
+	m := manifest{SHA256: sha256hex, Size: size, IngestedAt: p.now().UTC(), Origin: "peer"}
+	p.logger.Info("served from geo peer while replication catches up",
+		"feed", req.Feed.Name, "coord", req.Intent.Coord.String(), "sha256", sha256hex)
+	return p.artifactResult(ctx, req, m, api.SourcePeer)
+}
+
+// fromPeerBlob covers the manifest-present/blob-absent window of lazy
+// feeds: the coordinate replicated but its bytes have not arrived.
+func (p *Pipeline) fromPeerBlob(ctx context.Context, req Request, m manifest) (*Result, error) {
+	if !req.PeerFallback || p.peers == nil {
+		return nil, api.ErrNotFound
+	}
+	if err := p.peers.EnsureBlob(ctx, m.SHA256, m.Size, ""); err != nil {
+		return nil, err
+	}
+	return p.artifactResult(ctx, req, m, api.SourcePeer)
 }
 
 // artifactResult serves either the blob itself or, for WantChecksum

@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -35,11 +36,8 @@ type Config struct {
 	Database DatabaseConfig `yaml:"database"`
 	Auth     AuthConfig     `yaml:"auth"`
 	Feeds    []FeedConfig   `yaml:"feeds"`
-	// Replication is reserved for Phase 7 (geo federation, see
-	// docs/geo-replication.md). It is accepted and ignored so configs
-	// prepared for federation never crash older binaries during rolling
-	// upgrades (strict parsing would otherwise reject the key).
-	Replication map[string]any `yaml:"replication"`
+	// Replication configures geo federation (docs/geo-replication.md).
+	Replication ReplicationConfig `yaml:"replication"`
 }
 
 // SiteConfig identifies this geo-site (docs/geo-replication.md). Single-site
@@ -135,6 +133,17 @@ type FeedConfig struct {
 	Redirect bool `yaml:"redirect"`
 	// RedirectTTL bounds a pre-signed URL. Default 15m.
 	RedirectTTL Duration `yaml:"redirect_ttl"`
+	// PublishPolicy is the feed's write model in a federation:
+	// "forward:<site>" (write-affinity, the default model) or "local"
+	// (symmetric active-active, conflicts resolved by rule K1).
+	PublishPolicy string `yaml:"publish_policy"`
+	// ReplicationMode is "eager" (blobs replicate ahead of demand, the
+	// durability watermark is a real RPO) or "lazy" (blobs fetched on
+	// demand from peers). Default lazy.
+	ReplicationMode string `yaml:"replication_mode"`
+	// PeerFallback lets the read path fetch missing hosted content from
+	// peers, hiding replication lag from clients.
+	PeerFallback bool `yaml:"peer_fallback"`
 	// Policies is the ordered policy chain for this feed.
 	Policies []PolicyConfig `yaml:"policies"`
 }
@@ -261,6 +270,10 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("auth.token_cache_ttl must not be negative"))
 	}
 
+	if err := c.Replication.Validate(c.Site.Name); err != nil {
+		errs = append(errs, err)
+	}
+
 	for i, iss := range c.Auth.OIDC {
 		at := fmt.Sprintf("auth.oidc_issuers[%d]", i)
 		if err := validateHTTPURL(iss.Issuer); err != nil {
@@ -332,6 +345,22 @@ func (c *Config) Validate() error {
 		}
 		if feed.Upstream == "" && !feed.Hosted {
 			errs = append(errs, fmt.Errorf("%s: a feed needs an upstream, hosted: true, or both", at))
+		}
+		switch {
+		case feed.PublishPolicy == "", feed.PublishPolicy == "local":
+		case strings.HasPrefix(feed.PublishPolicy, "forward:"):
+			if strings.TrimPrefix(feed.PublishPolicy, "forward:") == "" {
+				errs = append(errs, fmt.Errorf("%s: publish_policy forward: needs a site name", at))
+			}
+		default:
+			errs = append(errs, fmt.Errorf(
+				"%s: publish_policy %q is not supported (want \"local\" or \"forward:<site>\")", at, feed.PublishPolicy))
+		}
+		switch feed.ReplicationMode {
+		case "", "lazy", "eager":
+		default:
+			errs = append(errs, fmt.Errorf(
+				"%s: replication_mode %q is not supported (want \"lazy\" or \"eager\")", at, feed.ReplicationMode))
 		}
 		for j, pol := range feed.Policies {
 			if pol.Name == "" {

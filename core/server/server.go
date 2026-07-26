@@ -21,8 +21,15 @@ import (
 	"github.com/sasokolov/package-registry/core/config"
 	"github.com/sasokolov/package-registry/core/pipeline"
 	"github.com/sasokolov/package-registry/core/policy"
+	"github.com/sasokolov/package-registry/core/repl"
 	"github.com/sasokolov/package-registry/core/state"
 )
+
+// ForwardFunc proxies a publish request to another site and reports its
+// response. It is provided by the replication wiring; without it,
+// remotely-homed feeds answer 503 rather than accepting a write they cannot
+// own (docs/geo-replication.md).
+type ForwardFunc func(ctx context.Context, site string, r *http.Request, identity api.Identity) (status int, body []byte, err error)
 
 // Options wires the server.
 type Options struct {
@@ -31,16 +38,19 @@ type Options struct {
 	DB      *state.DB // nil: no database (tokens/audit-to-db disabled)
 	Metrics *pipeline.Metrics
 	Manager *config.Manager
+	Forward ForwardFunc
 }
 
 // Server owns the feed router, rebuilt per config snapshot.
 type Server struct {
-	logger     *slog.Logger
-	audit      *slog.Logger
-	store      api.BlobStore
-	db         *state.DB
-	metrics    *pipeline.Metrics
-	manager    *config.Manager
+	logger  *slog.Logger
+	audit   *slog.Logger
+	store   api.BlobStore
+	db      *state.DB
+	metrics *pipeline.Metrics
+	manager *config.Manager
+	// forward proxies publishes to a feed's home site (write-affinity).
+	forward    ForwardFunc
 	pipe       *pipeline.Pipeline
 	publisher  *pipeline.Publisher
 	quarantine *quarantineCache
@@ -53,6 +63,7 @@ type Server struct {
 type runtime struct {
 	router chi.Router
 	authn  *auth.Authenticator
+	feeds  map[string]*feedRuntime
 }
 
 type feedRuntime struct {
@@ -64,6 +75,9 @@ type feedRuntime struct {
 	hosted      bool
 	redirect    bool
 	redirectTTL time.Duration
+	// Geo federation (docs/geo-replication.md).
+	publish      config.PublishPolicy
+	peerFallback bool
 }
 
 // New builds the server and its initial runtime from the manager's current
@@ -77,6 +91,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		db:      o.DB,
 		metrics: o.Metrics,
 		manager: o.Manager,
+		forward: o.Forward,
 		runCtx:  ctx,
 	}
 	cfg0 := o.Manager.Current()
@@ -162,6 +177,54 @@ func ValidateConfig(cfg *config.Config) error {
 	return errors.Join(errs...)
 }
 
+// Publisher exposes the write path so the replication wiring can attach a
+// journal to it.
+func (s *Server) Publisher() *pipeline.Publisher { return s.publisher }
+
+// Pipeline exposes the read path so peer fallback can be attached.
+func (s *Server) Pipeline() *pipeline.Pipeline { return s.pipe }
+
+// ReindexFeed rebuilds a feed's indexes; the applier calls it after
+// replicated manifests change a feed (invariant 15).
+func (s *Server) ReindexFeed(ctx context.Context, feedName string) error {
+	rt := s.rt.Load()
+	fr, ok := rt.feeds[feedName]
+	if !ok {
+		return nil
+	}
+	return s.publisher.Reindex(ctx, fr.feed, fr.module)
+}
+
+// EagerFeed reports whether a feed replicates blobs ahead of demand.
+func (s *Server) EagerFeed(feedName string) bool {
+	for _, fc := range s.manager.Current().Feeds {
+		if fc.Name == feedName {
+			return fc.ReplicationMode == "eager"
+		}
+	}
+	return false
+}
+
+// FeedDigests computes per-feed manifest-set digests for divergence
+// detection (invariant 16).
+func (s *Server) FeedDigests(ctx context.Context) map[string]string {
+	out := map[string]string{}
+	if s.db == nil {
+		return out
+	}
+	for _, fc := range s.manager.Current().Feeds {
+		if !fc.Hosted {
+			continue
+		}
+		rows, err := s.db.ListHosted(ctx, fc.Name, "")
+		if err != nil {
+			continue
+		}
+		out[fc.Name] = repl.FeedDigest(rows)
+	}
+	return out
+}
+
 // Handler returns the dynamic feed handler; the caller mounts it under /.
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -178,6 +241,7 @@ func (s *Server) buildRuntime(cfg *config.Config) (*runtime, error) {
 	rt := &runtime{
 		router: chi.NewRouter(),
 		authn:  auth.NewAuthenticator(verifier, oidc),
+		feeds:  map[string]*feedRuntime{},
 	}
 
 	for _, fc := range cfg.Feeds {
@@ -198,8 +262,10 @@ func (s *Server) buildRuntime(cfg *config.Config) (*runtime, error) {
 		fr := &feedRuntime{
 			feed: feed, module: module, chain: chain,
 			publishers: publishers, hosted: fc.Hosted,
-			redirect:    fc.Redirect,
-			redirectTTL: fc.RedirectTTLOrDefault(),
+			redirect:     fc.Redirect,
+			redirectTTL:  fc.RedirectTTLOrDefault(),
+			publish:      fc.Publish(cfg.Site.Name),
+			peerFallback: fc.PeerFallback,
 		}
 		if fc.Redirect {
 			if _, ok := s.store.(api.Presigner); !ok {
@@ -224,6 +290,8 @@ func (s *Server) buildRuntime(cfg *config.Config) (*runtime, error) {
 				return nil, fmt.Errorf("feed %s: %w", fc.Name, err)
 			}
 		}
+
+		rt.feeds[fc.Name] = fr
 
 		mount := "/" + fc.Format + "/" + fc.Name
 		sub := chi.NewRouter()

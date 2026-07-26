@@ -63,10 +63,11 @@ func (s *Server) feedHandler(rt *runtime, fr *feedRuntime) http.HandlerFunc {
 		}
 
 		res, err := s.pipe.Serve(ctx, pipeline.Request{
-			Feed:     fr.feed,
-			Intent:   intent,
-			Module:   fr.module,
-			Upstream: fr.upstream,
+			Feed:         fr.feed,
+			Intent:       intent,
+			Module:       fr.module,
+			Upstream:     fr.upstream,
+			PeerFallback: fr.peerFallback,
 		})
 		s.updateBreakerGauge(fr)
 		if err != nil {
@@ -94,6 +95,7 @@ func (s *Server) feedHandler(rt *runtime, fr *feedRuntime) http.HandlerFunc {
 		}
 
 		w.Header().Set(api.SourceHeader, string(res.Source))
+		w.Header().Set(api.SiteHeader, s.site)
 		if res.Size >= 0 {
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", res.Size))
 		}
@@ -158,7 +160,8 @@ func (s *Server) artifactMetadata(ctx context.Context, fr *feedRuntime, intent a
 		return map[string]string{}
 	}
 	res, err := s.pipe.Serve(ctx, pipeline.Request{
-		Feed: fr.feed, Intent: metaIntent, Module: fr.module, Upstream: fr.upstream,
+		Feed: fr.feed, Intent: metaIntent, Module: fr.module,
+		Upstream: fr.upstream, PeerFallback: fr.peerFallback,
 	})
 	if err != nil {
 		s.logger.Debug("artifact metadata unavailable",
@@ -220,6 +223,7 @@ func (s *Server) serveSynthetic(w http.ResponseWriter, fr *feedRuntime, intent a
 		w.Header().Set(k, v)
 	}
 	w.Header().Set(api.SourceHeader, string(api.SourceLocal))
+	w.Header().Set(api.SiteHeader, s.site)
 	status := resp.Status
 	if status == 0 {
 		status = http.StatusOK

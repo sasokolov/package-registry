@@ -44,6 +44,8 @@ func run(args []string, logOut io.Writer) error {
 			return tokenCmd(args[1:], logOut)
 		case "gc":
 			return gcCmd(args[1:], logOut)
+		case "repl":
+			return replCmd(args[1:], logOut)
 		case "serve":
 			args = args[1:]
 		}
@@ -115,11 +117,24 @@ func serveCmd(args []string, logOut io.Writer) error {
 		DB:      db,
 		Metrics: metrics,
 		Manager: manager,
+		Forward: makeForwarder(cfg, logger),
 	})
 	if err != nil {
 		return err
 	}
 	go manager.Run(ctx)
+
+	replication, err := setupReplication(ctx, cfg, db, store, srv, promReg, logger)
+	if err != nil {
+		return err
+	}
+	if replication != nil {
+		go func() {
+			if err := replication.Run(ctx); err != nil {
+				logger.Error("replication stopped", "error", err)
+			}
+		}()
+	}
 
 	return serveHTTP(ctx, cfg, logger, promReg, srv.Handler())
 }

@@ -181,8 +181,13 @@ const (
 	SourceUpstream Source = "upstream"
 	SourceStale    Source = "stale"
 	SourceLocal    Source = "local"
+	// SourcePeer marks content fetched from a geo peer while replication
+	// catches up (docs/geo-replication.md).
+	SourcePeer Source = "peer"
 
 	SourceHeader = "X-Registry-Source"
+	// SiteHeader names the geo site that answered.
+	SiteHeader = "X-Registry-Site"
 )
 
 // ---------------------------------------------------------------------------

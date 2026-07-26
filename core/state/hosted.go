@@ -35,6 +35,24 @@ var ErrAlreadyPublished = errors.New("coordinate already published")
 // content is idempotent (created=false); different content on an immutable
 // coordinate yields ErrAlreadyPublished. Mutable coordinates are updated.
 func (db *DB) InsertHosted(ctx context.Context, r HostedRow) (created bool, err error) {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return false, classify(fmt.Errorf("begin publish: %w", err))
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	created, err = InsertHostedTx(ctx, tx, r)
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, classify(fmt.Errorf("commit publish: %w", err))
+	}
+	return created, nil
+}
+
+// InsertHostedTx is InsertHosted inside a caller-provided transaction, so a
+// publish and its replication journal entry commit together.
+func InsertHostedTx(ctx context.Context, tx pgx.Tx, r HostedRow) (created bool, err error) {
 	checksums, err := json.Marshal(nonNilMap(r.Checksums))
 	if err != nil {
 		return false, fmt.Errorf("encode checksums: %w", err)
@@ -54,7 +72,7 @@ func (db *DB) InsertHosted(ctx context.Context, r HostedRow) (created bool, err 
 		ON CONFLICT ON CONSTRAINT hosted_manifests_feed_path_key DO NOTHING
 		RETURNING sha256`
 	var stored string
-	err = db.pool.QueryRow(ctx, insert,
+	err = tx.QueryRow(ctx, insert,
 		r.Feed, r.Path, r.Coordinate, r.SHA256, r.Size, checksums, metadata,
 		r.Mutable, r.Origin, r.Site, r.PublishedBy).Scan(&stored)
 	switch {
@@ -72,7 +90,7 @@ func (db *DB) InsertHosted(ctx context.Context, r HostedRow) (created bool, err 
 	// an immutability violation.
 	var existingSHA string
 	var existingMutable bool
-	err = db.pool.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		"SELECT sha256, mutable FROM hosted_manifests WHERE feed=$1 AND path=$2",
 		r.Feed, r.Path).Scan(&existingSHA, &existingMutable)
 	if err != nil {
@@ -84,7 +102,7 @@ func (db *DB) InsertHosted(ctx context.Context, r HostedRow) (created bool, err 
 	if !existingMutable || !r.Mutable {
 		return false, fmt.Errorf("%s %s: %w", r.Feed, r.Path, ErrAlreadyPublished)
 	}
-	_, err = db.pool.Exec(ctx, `
+	_, err = tx.Exec(ctx, `
 		UPDATE hosted_manifests
 		   SET sha256=$3, size=$4, checksums=$5, metadata=$6, published_by=$7,
 		       site=$8, updated_at=now()
@@ -153,8 +171,8 @@ func (db *DB) Quarantine(ctx context.Context, feed, coordinate, reason, detail s
 	_, err := db.pool.Exec(ctx, `
 		INSERT INTO quarantine (feed, coordinate, reason, detail)
 		VALUES ($1,$2,$3,$4)
-		ON CONFLICT ON CONSTRAINT quarantine_feed_coord_key
-		DO UPDATE SET reason = EXCLUDED.reason, detail = EXCLUDED.detail, released_at = NULL`,
+		ON CONFLICT ON CONSTRAINT quarantine_feed_coord_reason_key
+		DO UPDATE SET detail = EXCLUDED.detail, released_at = NULL`,
 		feed, coordinate, reason, detail)
 	if err != nil {
 		return classify(fmt.Errorf("quarantine %s %s: %w", feed, coordinate, err))
@@ -162,11 +180,17 @@ func (db *DB) Quarantine(ctx context.Context, feed, coordinate, reason, detail s
 	return nil
 }
 
-// ReleaseQuarantine clears an active quarantine.
-func (db *DB) ReleaseQuarantine(ctx context.Context, feed, coordinate string) error {
-	_, err := db.pool.Exec(ctx,
-		"UPDATE quarantine SET released_at = now() WHERE feed=$1 AND coordinate=$2 AND released_at IS NULL",
-		feed, coordinate)
+// ReleaseQuarantine clears active quarantines of a coordinate. An empty
+// reason releases every reason; naming one releases just that reason, so a
+// resolved conflict does not lift an unrelated manual takedown.
+func (db *DB) ReleaseQuarantine(ctx context.Context, feed, coordinate, reason string) error {
+	query := "UPDATE quarantine SET released_at = now() WHERE feed=$1 AND coordinate=$2 AND released_at IS NULL"
+	args := []any{feed, coordinate}
+	if reason != "" {
+		query += " AND reason = $3"
+		args = append(args, reason)
+	}
+	_, err := db.pool.Exec(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("release quarantine %s %s: %w", feed, coordinate, err)
 	}
@@ -177,10 +201,13 @@ func (db *DB) ReleaseQuarantine(ctx context.Context, feed, coordinate string) er
 // or ok=false when it is servable.
 func (db *DB) ActiveQuarantine(ctx context.Context, feed, coordinate string) (QuarantineEntry, bool, error) {
 	var e QuarantineEntry
+	// Any active reason blocks the coordinate; the oldest one is reported.
 	err := db.pool.QueryRow(ctx, `
 		SELECT feed, coordinate, reason, detail, created_at
 		  FROM quarantine
-		 WHERE feed=$1 AND coordinate=$2 AND released_at IS NULL`, feed, coordinate).
+		 WHERE feed=$1 AND coordinate=$2 AND released_at IS NULL
+		 ORDER BY created_at
+		 LIMIT 1`, feed, coordinate).
 		Scan(&e.Feed, &e.Coordinate, &e.Reason, &e.Detail, &e.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return QuarantineEntry{}, false, nil
