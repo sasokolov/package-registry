@@ -201,6 +201,32 @@ func (p *Publisher) writeProjection(ctx context.Context, req api.PublishRequest)
 	return nil
 }
 
+// WriteReplicatedManifest implements repl.Projector: mirror a coordinate
+// that arrived through replication into the blob store, so the read path
+// serves it exactly like a locally published one.
+func (p *Publisher) WriteReplicatedManifest(ctx context.Context, feed, path, sha256hex string,
+	size int64, checksums, metadata map[string]string, originSite, publisher string) error {
+	m := manifest{
+		SHA256:     sha256hex,
+		Size:       size,
+		Checksums:  checksums,
+		IngestedAt: p.now().UTC(),
+		Origin:     "replication",
+		Site:       originSite,
+		Publisher:  publisher,
+		Metadata:   metadata,
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return fmt.Errorf("encode replicated manifest: %w", err)
+	}
+	key := "manifests/" + feed + "/" + path
+	if err := p.store.Put(ctx, key, bytes.NewReader(raw), api.PutOpts{}); err != nil {
+		return fmt.Errorf("store replicated manifest: %w", err)
+	}
+	return nil
+}
+
 // Manifests implements api.CoreServices: the deterministic input of Reindex.
 func (p *Publisher) Manifests(ctx context.Context, feed api.Feed, prefix string) ([]api.HostedManifest, error) {
 	if !p.Enabled() {

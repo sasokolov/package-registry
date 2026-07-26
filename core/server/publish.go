@@ -3,7 +3,10 @@ package server
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 
 	"github.com/sasokolov/package-registry/core/api"
 )
@@ -126,7 +129,8 @@ func nonNil(m map[string]string) map[string]string {
 // package clients drop credentials across hosts.
 func (s *Server) forwardPublish(w http.ResponseWriter, r *http.Request, fr *feedRuntime, id api.Identity) {
 	home := fr.publish.HomeSite
-	if s.forward == nil {
+	forward := s.forward.Load()
+	if forward == nil {
 		s.audit.Warn("publish to a remotely-homed feed refused: forwarding is not configured",
 			"feed", fr.feed.Name, "home_site", home, "identity", id.String())
 		w.Header().Set("Retry-After", "30")
@@ -135,7 +139,10 @@ func (s *Server) forwardPublish(w http.ResponseWriter, r *http.Request, fr *feed
 			fmt.Sprintf("feed %s is published at site %s; this site cannot forward writes", fr.feed.Name, home))
 		return
 	}
-	status, body, err := s.forward(r.Context(), home, r, id)
+	// Inside a feed handler the mount prefix is stripped; the home site
+	// addresses the coordinate by feed name and path.
+	status, body, err := (*forward)(r.Context(), home, fr.feed.Name,
+		strings.TrimPrefix(r.URL.Path, "/"), r.Method, r.Body, id)
 	if err != nil {
 		s.audit.Warn("publish forwarding failed",
 			"feed", fr.feed.Name, "home_site", home, "identity", id.String(), "error", err)
@@ -150,4 +157,74 @@ func (s *Server) forwardPublish(w http.ResponseWriter, r *http.Request, fr *feed
 	w.Header().Set(api.SiteHeader, home)
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+}
+
+// ApplyForwardedPublish handles a write another site accepted on our behalf
+// because this site is the feed's home. The peer authenticated the client,
+// but authorization is re-checked here against the on-behalf-of identity:
+// replication grants no authority (invariant 14).
+func (s *Server) ApplyForwardedPublish(ctx context.Context, feed, path, method string,
+	body io.ReadCloser, identity, projectPath, peer string) (int, []byte, error) {
+	defer func() { _ = body.Close() }()
+
+	rt := s.rt.Load()
+	fr, ok := rt.feeds[feed]
+	if !ok {
+		return http.StatusNotFound, []byte("unknown feed " + feed + "\n"), nil
+	}
+	if !fr.publish.Local {
+		// We are not the home site either: refuse rather than chain
+		// forwards, which could loop.
+		return http.StatusMisdirectedRequest,
+			[]byte("this site is not the home of feed " + feed + "\n"), nil
+	}
+	hoster, ok := fr.module.(api.Hoster)
+	if !ok || !fr.hosted {
+		return http.StatusMethodNotAllowed, []byte("feed " + feed + " does not accept publishes\n"), nil
+	}
+	if !s.publisher.Enabled() {
+		return http.StatusServiceUnavailable, []byte("publishing is unavailable: no database\n"), nil
+	}
+
+	// The peer authenticated the client and vouches for this identity; we
+	// still re-authorize it below, and the audit records both.
+	id := api.ParseIdentity(identity)
+	id.ProjectPath = projectPath
+	if !fr.publishers.Allowed(id) {
+		s.audit.Warn("forwarded publish denied: identity has no publish permission",
+			"feed", feed, "path", path, "identity", identity, "peer", peer,
+			"allowed", fr.publishers.Describe())
+		return http.StatusForbidden, []byte("identity may not publish to this feed\n"), nil
+	}
+
+	if method == "" {
+		method = http.MethodPut
+	}
+	// Modules see feed-relative paths (the mount prefix is stripped in the
+	// normal flow), so the forwarded request must look identical.
+	req, err := http.NewRequestWithContext(ctx, method, "/"+strings.TrimPrefix(path, "/"), body)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	deps := &publishDeps{
+		CoreServices: s.publisher,
+		server:       s,
+		feed:         fr,
+		identity:     id,
+	}
+	if err := hoster.HandlePublish(ctx, fr.feed, req, deps); err != nil {
+		rec := httptest.NewRecorder()
+		s.writeErrorText(rec, err, err.Error())
+		s.audit.Warn("forwarded publish rejected",
+			"feed", feed, "path", path, "identity", identity, "peer", peer,
+			"status", rec.Code, "error", err)
+		return rec.Code, rec.Body.Bytes(), nil
+	}
+	if err := s.publisher.Reindex(ctx, fr.feed, fr.module); err != nil {
+		s.logger.Error("reindex after forwarded publish failed", "feed", feed, "error", err)
+	}
+	s.audit.Info("forwarded publish accepted",
+		"feed", feed, "path", path, "identity", identity, "forwarded_by", peer, "site", s.site)
+	return http.StatusCreated, []byte("published\n"), nil
 }

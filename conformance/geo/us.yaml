@@ -1,0 +1,56 @@
+# Geo site us-1 (docs/geo-replication.md).
+site:
+  name: us-1
+  external_url: http://registry-us:8080
+
+server:
+  listen: ":8080"
+  shutdown_timeout: 10s
+
+storage:
+  type: s3
+  s3:
+    endpoint: minio-us:9000
+    bucket: registry
+    access_key: registry
+    secret_key: registry-secret
+
+database:
+  dsn: postgres://registry:registry@postgres-us:5432/registry
+
+replication:
+  enabled: true
+  internal_listen: ":8081"
+  auth:
+    type: bearer
+    token_file: /etc/registry/peer-token
+  topology: mesh
+  nudge: true
+  journal_retention: 720h
+  max_clock_skew: 5m
+  peers:
+    - name: eu-1
+      url: http://registry-eu:8081
+      public_url: http://registry-eu:8080
+      pull_interval: 2s
+
+feeds:
+  # Write-affinity: this feed is published at eu-1 only; us-1 forwards.
+  - name: homed
+    format: maven
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+    publish_policy: forward:eu-1
+    replication_mode: eager
+    peer_fallback: true
+
+  # Symmetric active-active publishing: conflicts resolve by rule K1.
+  - name: shared
+    format: maven
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+    publish_policy: local
+    replication_mode: lazy
+    peer_fallback: true

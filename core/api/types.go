@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -397,6 +398,27 @@ type Identity struct {
 	// ProjectPath and Ref carry GitLab CI OIDC claims when Kind is oidc.
 	ProjectPath string
 	Ref         string
+}
+
+// ParseIdentity reverses Identity.String(). It is used when an identity
+// crosses a trust boundary as text (a publish forwarded to its home site);
+// the caller must have authenticated the sender first — parsing grants
+// nothing by itself.
+func ParseIdentity(s string) Identity {
+	kind, subject, ok := strings.Cut(s, ":")
+	if !ok {
+		return Identity{Kind: IdentityAnonymous, Subject: s}
+	}
+	id := Identity{Subject: subject}
+	switch IdentityKind(kind) {
+	case IdentityToken:
+		id.Kind = IdentityToken
+	case IdentityOIDC:
+		id.Kind = IdentityOIDC
+	default:
+		id.Kind = IdentityAnonymous
+	}
+	return id
 }
 
 // Anonymous returns the identity of an unauthenticated caller.

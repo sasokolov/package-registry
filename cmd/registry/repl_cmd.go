@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -31,6 +32,7 @@ func replCmd(args []string, out io.Writer) error {
 	path := flags.String("path", "", "coordinate path (resolve)")
 	keep := flags.String("keep", "", "sha256 to keep (resolve)")
 	openOnly := flags.Bool("open", true, "list only unresolved conflicts")
+	asJSON := flags.Bool("json", false, "machine-readable output with full digests (conflicts)")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -56,7 +58,7 @@ func replCmd(args []string, out io.Writer) error {
 	case "status":
 		return replStatus(ctx, db, cfg, out)
 	case "conflicts":
-		return replConflicts(ctx, db, out, *openOnly)
+		return replConflicts(ctx, db, out, *openOnly, *asJSON)
 	case "resolve":
 		return replResolve(ctx, db, cfg, out, *feed, *path, *keep)
 	case "retry-parked":
@@ -119,10 +121,17 @@ func replStatus(ctx context.Context, db *state.DB, cfg *config.Config, out io.Wr
 	return nil
 }
 
-func replConflicts(ctx context.Context, db *state.DB, out io.Writer, openOnly bool) error {
+func replConflicts(ctx context.Context, db *state.DB, out io.Writer, openOnly, asJSON bool) error {
 	rows, err := db.ListConflicts(ctx, openOnly)
 	if err != nil {
 		return err
+	}
+	if asJSON {
+		// The table truncates digests for readability; automation and the
+		// resolve command need them in full.
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(rows)
 	}
 	if len(rows) == 0 {
 		_, _ = fmt.Fprintln(out, "no conflicts")

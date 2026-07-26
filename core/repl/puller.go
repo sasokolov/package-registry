@@ -227,6 +227,35 @@ func (c *Client) Manifest(ctx context.Context, feed, path string) (ManifestRespo
 	return out, nil
 }
 
+// ForwardPublish sends a write to this peer because it is the feed's home
+// site. Authentication is the replication credential; the publisher's
+// identity travels as on-behalf-of headers.
+func (c *Client) ForwardPublish(ctx context.Context, feed, path, method string,
+	body io.Reader, identity, projectPath string) (int, []byte, error) {
+	q := url.Values{}
+	q.Set("feed", feed)
+	q.Set("path", path)
+	target := c.peer.URL + InternalPrefix + "/publish?" + q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, body)
+	if err != nil {
+		return 0, nil, fmt.Errorf("build forwarded publish: %w", err)
+	}
+	c.authz(req)
+	req.Header.Set("X-Registry-On-Behalf-Of", identity)
+	req.Header.Set("X-Registry-Forwarded-Method", method)
+	if projectPath != "" {
+		req.Header.Set("X-Registry-On-Behalf-Of-Project", projectPath)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("forward publish to %s: %w", c.peer.Name, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	out, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	return resp.StatusCode, out, nil
+}
+
 // Nudge tells the peer that we have new events (an optimization).
 func (c *Client) Nudge(ctx context.Context) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,

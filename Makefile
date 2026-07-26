@@ -6,7 +6,7 @@ GOLANGCI_LINT := $(BIN_DIR)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 
 COMPOSE_FILE := conformance/docker-compose.yml
 
-.PHONY: build test test-integration lint conformance conformance-live conformance-chaos load-test dev dev-down
+.PHONY: build test test-integration lint conformance conformance-live conformance-chaos conformance-geo load-test dev dev-down
 
 build:
 	go build ./...
@@ -40,6 +40,10 @@ conformance:
 # upstream down). Separate target: slower and deliberately destructive.
 conformance-chaos:
 	./conformance/run-chaos.sh
+
+# Two-site geo federation: replication, conflicts (rule K1), partition/heal.
+conformance-geo:
+	./conformance/geo/run.sh
 
 # k6 load test ("CI storm") against a warm cache; writes docs/perf.md.
 load-test:

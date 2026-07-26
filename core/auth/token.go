@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -22,6 +23,25 @@ import (
 	"github.com/sasokolov/package-registry/core/api"
 	"github.com/sasokolov/package-registry/core/state"
 )
+
+// RevokeTx marks a token revoked inside the caller's transaction and
+// returns its hash, so a revocation and its replication journal entry
+// commit together. Revocation is idempotent and one-way: a token is never
+// un-revoked (invariant 14).
+func RevokeTx(ctx context.Context, tx pgx.Tx, name string) (hash string, err error) {
+	err = tx.QueryRow(ctx, `
+		UPDATE tokens
+		   SET revoked_at = COALESCE(revoked_at, now()), updated_at = now()
+		 WHERE name = $1
+		RETURNING hash`, name).Scan(&hash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("token %q: %w", name, api.ErrNotFound)
+	}
+	if err != nil {
+		return "", fmt.Errorf("revoke token: %w", err)
+	}
+	return hash, nil
+}
 
 // TokenPrefix marks static registry tokens in the Authorization header.
 const TokenPrefix = "reg_"
@@ -97,6 +117,64 @@ func (v *TokenVerifier) Authenticate(ctx context.Context, secret string) (api.Id
 	}
 }
 
+// Revoke evicts hashes from the cache. Revocation must take effect within
+// the sweeper interval, not the cache TTL: a token revoked here or at
+// another geo site has to stop working promptly (invariant 14).
+func (v *TokenVerifier) Revoke(hashes []string) int {
+	if len(hashes) == 0 {
+		return 0
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	var evicted int
+	for _, h := range hashes {
+		if _, ok := v.cache[h]; ok {
+			delete(v.cache, h)
+			evicted++
+		}
+	}
+	return evicted
+}
+
+// RevocationSource lists tokens revoked recently enough that a cached
+// identity could still exist.
+type RevocationSource interface {
+	RecentlyRevoked(ctx context.Context, since time.Duration) ([]string, error)
+}
+
+// WatchRevocations evicts revoked tokens from the cache on an interval. It
+// covers both local revocations (a CLI in another process) and replicated
+// ones (the applier writes revoked_at). A database outage only delays
+// eviction; it never breaks the read path.
+func (v *TokenVerifier) WatchRevocations(ctx context.Context, src RevocationSource, interval time.Duration, logger *slog.Logger) {
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	// Look back further than the cache TTL so nothing cached can be missed
+	// after a restart or a slow tick.
+	lookback := v.ttl * 4
+	if lookback < time.Minute {
+		lookback = time.Minute
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		hashes, err := src.RecentlyRevoked(ctx, lookback)
+		if err != nil {
+			logger.Debug("revocation sweep failed", "error", err)
+			continue
+		}
+		if n := v.Revoke(hashes); n > 0 {
+			logger.Info("revoked tokens evicted from the auth cache", "count", n)
+		}
+	}
+}
+
 // Tokens is the PostgreSQL-backed token store.
 type Tokens struct {
 	db *state.DB
@@ -104,6 +182,26 @@ type Tokens struct {
 
 // NewTokens wraps the state DB.
 func NewTokens(db *state.DB) *Tokens { return &Tokens{db: db} }
+
+// RecentlyRevoked implements RevocationSource.
+func (t *Tokens) RecentlyRevoked(ctx context.Context, since time.Duration) ([]string, error) {
+	rows, err := t.db.Pool().Query(ctx,
+		"SELECT hash FROM tokens WHERE revoked_at IS NOT NULL AND revoked_at > now() - $1::interval",
+		fmt.Sprintf("%d seconds", int(since.Seconds())))
+	if err != nil {
+		return nil, fmt.Errorf("list revoked tokens: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
 
 // Lookup implements LookupFunc.
 func (t *Tokens) Lookup(ctx context.Context, hash string) (string, error) {

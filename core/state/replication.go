@@ -222,14 +222,41 @@ func SetCursorTx(ctx context.Context, tx pgx.Tx, c Cursor) error {
 	return nil
 }
 
-// RecordCursorError notes a failed poll without moving the cursor.
+// RecordCursorError notes a failed poll without moving the cursor. A poll
+// that fails before any origin is known is recorded against every existing
+// stream of that peer, so `repl status` shows the real reason instead of a
+// sentinel row that never clears.
 func (db *DB) RecordCursorError(ctx context.Context, peer, origin, msg string) error {
+	if origin == "" || origin == "*" {
+		_, err := db.pool.Exec(ctx,
+			"UPDATE repl_cursors SET last_error = $2 WHERE peer = $1", peer, msg)
+		return err
+	}
 	_, err := db.pool.Exec(ctx, `
 		INSERT INTO repl_cursors (peer, origin_site, last_error)
 		VALUES ($1,$2,$3)
 		ON CONFLICT (peer, origin_site) DO UPDATE SET last_error = EXCLUDED.last_error`,
 		peer, origin, msg)
 	return err
+}
+
+// MarkPeerPollOK records a successful handshake with a peer, even when
+// there was nothing to apply: without it a healthy but idle stream would
+// look like it had never been reached.
+func (db *DB) MarkPeerPollOK(ctx context.Context, peer string, origins []string) error {
+	if len(origins) == 0 {
+		origins = []string{peer}
+	}
+	for _, origin := range origins {
+		if _, err := db.pool.Exec(ctx, `
+			INSERT INTO repl_cursors (peer, origin_site, last_ok_at, last_error)
+			VALUES ($1,$2, now(), '')
+			ON CONFLICT (peer, origin_site) DO UPDATE
+			   SET last_ok_at = now(), last_error = ''`, peer, origin); err != nil {
+			return classify(fmt.Errorf("record successful poll: %w", err))
+		}
+	}
+	return nil
 }
 
 // ListCursors returns every known cursor (for metrics and `repl status`).
@@ -275,16 +302,16 @@ func (db *DB) RecordConflict(ctx context.Context, feed, path, coordinate,
 
 // ConflictRow is an open or resolved conflict.
 type ConflictRow struct {
-	Feed        string
-	Path        string
-	Coordinate  string
-	WinnerSHA   string
-	LoserSHA    string
-	WinnerSite  string
-	LoserSite   string
-	DetectedAt  time.Time
-	Resolved    bool
-	ResolvedSHA string
+	Feed        string    `json:"feed"`
+	Path        string    `json:"path"`
+	Coordinate  string    `json:"coordinate"`
+	WinnerSHA   string    `json:"canonical_sha256"`
+	LoserSHA    string    `json:"other_sha256"`
+	WinnerSite  string    `json:"canonical_site"`
+	LoserSite   string    `json:"other_site"`
+	DetectedAt  time.Time `json:"detected_at"`
+	Resolved    bool      `json:"resolved"`
+	ResolvedSHA string    `json:"resolved_sha256,omitempty"`
 }
 
 // ListConflicts returns conflicts, open ones first.

@@ -68,8 +68,20 @@ type DatabaseConfig struct {
 	DSN string `yaml:"dsn"`
 }
 
+// RevocationSweepOrDefault is the eviction interval for revoked tokens.
+func (a AuthConfig) RevocationSweepOrDefault() time.Duration {
+	if a.RevocationSweep > 0 {
+		return a.RevocationSweep.Std()
+	}
+	return 5 * time.Second
+}
+
 // AuthConfig configures authentication.
 type AuthConfig struct {
+	// RevocationSweep is how often revoked tokens are evicted from the auth
+	// cache. It bounds how long a revoked credential can still work, both
+	// when revoked here and when the revocation arrives from a geo peer.
+	RevocationSweep Duration `yaml:"revocation_sweep"`
 	// TokenCacheTTL bounds the in-memory cache of verified static tokens;
 	// within the TTL reads keep working while PostgreSQL is down
 	// (invariant 7). Default 5m.
@@ -239,6 +251,9 @@ func (c *Config) applyDefaults() {
 	if c.Server.ReloadInterval == 0 {
 		c.Server.ReloadInterval = Duration(30 * time.Second)
 	}
+	if c.Auth.RevocationSweep == 0 {
+		c.Auth.RevocationSweep = Duration(5 * time.Second)
+	}
 	if c.Auth.TokenCacheTTL == 0 {
 		c.Auth.TokenCacheTTL = Duration(5 * time.Minute)
 	}
@@ -272,6 +287,25 @@ func (c *Config) Validate() error {
 
 	if err := c.Replication.Validate(c.Site.Name); err != nil {
 		errs = append(errs, err)
+	}
+	// A feed homed elsewhere can only be published if we know where to
+	// forward writes to.
+	for _, feed := range c.Feeds {
+		policy := feed.Publish(c.Site.Name)
+		if policy.HomeSite == "" || policy.Local {
+			continue
+		}
+		var known bool
+		for _, p := range c.Replication.Peers {
+			if p.Name == policy.HomeSite && p.PublicURL != "" {
+				known = true
+			}
+		}
+		if !known {
+			errs = append(errs, fmt.Errorf(
+				"feed %s is homed at site %q, but no peer with that name declares public_url: publishes could not be forwarded",
+				feed.Name, policy.HomeSite))
+		}
 	}
 
 	for i, iss := range c.Auth.OIDC {

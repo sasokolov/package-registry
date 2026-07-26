@@ -50,6 +50,23 @@ type SnapshotResponse struct {
 	Watermarks map[string]int64 `json:"watermarks"` // origin -> sequence
 }
 
+// ForwardedPublish is a write a peer accepted on our behalf. The peer
+// authenticated the client; we re-check authorization against the
+// on-behalf-of identity, so a peer cannot publish what that identity may
+// not (invariant 14: replication grants nothing).
+type ForwardedPublish struct {
+	Feed        string
+	Path        string
+	Method      string
+	Body        io.ReadCloser
+	Identity    string
+	ProjectPath string
+	Peer        string
+}
+
+// PublishHandler applies a forwarded publish locally.
+type PublishHandler func(ctx context.Context, req ForwardedPublish) (status int, body []byte, err error)
+
 // Server exposes the internal replication API.
 type Server struct {
 	db      *state.DB
@@ -63,6 +80,8 @@ type Server struct {
 	// digests computes per-feed manifest-set digests for divergence
 	// detection (invariant 16).
 	digests func(ctx context.Context) map[string]string
+	// publish applies writes forwarded by peers (write-affinity).
+	publish PublishHandler
 }
 
 // ServerOptions wires the internal API.
@@ -75,13 +94,15 @@ type ServerOptions struct {
 	Metrics   *Metrics
 	Authorize func(r *http.Request) (string, error)
 	Digests   func(ctx context.Context) map[string]string
+	Publish   PublishHandler
 }
 
 // NewServer builds the internal API server.
 func NewServer(o ServerOptions) *Server {
 	s := &Server{
 		db: o.DB, store: o.Store, site: o.Site, uuid: o.UUID,
-		logger: o.Logger, metrics: o.Metrics, authorize: o.Authorize, digests: o.Digests,
+		logger: o.Logger, metrics: o.Metrics, authorize: o.Authorize,
+		digests: o.Digests, publish: o.Publish,
 	}
 	if s.logger == nil {
 		s.logger = slog.Default()
@@ -105,6 +126,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/blobs/sha256/{digest}", s.handleBlob)
 		r.Get("/manifest", s.handleManifest)
 		r.Get("/snapshot", s.handleSnapshot)
+		r.Post("/publish", s.handlePublish)
 		r.Post("/nudge", s.handleNudge)
 	})
 	return r
@@ -284,6 +306,36 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		snap.Watermarks[origin] = head
 	}
 	writeJSON(w, snap)
+}
+
+// handlePublish applies a write a peer forwarded because this site is the
+// feed's home. The peer is authenticated by the transport; the publisher's
+// identity travels in headers and is re-authorized here.
+func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
+	if s.publish == nil {
+		http.Error(w, "this site does not accept forwarded publishes", http.StatusNotImplemented)
+		return
+	}
+	feed := r.URL.Query().Get("feed")
+	path := r.URL.Query().Get("path")
+	identity := r.Header.Get("X-Registry-On-Behalf-Of")
+	if feed == "" || path == "" || identity == "" {
+		http.Error(w, "feed, path and X-Registry-On-Behalf-Of are required", http.StatusBadRequest)
+		return
+	}
+	status, body, err := s.publish(r.Context(), ForwardedPublish{
+		Feed: feed, Path: path, Method: r.Header.Get("X-Registry-Forwarded-Method"),
+		Body: r.Body, Identity: identity,
+		ProjectPath: r.Header.Get("X-Registry-On-Behalf-Of-Project"),
+		Peer:        peerOf(r),
+	})
+	if err != nil {
+		s.logger.Error("forwarded publish failed", "peer", peerOf(r), "feed", feed, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
 }
 
 // handleNudge is a hint that new events exist; the puller polls anyway, so

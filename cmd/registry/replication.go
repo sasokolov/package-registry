@@ -51,7 +51,9 @@ func setupReplication(ctx context.Context, cfg *config.Config, db *state.DB,
 		return nil, errors.New("replication requires a database (the journal lives in PostgreSQL)")
 	}
 
-	identity, err := db.EnsureSiteIdentity(ctx, cfg.Site.Name)
+	// Migrations run asynchronously so the read path does not depend on the
+	// database (invariant 7); replication does, so it waits here.
+	identity, err := awaitSiteIdentity(ctx, db, cfg.Site.Name, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +85,7 @@ func setupReplication(ctx context.Context, cfg *config.Config, db *state.DB,
 	}
 
 	applier := repl.NewApplier(repl.ApplierOptions{
-		DB: db, Site: cfg.Site.Name, Reindex: srv,
+		DB: db, Site: cfg.Site.Name, Reindex: srv, Project: srv.Publisher(),
 		Logger: logger, Audit: logger.With("log", "audit"),
 		Metrics: metrics, MaxSkew: rc.SkewOrDefault(),
 		Eager: srv.EagerFeed,
@@ -113,12 +115,45 @@ func setupReplication(ctx context.Context, cfg *config.Config, db *state.DB,
 		DB: db, Store: store, Site: cfg.Site.Name, UUID: identity.UUID,
 		Logger: logger, Metrics: metrics, Authorize: authorize,
 		Digests: srv.FeedDigests,
+		Publish: func(ctx context.Context, req repl.ForwardedPublish) (int, []byte, error) {
+			return srv.ApplyForwardedPublish(ctx, req.Feed, req.Path, req.Method,
+				req.Body, req.Identity, req.ProjectPath, req.Peer)
+		},
 	})
 
 	return &replication{
 		manager: manager, server: replServer,
 		listen: rc.InternalListen, tlsConf: serverTLSConfig(tlsConf), logger: logger,
 	}, nil
+}
+
+// awaitSiteIdentity retries until the schema exists (the migration loop is
+// still running) or the context ends.
+func awaitSiteIdentity(ctx context.Context, db *state.DB, site string, logger *slog.Logger) (state.SiteIdentity, error) {
+	backoff := 500 * time.Millisecond
+	for {
+		identity, err := db.EnsureSiteIdentity(ctx, site)
+		if err == nil {
+			return identity, nil
+		}
+		if ctx.Err() != nil {
+			return state.SiteIdentity{}, ctx.Err()
+		}
+		// A mismatched site name is a configuration error, not a transient
+		// one: fail immediately rather than retrying forever.
+		if strings.Contains(err.Error(), "mismatched site identity") {
+			return state.SiteIdentity{}, err
+		}
+		logger.Warn("waiting for the replication schema", "error", err, "retry_in", backoff)
+		select {
+		case <-ctx.Done():
+			return state.SiteIdentity{}, ctx.Err()
+		case <-time.After(backoff):
+		}
+		if backoff < 10*time.Second {
+			backoff *= 2
+		}
+	}
 }
 
 // Run starts the pull loops and the internal listener.
@@ -245,42 +280,19 @@ func serverAuthorizer(rc config.ReplicationConfig) (func(*http.Request) (string,
 	}
 }
 
-// forwardPublish proxies a publish request to a peer site's public API,
-// preserving the request body and adding an on-behalf-of identity header.
-func makeForwarder(cfg *config.Config, logger *slog.Logger) server.ForwardFunc {
-	targets := map[string]string{}
-	for _, p := range cfg.Replication.Peers {
-		targets[p.Name] = strings.TrimSuffix(p.URL, "/")
-	}
-	client := &http.Client{Timeout: 5 * time.Minute}
-
-	return func(ctx context.Context, site string, r *http.Request, identity api.Identity) (int, []byte, error) {
-		base, ok := targets[site]
-		if !ok {
-			return 0, nil, fmt.Errorf("no peer configured for home site %q", site)
-		}
-		// Peers expose their public API on the same host as the internal
-		// one in the common deployment; the publish path is unchanged.
-		target := base + r.URL.Path
-		req, err := http.NewRequestWithContext(ctx, r.Method, target, r.Body)
+// makeForwarder proxies a publish to the feed's home site over the
+// replication channel, where this site is an authenticated peer. The
+// client's own credential never leaves this site: the publisher travels as
+// an on-behalf-of identity that the home site re-authorizes.
+func makeForwarder(manager *repl.Manager, logger *slog.Logger) server.ForwardFunc {
+	return func(ctx context.Context, site, feed, path, method string,
+		body io.ReadCloser, identity api.Identity) (int, []byte, error) {
+		status, respBody, err := manager.ForwardPublish(ctx, site, feed, path, method,
+			body, identity.String(), identity.ProjectPath)
 		if err != nil {
 			return 0, nil, err
 		}
-		req.Header = r.Header.Clone()
-		// Forwarded requests carry the authenticated identity, never the
-		// client's credentials: authentication happened at this site.
-		req.Header.Del("Authorization")
-		req.Header.Set("X-Registry-On-Behalf-Of", identity.String())
-		if identity.ProjectPath != "" {
-			req.Header.Set("X-Registry-On-Behalf-Of-Project", identity.ProjectPath)
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			return 0, nil, err
-		}
-		defer func() { _ = resp.Body.Close() }()
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		logger.Debug("publish forwarded", "site", site, "status", resp.StatusCode)
-		return resp.StatusCode, body, nil
+		logger.Debug("publish forwarded", "site", site, "feed", feed, "status", status)
+		return status, respBody, nil
 	}
 }

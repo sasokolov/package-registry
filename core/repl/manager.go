@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"sync"
 	"time"
@@ -93,6 +94,18 @@ func (m *Manager) pollPeer(ctx context.Context, c *Client) {
 		m.logger.Warn("peer poll failed", "peer", c.Name(), "error", err)
 		_ = m.db.RecordCursorError(ctx, c.Name(), "*", err.Error())
 		return
+	}
+
+	// A reachable peer is recorded even when there is nothing to apply, so
+	// an idle healthy stream is distinguishable from an unreachable one.
+	origins := make([]string, 0, len(status.Heads))
+	for origin := range status.Heads {
+		if origin != m.site {
+			origins = append(origins, origin)
+		}
+	}
+	if err := m.db.MarkPeerPollOK(ctx, c.Name(), origins); err != nil {
+		m.logger.Warn("recording a successful poll failed", "peer", c.Name(), "error", err)
 	}
 
 	touched := map[string]bool{}
@@ -367,6 +380,18 @@ func (m *Manager) FetchManifest(ctx context.Context, feed api.Feed, path string)
 		return res.SHA256, res.Size, nil
 	}
 	return "", 0, lastErr
+}
+
+// ForwardPublish sends a write to the named home site over the replication
+// channel.
+func (m *Manager) ForwardPublish(ctx context.Context, site, feed, path, method string,
+	body io.Reader, identity, projectPath string) (int, []byte, error) {
+	for _, c := range m.clients {
+		if c.Name() == site {
+			return c.ForwardPublish(ctx, feed, path, method, body, identity, projectPath)
+		}
+	}
+	return 0, nil, fmt.Errorf("no peer configured for home site %q", site)
 }
 
 // NudgePeers tells every peer that new events exist (best effort).

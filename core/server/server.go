@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -29,7 +30,8 @@ import (
 // response. It is provided by the replication wiring; without it,
 // remotely-homed feeds answer 503 rather than accepting a write they cannot
 // own (docs/geo-replication.md).
-type ForwardFunc func(ctx context.Context, site string, r *http.Request, identity api.Identity) (status int, body []byte, err error)
+type ForwardFunc func(ctx context.Context, site, feed, path, method string,
+	body io.ReadCloser, identity api.Identity) (status int, body2 []byte, err error)
 
 // Options wires the server.
 type Options struct {
@@ -38,7 +40,6 @@ type Options struct {
 	DB      *state.DB // nil: no database (tokens/audit-to-db disabled)
 	Metrics *pipeline.Metrics
 	Manager *config.Manager
-	Forward ForwardFunc
 }
 
 // Server owns the feed router, rebuilt per config snapshot.
@@ -49,8 +50,10 @@ type Server struct {
 	db      *state.DB
 	metrics *pipeline.Metrics
 	manager *config.Manager
-	// forward proxies publishes to a feed's home site (write-affinity).
-	forward    ForwardFunc
+	// forward proxies publishes to a feed's home site (write-affinity). It
+	// is installed after construction because the replication manager needs
+	// the server, so the request path reads it atomically.
+	forward    atomic.Pointer[ForwardFunc]
 	pipe       *pipeline.Pipeline
 	publisher  *pipeline.Publisher
 	quarantine *quarantineCache
@@ -91,7 +94,6 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		db:      o.DB,
 		metrics: o.Metrics,
 		manager: o.Manager,
-		forward: o.Forward,
 		runCtx:  ctx,
 	}
 	cfg0 := o.Manager.Current()
@@ -177,6 +179,11 @@ func ValidateConfig(cfg *config.Config) error {
 	return errors.Join(errs...)
 }
 
+// SetForward installs the publish-forwarding function used by feeds homed
+// at another site. Without it those feeds answer 503 instead of accepting a
+// write they cannot own.
+func (s *Server) SetForward(fn ForwardFunc) { s.forward.Store(&fn) }
+
 // Publisher exposes the write path so the replication wiring can attach a
 // journal to it.
 func (s *Server) Publisher() *pipeline.Publisher { return s.publisher }
@@ -235,7 +242,12 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) buildRuntime(cfg *config.Config) (*runtime, error) {
 	var verifier *auth.TokenVerifier
 	if s.db != nil {
-		verifier = auth.NewTokenVerifier(auth.NewTokens(s.db).Lookup, cfg.Auth.TokenCacheTTL.Std())
+		tokens := auth.NewTokens(s.db)
+		verifier = auth.NewTokenVerifier(tokens.Lookup, cfg.Auth.TokenCacheTTL.Std())
+		// A revoked token must stop working within seconds, not within the
+		// cache TTL — whether it was revoked here or at another geo site.
+		go verifier.WatchRevocations(s.runCtx, tokens,
+			cfg.Auth.RevocationSweepOrDefault(), s.logger)
 	}
 	oidc := auth.NewOIDC(s.runCtx, cfg.Auth.OIDC, nil)
 	rt := &runtime{

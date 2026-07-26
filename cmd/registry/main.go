@@ -117,7 +117,6 @@ func serveCmd(args []string, logOut io.Writer) error {
 		DB:      db,
 		Metrics: metrics,
 		Manager: manager,
-		Forward: makeForwarder(cfg, logger),
 	})
 	if err != nil {
 		return err
@@ -129,6 +128,9 @@ func serveCmd(args []string, logOut io.Writer) error {
 		return err
 	}
 	if replication != nil {
+		// Feeds homed at another site forward their writes over the
+		// replication channel, where this site is an authenticated peer.
+		srv.SetForward(makeForwarder(replication.manager, logger))
 		go func() {
 			if err := replication.Run(ctx); err != nil {
 				logger.Error("replication stopped", "error", err)

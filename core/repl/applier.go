@@ -23,12 +23,21 @@ type Reindexer interface {
 	ReindexFeed(ctx context.Context, feedName string) error
 }
 
+// Projector mirrors a replicated coordinate into the blob store, which is
+// what the read path actually consults (and what keeps hosted content
+// servable while PostgreSQL is down, invariant 7).
+type Projector interface {
+	WriteReplicatedManifest(ctx context.Context, feed, path, sha256 string, size int64,
+		checksums, metadata map[string]string, originSite, publisher string) error
+}
+
 // Applier merges journal entries into local state.
 type Applier struct {
 	db      *state.DB
 	site    string
 	blobs   BlobFetcher
 	reindex Reindexer
+	project Projector
 	logger  *slog.Logger
 	audit   *slog.Logger
 	metrics *Metrics
@@ -43,6 +52,7 @@ type ApplierOptions struct {
 	Site    string
 	Blobs   BlobFetcher
 	Reindex Reindexer
+	Project Projector
 	Logger  *slog.Logger
 	Audit   *slog.Logger
 	Metrics *Metrics
@@ -55,7 +65,7 @@ type ApplierOptions struct {
 // NewApplier builds the applier.
 func NewApplier(o ApplierOptions) *Applier {
 	a := &Applier{
-		db: o.DB, site: o.Site, blobs: o.Blobs, reindex: o.Reindex,
+		db: o.DB, site: o.Site, blobs: o.Blobs, reindex: o.Reindex, project: o.Project,
 		logger: o.Logger, audit: o.Audit, metrics: o.Metrics,
 		maxSkew: o.MaxSkew, now: o.Now, eager: o.Eager,
 	}
@@ -256,8 +266,27 @@ func (a *Applier) applyManifestPut(ctx context.Context, tx pgxTx, peer string,
 			"winner_site", winnerSite, "loser_site", loserSite)
 	}
 
+	// The read path serves from the blob store, so a replicated coordinate
+	// is only visible once its projection exists.
+	if a.project != nil {
+		if err := a.project.WriteReplicatedManifest(ctx, p.Feed, p.Path, currentSHA(p, existingSHA, found),
+			p.Size, p.Checksums, p.Metadata, e.OriginSite, p.Publisher); err != nil {
+			a.logger.Error("writing the replicated manifest projection failed",
+				"feed", p.Feed, "path", p.Path, "error", err)
+		}
+	}
+
 	touched[p.Feed] = true
 	return nil
+}
+
+// currentSHA is the digest the coordinate now resolves to: the incoming one
+// unless rule K1 kept the smaller existing digest.
+func currentSHA(p ManifestPut, existingSHA string, found bool) string {
+	if found && existingSHA != "" && existingSHA < p.SHA256 {
+		return existingSHA
+	}
+	return p.SHA256
 }
 
 func short(sha string) string {

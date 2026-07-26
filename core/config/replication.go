@@ -46,8 +46,13 @@ type ReplAuthConfig struct {
 
 // PeerConfig declares one replication partner.
 type PeerConfig struct {
-	Name         string   `yaml:"name"`
-	URL          string   `yaml:"url"`
+	Name string `yaml:"name"`
+	// URL is the peer's internal replication API.
+	URL string `yaml:"url"`
+	// PublicURL is the peer's client-facing base URL, used to forward
+	// publishes of feeds homed at that site. Required when any feed sets
+	// publish_policy: forward:<this peer>.
+	PublicURL    string   `yaml:"public_url"`
 	PullInterval Duration `yaml:"pull_interval"`
 	// TokenFile is the credential presented to this peer (bearer mode).
 	TokenFile string `yaml:"token_file"`
@@ -111,6 +116,11 @@ func (r ReplicationConfig) Validate(siteName string) error {
 		seen[p.Name] = true
 		if err := validateHTTPURL(p.URL); err != nil {
 			errs = append(errs, fmt.Errorf("%s: url: %w", at, err))
+		}
+		if p.PublicURL != "" {
+			if err := validateHTTPURL(p.PublicURL); err != nil {
+				errs = append(errs, fmt.Errorf("%s: public_url: %w", at, err))
+			}
 		}
 		if p.PullInterval < 0 {
 			errs = append(errs, fmt.Errorf("%s: pull_interval must not be negative", at))
