@@ -23,7 +23,7 @@
 - [x] Скрипт `conformance/run.sh`: поднять compose, дождаться readiness,
       выполнить сценарии из `conformance/scenarios/*.sh`, свести отчёт,
       погасить compose. Ненулевой exit при любом провале.
-- [ ] Первый сценарий-смоук: `curl /healthz` изнутри compose-сети.
+- [x] Первый сценарий-смоук: `curl /healthz` изнутри compose-сети.
 - [ ] `golangci-lint` конфиг; CI-заготовка `.gitlab-ci.yml` со стадиями
       lint → test → conformance (docker-in-docker или shell-runner — оставить
       комментарий с двумя вариантами).
