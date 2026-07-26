@@ -1,0 +1,112 @@
+# Prometheus alert rules. Every rule below answers a question an operator
+# would otherwise have to ask by hand; the geo ones exist because silent
+# divergence between sites is the failure mode this design fears most
+# (invariant 16).
+groups:
+  - name: registry
+    rules:
+      - alert: RegistryUpstreamBreakerOpen
+        expr: registry_upstream_breaker_state > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "Upstream {{ $labels.feed }} circuit breaker is open"
+          description: >
+            The feed is serving from cache and stale metadata. Builds keep
+            working; new versions do not appear. Check the upstream.
+
+      - alert: RegistryCacheHitRatioLow
+        expr: |
+          sum(rate(registry_requests_total{source="upstream"}[15m])) by (feed)
+            /
+          clamp_min(sum(rate(registry_requests_total[15m])) by (feed), 0.001)
+            > 0.5
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "Feed {{ $labels.feed }} misses cache more than half the time"
+          description: >
+            Either the TTL is too short for this feed's traffic, or clients
+            are requesting coordinates that do not exist upstream.
+
+      - alert: RegistryProjectionDivergent
+        expr: registry_projection_divergent > 0
+        for: 15m
+        labels: {severity: critical}
+        annotations:
+          summary: "Hosted manifest projection disagrees with the database"
+          description: >
+            The read path serves from the blob-store projection. The repair
+            loop rewrites divergent objects every pass; a value that stays
+            above zero means repair itself is failing — check object storage
+            permissions.
+
+  - name: registry-geo
+    rules:
+      - alert: RegistryReplicationStalled
+        expr: registry_repl_lag > 0 and changes(registry_repl_applied_total[15m]) == 0
+        for: 15m
+        labels: {severity: critical}
+        annotations:
+          summary: "Replication from {{ $labels.peer }} ({{ $labels.origin }}) has stalled"
+          description: >
+            This site is behind and nothing has been applied for 15 minutes.
+            Check `registry repl status`; a peer that is merely slow shows a
+            falling lag.
+
+      - alert: RegistryReplicationPeerUnreachable
+        expr: registry_repl_cursor_age_seconds > 300
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "Peer {{ $labels.peer }} has not been reached for 5 minutes"
+          description: >
+            Reads and local publishes keep working; cross-site convergence
+            is paused. Check connectivity and peer credentials.
+
+      - alert: RegistryReplicationRPOBreached
+        expr: registry_repl_durable_lag > 100
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "Durability lag from {{ $labels.peer }} exceeds 100 events"
+          description: >
+            Manifests have been applied whose blobs are not here yet. If
+            this site had to take over now, that many coordinates would be
+            unservable locally. Run `registry repl backfill`.
+
+      - alert: RegistryPublishConflict
+        expr: increase(registry_repl_publish_conflicts_total[10m]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "Cross-site publish conflict detected (rule K1)"
+          description: >
+            Two sites published different bytes at one coordinate. The
+            coordinate is quarantined and is NOT being served. Resolve it
+            with `registry repl conflicts` and `registry repl resolve`.
+            See docs/runbooks.md.
+
+      - alert: RegistryReplicationParkedEvents
+        expr: registry_repl_parked_events > 0
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $value }} replication events are parked"
+          description: >
+            Events that could not be applied (unknown kind from a newer
+            peer, missing blob, clock skew). They retry on every poll.
+            A count that does not fall needs `registry repl retry-parked`
+            and the site log.
+
+      - alert: RegistryFeedDigestDivergence
+        expr: |
+          count by (feed) (count by (feed, __value__) (registry_repl_feed_digest)) > 1
+        for: 30m
+        labels: {severity: critical}
+        annotations:
+          summary: "Sites disagree about the contents of feed {{ $labels.feed }}"
+          description: >
+            The per-feed manifest digest differs between sites for longer
+            than any normal replication lag. This is the silent-divergence
+            alarm: compare `registry repl status` on each site and check
+            for parked events or an open conflict.

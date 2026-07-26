@@ -51,6 +51,27 @@ data:
     feeds:
       {{- toYaml .Values.feeds | nindent 6 }}
 
+    {{- if .Values.replication.enabled }}
+    replication:
+      enabled: true
+      internal_listen: ":{{ .Values.replication.internalPort }}"
+      topology: mesh
+      nudge: {{ .Values.replication.nudge }}
+      journal_retention: {{ .Values.replication.journalRetention }}
+      max_clock_skew: {{ .Values.replication.maxClockSkew }}
+      auth:
+        type: {{ .Values.replication.auth.type }}
+        {{- if eq .Values.replication.auth.type "mtls" }}
+        ca_file: /etc/registry/replication/ca.crt
+        cert_file: /etc/registry/replication/tls.crt
+        key_file: /etc/registry/replication/tls.key
+        {{- else }}
+        token_file: /etc/registry/replication/token
+        {{- end }}
+      peers:
+        {{- toYaml .Values.replication.peers | nindent 8 }}
+    {{- end }}
+
     {{- with .Values.extraConfig }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

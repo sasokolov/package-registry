@@ -49,6 +49,10 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+            {{- if .Values.replication.enabled }}
+            - name: replication
+              containerPort: {{ .Values.replication.internalPort }}
+            {{- end }}
           env:
             {{- if eq .Values.storage.type "s3" }}
             - name: REGISTRY_S3_ACCESS_KEY
@@ -95,6 +99,11 @@ spec:
             - name: config
               mountPath: /etc/registry
               readOnly: true
+            {{- if .Values.replication.enabled }}
+            - name: replication-auth
+              mountPath: /etc/registry/replication
+              readOnly: true
+            {{- end }}
             {{- if and (eq .Values.storage.type "fs") .Values.storage.fs.persistence.enabled }}
             - name: data
               mountPath: {{ .Values.storage.fs.path }}
@@ -104,6 +113,11 @@ spec:
         - name: config
           configMap:
             name: {{ include "registry.fullname" . }}
+        {{- if .Values.replication.enabled }}
+        - name: replication-auth
+          secret:
+            secretName: {{ .Values.replication.auth.existingSecret }}
+        {{- end }}
         {{- if and (eq .Values.storage.type "fs") .Values.storage.fs.persistence.enabled }}
         - name: data
           persistentVolumeClaim:

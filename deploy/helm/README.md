@@ -170,12 +170,43 @@ job:
     - dotnet restore
 ```
 
+## Гео-репликация
+
+Включается секцией `replication` в values (см. docs/geo-replication.md).
+Внутренний API репликации слушает отдельный порт и закрывается
+NetworkPolicy: чарт **не отрендерится**, если при `replication.enabled`
+не заданы `peerCIDRs` или `peerNamespaceSelector` — открытый наружу
+listener репликации означал бы право писать в этот сайт.
+
+```bash
+kubectl -n registry create secret generic registry-replication \
+  --from-file=ca.crt --from-file=tls.crt --from-file=tls.key
+
+helm upgrade registry deploy/helm/registry -n registry \
+  --set site.name=eu-1 \
+  --set replication.enabled=true \
+  --set 'replication.peerCIDRs={10.20.0.0/16}' \
+  --set-json 'replication.peers=[{"name":"us-1","url":"https://registry-us.example.com:8443","public_url":"https://registry-us.example.com","pull_interval":"10s"}]'
+```
+
+Набор пиров перечитывается на лету; смена адреса listener'а или
+auth-материала требует рестарта (процесс пишет об этом в лог).
+
+Каждый сайт должен иметь **собственные** PostgreSQL и S3: реплицируются
+факты через журнал, а не базы данных.
+
 ## Наблюдаемость
 
 `serviceMonitor.enabled=true` подключает Prometheus Operator. Ключевые
 метрики: `registry_requests_total{feed,source}` (RPS и доля попаданий в
 кэш), `registry_upstream_request_duration_seconds`,
-`registry_upstream_breaker_state`, `registry_site_info`.
+`registry_upstream_breaker_state`, `registry_site_info`; для гео —
+`registry_repl_lag`, `registry_repl_durable_lag` (RPO),
+`registry_repl_publish_conflicts_total`, `registry_repl_feed_digest`.
+
+Готовые артефакты: `deploy/observability/dashboard.json` (Grafana) и
+`deploy/observability/alerts.yaml` (Prometheus rules). Дежурные сценарии —
+`docs/runbooks.md`.
 
 Нагрузочный baseline — `docs/perf.md` (`make load-test`).
 

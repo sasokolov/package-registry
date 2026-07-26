@@ -173,6 +173,8 @@ make build          # go build ./...
 make test           # unit-тесты
 make lint           # golangci-lint run
 make conformance    # docker compose: герметичный прогон с fake-upstream
+make conformance-chaos # два реплики + инъекция отказов
+make conformance-geo   # три гео-сайта: репликация, конфликты, партиция
 make conformance-live  # то же против реальных апстримов (ручной запуск)
 make conformance-geo   # два полных сайта: федерация, конфликты, партиция (Фаза 7)
 make dev            # локальный запуск: compose с minio+postgres, registry на хосте

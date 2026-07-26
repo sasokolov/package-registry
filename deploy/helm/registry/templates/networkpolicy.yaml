@@ -1,0 +1,39 @@
+{{- if .Values.replication.enabled }}
+{{/* The replication API carries write authority between sites, so it gets
+     its own listener AND its own network policy: only the declared peer
+     CIDRs may reach it, while the public API stays open to everyone the
+     ingress admits (invariant 14). */}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "registry.fullname" . }}-replication
+  labels:
+    {{- include "registry.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "registry.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: ["Ingress"]
+  ingress:
+    # Public API and metrics: unrestricted (the ingress controller fronts it).
+    - ports:
+        - port: http
+          protocol: TCP
+    # Replication API: only the declared peers.
+    - ports:
+        - port: replication
+          protocol: TCP
+      from:
+        {{- range .Values.replication.peerCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+        {{- with .Values.replication.peerNamespaceSelector }}
+        - namespaceSelector:
+            {{- toYaml . | nindent 12 }}
+        {{- end }}
+{{- if not (or .Values.replication.peerCIDRs .Values.replication.peerNamespaceSelector) }}
+{{- fail "replication.enabled requires replication.peerCIDRs or replication.peerNamespaceSelector: an unrestricted replication listener would let anyone write to this site" }}
+{{- end }}
+{{- end }}
