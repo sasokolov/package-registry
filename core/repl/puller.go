@@ -153,20 +153,10 @@ func (c *Client) Snapshot(ctx context.Context) (SnapshotResponse, error) {
 
 // FetchBlob streams a blob from the peer into the local store, verifying the
 // digest while writing: the key IS the checksum, so a corrupted or hostile
-// transfer cannot be stored (invariant 5).
+// transfer cannot be stored (invariant 5). An interrupted transfer is
+// resumed with a Range request rather than restarted, which matters for
+// large artifacts over a WAN.
 func (c *Client) FetchBlob(ctx context.Context, store api.BlobStore, digest string, size int64) error {
-	resp, err := c.do(ctx, "/blobs/sha256/"+digest, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("peer %s does not have blob %s: %w", c.peer.Name, short(digest), api.ErrNotFound)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("peer %s blob fetch returned %d", c.peer.Name, resp.StatusCode)
-	}
-
 	// Spool while hashing so nothing enters the store unverified.
 	tmp, err := os.CreateTemp("", "registry-peer-blob-*")
 	if err != nil {
@@ -178,10 +168,27 @@ func (c *Client) FetchBlob(ctx context.Context, store api.BlobStore, digest stri
 	}()
 
 	h := sha256.New()
-	written, err := io.Copy(io.MultiWriter(tmp, h), resp.Body)
-	if err != nil {
-		return fmt.Errorf("read peer blob: %w", err)
+	var written int64
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		n, err := c.streamBlob(ctx, digest, written, io.MultiWriter(tmp, h))
+		written += n
+		if err == nil {
+			lastErr = nil
+			break
+		}
+		lastErr = err
+		if errors.Is(err, api.ErrNotFound) || n == 0 {
+			// Nothing was transferred: retrying the same range is futile.
+			break
+		}
+		c.logger.Debug("resuming interrupted peer blob transfer",
+			"peer", c.peer.Name, "digest", short(digest), "offset", written, "error", err)
 	}
+	if lastErr != nil {
+		return lastErr
+	}
+
 	got := hex.EncodeToString(h.Sum(nil))
 	if got != digest {
 		return fmt.Errorf("peer %s served blob %s but the bytes hash to %s: %w",
@@ -199,6 +206,46 @@ func (c *Client) FetchBlob(ctx context.Context, store api.BlobStore, digest stri
 		return fmt.Errorf("store peer blob: %w", err)
 	}
 	return nil
+}
+
+// streamBlob copies one (possibly partial) transfer into dst, starting at
+// offset. It returns how many bytes it wrote, so the caller can resume.
+func (c *Client) streamBlob(ctx context.Context, digest string, offset int64, dst io.Writer) (int64, error) {
+	target := c.peer.URL + InternalPrefix + "/blobs/sha256/" + digest
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return 0, fmt.Errorf("build blob request: %w", err)
+	}
+	c.authz(req)
+	if offset > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("peer %s blob transfer: %w", c.peer.Name, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		return 0, fmt.Errorf("peer %s does not have blob %s: %w",
+			c.peer.Name, short(digest), api.ErrNotFound)
+	case offset > 0 && resp.StatusCode == http.StatusOK:
+		// The peer ignored the range; restarting from zero would corrupt
+		// the hash we already fed, so fail and let the caller start over.
+		return 0, fmt.Errorf("peer %s does not support resume for blob %s",
+			c.peer.Name, short(digest))
+	case offset > 0 && resp.StatusCode != http.StatusPartialContent:
+		return 0, fmt.Errorf("peer %s resume returned %d", c.peer.Name, resp.StatusCode)
+	case offset == 0 && resp.StatusCode != http.StatusOK:
+		return 0, fmt.Errorf("peer %s blob fetch returned %d", c.peer.Name, resp.StatusCode)
+	}
+
+	n, err := io.Copy(dst, resp.Body)
+	if err != nil {
+		return n, fmt.Errorf("read peer blob: %w", err)
+	}
+	return n, nil
 }
 
 // Manifest asks the peer for one hosted coordinate.
@@ -269,6 +316,14 @@ func (c *Client) Nudge(ctx context.Context) {
 		return
 	}
 	_ = resp.Body.Close()
+}
+
+// SameEndpoint reports whether two clients address the same peer the same
+// way; an unchanged peer keeps its pinned site UUID across config reloads.
+func (c *Client) SameEndpoint(other *Client) bool {
+	return c.peer.Name == other.peer.Name &&
+		c.peer.URL == other.peer.URL &&
+		c.peer.PullInterval == other.peer.PullInterval
 }
 
 // Name is the peer's configured name.

@@ -41,7 +41,7 @@ type replication struct {
 // config does not enable it.
 func setupReplication(ctx context.Context, cfg *config.Config, db *state.DB,
 	store api.BlobStore, srv *server.Server, promReg *prometheus.Registry,
-	logger *slog.Logger) (*replication, error) {
+	logger *slog.Logger, subscribe func(func(*config.Config))) (*replication, error) {
 
 	rc := cfg.Replication
 	if !rc.Enabled {
@@ -71,17 +71,9 @@ func setupReplication(ctx context.Context, cfg *config.Config, db *state.DB,
 		Timeout:   60 * time.Second,
 		Transport: &http.Transport{TLSClientConfig: tlsConf},
 	}
-	clients := make([]*repl.Client, 0, len(rc.Peers))
-	for _, p := range rc.Peers {
-		authz, err := peerAuthorizer(rc, p)
-		if err != nil {
-			return nil, err
-		}
-		clients = append(clients, repl.NewClient(repl.Peer{
-			Name:         p.Name,
-			URL:          strings.TrimSuffix(p.URL, "/"),
-			PullInterval: p.PullInterval.Std(),
-		}, httpClient, authz, logger))
+	clients, err := peerClients(rc, httpClient, logger)
+	if err != nil {
+		return nil, err
 	}
 
 	applier := repl.NewApplier(repl.ApplierOptions{
@@ -93,7 +85,7 @@ func setupReplication(ctx context.Context, cfg *config.Config, db *state.DB,
 	manager := repl.NewManager(repl.ManagerOptions{
 		DB: db, Store: store, Site: cfg.Site.Name, Clients: clients,
 		Applier: applier, Logger: logger, Metrics: metrics,
-		Digests: srv.FeedDigests,
+		Digests: srv.FeedDigests, Retention: rc.RetentionOrDefault(),
 	})
 	applier.SetBlobs(manager)
 
@@ -121,10 +113,50 @@ func setupReplication(ctx context.Context, cfg *config.Config, db *state.DB,
 		},
 	})
 
+	// The peer set is declarative configuration and is hot-reloaded like
+	// the rest of it (invariant 8). Auth material and the listener address
+	// are startup-only; a change there is reported, not silently ignored.
+	manager2 := manager
+	subscribe(func(next *config.Config) {
+		nrc := next.Replication
+		if !nrc.Enabled {
+			logger.Warn("replication cannot be disabled by reload; restart the process")
+			return
+		}
+		if nrc.InternalListen != rc.InternalListen || nrc.Auth != rc.Auth {
+			logger.Warn("replication listener and auth changes need a restart",
+				"listen", nrc.InternalListen, "auth_type", nrc.Auth.Type)
+		}
+		updated, err := peerClients(nrc, httpClient, logger)
+		if err != nil {
+			logger.Error("keeping the previous peer set: new one is invalid", "error", err)
+			return
+		}
+		manager2.SetPeers(ctx, updated)
+		logger.Info("replication peer set reloaded", "peers", len(updated))
+	})
+
 	return &replication{
 		manager: manager, server: replServer,
 		listen: rc.InternalListen, tlsConf: serverTLSConfig(tlsConf), logger: logger,
 	}, nil
+}
+
+// peerClients builds one client per configured peer.
+func peerClients(rc config.ReplicationConfig, httpClient *http.Client, logger *slog.Logger) ([]*repl.Client, error) {
+	clients := make([]*repl.Client, 0, len(rc.Peers))
+	for _, p := range rc.Peers {
+		authz, err := peerAuthorizer(rc, p)
+		if err != nil {
+			return nil, err
+		}
+		clients = append(clients, repl.NewClient(repl.Peer{
+			Name:         p.Name,
+			URL:          strings.TrimSuffix(p.URL, "/"),
+			PullInterval: p.PullInterval.Std(),
+		}, httpClient, authz, logger))
+	}
+	return clients, nil
 }
 
 // awaitSiteIdentity retries until the schema exists (the migration loop is

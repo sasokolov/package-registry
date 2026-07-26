@@ -417,6 +417,69 @@ func (db *DB) PruneJournal(ctx context.Context, origin string, below int64) (int
 	return tag.RowsAffected(), nil
 }
 
+// TryLease acquires a short-lived exclusive lease on a key using a
+// try-lock, so exactly one replica of a site runs a job at a time. Unlike
+// WithLock it never blocks: a replica that loses the race skips this round
+// and tries again on the next tick.
+func (db *DB) TryLease(ctx context.Context, key string, fn func(ctx context.Context) error) (ran bool, err error) {
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return false, classify(fmt.Errorf("lease %q: acquire conn: %w", key, err))
+	}
+	defer conn.Release()
+
+	id := LockID(key)
+	var got bool
+	if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", id).Scan(&got); err != nil {
+		return false, classify(fmt.Errorf("lease %q: %w", key, err))
+	}
+	if !got {
+		return false, nil
+	}
+	defer func() {
+		unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if _, uerr := conn.Exec(unlockCtx, "SELECT pg_advisory_unlock($1)", id); uerr != nil {
+			db.logger.Warn("lease unlock failed; connection will be discarded", "key", key, "error", uerr)
+			conn.Conn().Close(unlockCtx) //nolint:errcheck // closing forces the server to drop the lock
+		}
+	}()
+	return true, fn(ctx)
+}
+
+// MinCursorAcrossPeers reports how far every peer has acknowledged an
+// origin's journal: the safe watermark for pruning it. ok is false when a
+// peer has no cursor yet (nothing may be pruned then).
+func (db *DB) MinCursorAcrossPeers(ctx context.Context, origin string, peers []string) (watermark int64, ok bool, err error) {
+	if len(peers) == 0 {
+		return 0, false, nil
+	}
+	var minSeq *int64
+	var counted int
+	err = db.pool.QueryRow(ctx, `
+		SELECT MIN(durable_seq), count(*)
+		  FROM repl_cursors
+		 WHERE origin_site = $1 AND peer = ANY($2)`, origin, peers).Scan(&minSeq, &counted)
+	if err != nil {
+		return 0, false, classify(fmt.Errorf("read peer watermarks: %w", err))
+	}
+	if minSeq == nil || counted < len(peers) {
+		// A peer we have never heard from could still need everything.
+		return 0, false, nil
+	}
+	return *minSeq, true, nil
+}
+
+// PeerAckWatermark reports how far a peer has told us it applied OUR
+// journal, which is what lets us prune it.
+func (db *DB) PeerAckWatermark(ctx context.Context, peer, origin string) (int64, error) {
+	c, err := db.GetCursor(ctx, peer, origin)
+	if err != nil {
+		return 0, err
+	}
+	return c.DurableSeq, nil
+}
+
 // Begin starts a transaction (used by the applier to make apply+cursor
 // advance atomic).
 func (db *DB) Begin(ctx context.Context) (pgx.Tx, error) {

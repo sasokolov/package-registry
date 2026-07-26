@@ -50,6 +50,15 @@ type SiteConfig struct {
 	ExternalURL string `yaml:"external_url"`
 }
 
+// ProjectionRepairOrDefault is how often the hosted-manifest projection is
+// compared with the database.
+func (s ServerConfig) ProjectionRepairOrDefault() time.Duration {
+	if s.ProjectionRepair > 0 {
+		return s.ProjectionRepair.Std()
+	}
+	return 5 * time.Minute
+}
+
 // ServerConfig configures the HTTP listener.
 type ServerConfig struct {
 	// Listen is the address to bind, e.g. ":8080". Default ":8080".
@@ -59,6 +68,9 @@ type ServerConfig struct {
 	// ReloadInterval is how often the config file is re-read in addition to
 	// SIGHUP. 0 disables interval reloading. Default 30s.
 	ReloadInterval Duration `yaml:"reload_interval"`
+	// ProjectionRepair is how often the blob-store projection of hosted
+	// manifests is compared with the database and repaired. Default 5m.
+	ProjectionRepair Duration `yaml:"projection_repair"`
 }
 
 // DatabaseConfig configures PostgreSQL. An empty DSN disables the database
@@ -116,12 +128,48 @@ type FSConfig struct {
 
 // S3Config configures S3-compatible blob storage.
 type S3Config struct {
-	Endpoint  string `yaml:"endpoint"`
-	Bucket    string `yaml:"bucket"`
-	Region    string `yaml:"region"`
-	AccessKey string `yaml:"access_key"`
-	SecretKey string `yaml:"secret_key"`
-	UseSSL    bool   `yaml:"use_ssl"`
+	Endpoint string `yaml:"endpoint"`
+	Bucket   string `yaml:"bucket"`
+	Region   string `yaml:"region"`
+	// AccessKey and SecretKey may be given inline or, preferably, read from
+	// files mounted from a Secret (invariant 12: secrets stay out of the
+	// config document and out of logs).
+	AccessKey     string `yaml:"access_key"`
+	AccessKeyFile string `yaml:"access_key_file"`
+	SecretKey     string `yaml:"secret_key"`
+	SecretKeyFile string `yaml:"secret_key_file"`
+	UseSSL        bool   `yaml:"use_ssl"`
+}
+
+// resolveSecrets loads any *_file credential into its inline field. It runs
+// during Load, so the rest of the process never has to care which form was
+// configured.
+func (s *S3Config) resolveSecrets() error {
+	for _, ref := range []struct {
+		name  string
+		file  string
+		value *string
+	}{
+		{"access_key_file", s.AccessKeyFile, &s.AccessKey},
+		{"secret_key_file", s.SecretKeyFile, &s.SecretKey},
+	} {
+		if ref.file == "" {
+			continue
+		}
+		if *ref.value != "" {
+			return fmt.Errorf("storage.s3: %s and its inline value are both set", ref.name)
+		}
+		raw, err := os.ReadFile(ref.file)
+		if err != nil {
+			return fmt.Errorf("storage.s3.%s: %w", ref.name, err)
+		}
+		secret := strings.TrimSpace(string(raw))
+		if secret == "" {
+			return fmt.Errorf("storage.s3.%s: file %s is empty", ref.name, ref.file)
+		}
+		*ref.value = secret
+	}
+	return nil
 }
 
 // FeedConfig declares a single feed.
@@ -232,6 +280,11 @@ func Parse(r io.Reader) (*Config, error) {
 		return nil, fmt.Errorf("parse yaml: %w", err)
 	}
 	cfg.applyDefaults()
+	// Credentials referenced by file are loaded before validation so the
+	// rest of the process sees one uniform shape.
+	if err := cfg.Storage.S3.resolveSecrets(); err != nil {
+		return nil, err
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}

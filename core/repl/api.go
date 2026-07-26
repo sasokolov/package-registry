@@ -232,6 +232,34 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = rc.Close() }()
 	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Accept-Ranges", "bytes")
+
+	// Resume support: a peer that lost a large transfer asks for the tail
+	// instead of starting over. Only the simple "bytes=<start>-" form is
+	// needed (and offered) here.
+	if start, ok := parseResumeOffset(r.Header.Get("Range")); ok && start > 0 {
+		if info.Size > 0 && start >= info.Size {
+			w.Header().Set("Content-Range", "bytes */"+strconv.FormatInt(info.Size, 10))
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		if _, err := io.CopyN(io.Discard, rc, start); err != nil {
+			s.fail(w, fmt.Errorf("seek to resume offset: %w", err))
+			return
+		}
+		if info.Size > 0 {
+			w.Header().Set("Content-Range",
+				fmt.Sprintf("bytes %d-%d/%d", start, info.Size-1, info.Size))
+			w.Header().Set("Content-Length", strconv.FormatInt(info.Size-start, 10))
+		}
+		w.WriteHeader(http.StatusPartialContent)
+		if _, err := io.Copy(w, rc); err != nil {
+			s.logger.Debug("peer blob resume interrupted",
+				"peer", peerOf(r), "digest", short(digest), "error", err)
+		}
+		return
+	}
+
 	if info.Size > 0 {
 		w.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
 	}
@@ -271,6 +299,26 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.Error(w, "not found", http.StatusNotFound)
+}
+
+// parseResumeOffset reads the start of a "bytes=<start>-" range header.
+func parseResumeOffset(header string) (int64, bool) {
+	const prefix = "bytes="
+	if !strings.HasPrefix(header, prefix) {
+		return 0, false
+	}
+	spec := strings.TrimPrefix(header, prefix)
+	start, rest, ok := strings.Cut(spec, "-")
+	if !ok || rest != "" {
+		// Anything but an open-ended range is out of scope for peer
+		// transfers; serving the whole blob is always correct.
+		return 0, false
+	}
+	n, err := strconv.ParseInt(start, 10, 64)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // handleSnapshot returns the full replicable state for bootstrapping.

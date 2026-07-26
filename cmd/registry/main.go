@@ -123,7 +123,16 @@ func serveCmd(args []string, logOut io.Writer) error {
 	}
 	go manager.Run(ctx)
 
-	replication, err := setupReplication(ctx, cfg, db, store, srv, promReg, logger)
+	// The blob-store projection of hosted manifests is what the read path
+	// consults; a repair loop keeps it honest after a crash or an S3
+	// outage and exposes any divergence as a metric.
+	if db != nil {
+		repair := pipeline.NewProjectionRepair(srv.Publisher(),
+			cfg.Server.ProjectionRepairOrDefault(), pipeline.NewRepairMetrics(promReg))
+		go repair.Run(ctx)
+	}
+
+	replication, err := setupReplication(ctx, cfg, db, store, srv, promReg, logger, manager.Subscribe)
 	if err != nil {
 		return err
 	}

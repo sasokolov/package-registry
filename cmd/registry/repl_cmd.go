@@ -14,6 +14,9 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"net/http"
+
+	"github.com/sasokolov/package-registry/core/api"
 	"github.com/sasokolov/package-registry/core/config"
 	"github.com/sasokolov/package-registry/core/repl"
 	"github.com/sasokolov/package-registry/core/state"
@@ -23,7 +26,8 @@ import (
 // geo replication (docs/geo-replication.md).
 func replCmd(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: registry repl status|conflicts|resolve|retry-parked [-config <path>]")
+		return errors.New(
+			"usage: registry repl status|peers|conflicts|resolve|retry-parked|resync|backfill [-config <path>]")
 	}
 	sub := args[0]
 	flags := flag.NewFlagSet("registry repl "+sub, flag.ContinueOnError)
@@ -32,6 +36,8 @@ func replCmd(args []string, out io.Writer) error {
 	path := flags.String("path", "", "coordinate path (resolve)")
 	keep := flags.String("keep", "", "sha256 to keep (resolve)")
 	openOnly := flags.Bool("open", true, "list only unresolved conflicts")
+	peer := flags.String("peer", "", "peer name (resync, backfill)")
+	dryRun := flags.Bool("dry-run", true, "report what backfill would fetch without fetching (backfill)")
 	asJSON := flags.Bool("json", false, "machine-readable output with full digests (conflicts)")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
@@ -63,6 +69,12 @@ func replCmd(args []string, out io.Writer) error {
 		return replResolve(ctx, db, cfg, out, *feed, *path, *keep)
 	case "retry-parked":
 		return replRetryParked(ctx, db, out)
+	case "peers":
+		return replPeers(ctx, db, cfg, out)
+	case "resync":
+		return replResync(ctx, db, *peer, out)
+	case "backfill":
+		return replBackfill(ctx, db, cfg, *peer, *dryRun, out)
 	default:
 		return fmt.Errorf("unknown repl subcommand %q", sub)
 	}
@@ -249,4 +261,174 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// replPeers shows the configured mesh and how each stream is doing, which
+// is the first thing an operator looks at when convergence stalls.
+func replPeers(ctx context.Context, db *state.DB, cfg *config.Config, out io.Writer) error {
+	if !cfg.Replication.Enabled {
+		_, _ = fmt.Fprintln(out, "replication is disabled in this config")
+		return nil
+	}
+	cursors, err := db.ListCursors(ctx)
+	if err != nil {
+		return err
+	}
+	byPeer := map[string][]state.Cursor{}
+	for _, c := range cursors {
+		byPeer[c.Peer] = append(byPeer[c.Peer], c)
+	}
+
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "PEER\tURL\tINTERVAL\tSTREAMS\tLAST OK\tSTATE")
+	for _, p := range cfg.Replication.Peers {
+		streams := byPeer[p.Name]
+		lastOK := "never"
+		state := "unreachable"
+		for _, c := range streams {
+			if c.LastOKAt.IsZero() {
+				continue
+			}
+			if lastOK == "never" || time.Since(c.LastOKAt) < 0 {
+				lastOK = time.Since(c.LastOKAt).Truncate(time.Second).String() + " ago"
+			}
+			if c.LastError == "" {
+				state = "ok"
+			} else {
+				state = "degraded"
+			}
+		}
+		if len(streams) == 0 {
+			state = "no streams yet"
+		}
+		interval := p.PullInterval.Std()
+		if interval == 0 {
+			interval = 10 * time.Second
+		}
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\n",
+			p.Name, p.URL, interval, len(streams), lastOK, state)
+	}
+	return w.Flush()
+}
+
+// replResync rewinds a peer's cursors so the next poll re-reads the whole
+// retained journal. Apply is idempotent, so this is safe to run at any
+// time; it is the fix for "this site missed something".
+func replResync(ctx context.Context, db *state.DB, peer string, out io.Writer) error {
+	if peer == "" {
+		return errors.New("resync needs -peer <name>")
+	}
+	cursors, err := db.ListCursors(ctx)
+	if err != nil {
+		return err
+	}
+	var reset int
+	for _, c := range cursors {
+		if c.Peer != peer {
+			continue
+		}
+		tx, err := db.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		err = state.SetCursorTx(ctx, tx, state.Cursor{Peer: c.Peer, Origin: c.Origin})
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		reset++
+	}
+	if reset == 0 {
+		return fmt.Errorf("no cursors found for peer %q", peer)
+	}
+	_, _ = fmt.Fprintf(out,
+		"reset %d cursor(s) for peer %s; the next poll replays the retained journal\n", reset, peer)
+	return nil
+}
+
+// replBackfill reports (and optionally repairs) hosted coordinates whose
+// blob is missing locally — the "manifest here, bytes elsewhere" state that
+// lazy feeds live in until something asks for them.
+func replBackfill(ctx context.Context, db *state.DB, cfg *config.Config,
+	peer string, dryRun bool, out io.Writer) error {
+	store, err := api.NewStorage(cfg.Storage.Type, cfg.Storage.Options())
+	if err != nil {
+		return err
+	}
+	rows, err := db.ListHosted(ctx, "", "")
+	if err != nil {
+		return err
+	}
+
+	var missing []state.HostedRow
+	for _, r := range rows {
+		if _, err := store.Stat(ctx, "blobs/sha256/"+r.SHA256); err != nil {
+			missing = append(missing, r)
+		}
+	}
+	if len(missing) == 0 {
+		_, _ = fmt.Fprintln(out, "every hosted coordinate has its blob locally")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "FEED\tPATH\tSHA256\tSIZE")
+	for _, r := range missing {
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%d\n", r.Feed, r.Path, truncate(r.SHA256, 12), r.Size)
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	if dryRun {
+		_, _ = fmt.Fprintf(out,
+			"\n%d blob(s) missing. Re-run with -dry-run=false to fetch them from peers.\n", len(missing))
+		return nil
+	}
+
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	httpClient := &http.Client{Timeout: 10 * time.Minute}
+	clients, err := peerClients(cfg.Replication, httpClient, logger)
+	if err != nil {
+		return err
+	}
+	if peer != "" {
+		filtered := clients[:0]
+		for _, c := range clients {
+			if c.Name() == peer {
+				filtered = append(filtered, c)
+			}
+		}
+		clients = filtered
+		if len(clients) == 0 {
+			return fmt.Errorf("no peer named %q is configured", peer)
+		}
+	}
+
+	var fetched, failed int
+	for _, r := range missing {
+		var ok bool
+		for _, c := range clients {
+			if err := c.FetchBlob(ctx, store, r.SHA256, r.Size); err != nil {
+				logger.Debug("backfill attempt failed",
+					"peer", c.Name(), "sha256", r.SHA256[:12], "error", err)
+				continue
+			}
+			ok = true
+			break
+		}
+		if ok {
+			fetched++
+		} else {
+			failed++
+			_, _ = fmt.Fprintf(out, "no peer has %s (%s %s)\n", truncate(r.SHA256, 12), r.Feed, r.Path)
+		}
+	}
+	_, _ = fmt.Fprintf(out, "\nbackfill done: %d fetched, %d still missing\n", fetched, failed)
+	if failed > 0 {
+		return fmt.Errorf("%d blob(s) could not be fetched from any peer", failed)
+	}
+	return nil
 }

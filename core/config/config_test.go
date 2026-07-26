@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -318,5 +320,56 @@ func TestLoad(t *testing.T) {
 
 	if _, err := Load("testdata/does-not-exist.yaml"); err == nil {
 		t.Error("Load of missing file succeeded, want error")
+	}
+}
+
+func TestS3CredentialsFromFiles(t *testing.T) {
+	dir := t.TempDir()
+	access := filepath.Join(dir, "access")
+	secret := filepath.Join(dir, "secret")
+	if err := os.WriteFile(access, []byte("AKIA-from-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secret, []byte(" s3cr3t \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(dir, "config.yaml")
+	body := `
+site: {name: eu-1}
+storage:
+  type: s3
+  s3:
+    endpoint: minio:9000
+    bucket: registry
+    access_key_file: ` + access + `
+    secret_key_file: ` + secret + `
+feeds:
+  - name: npmjs
+    format: npm
+    upstream: https://registry.npmjs.org
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Storage.S3.AccessKey != "AKIA-from-file" || cfg.Storage.S3.SecretKey != "s3cr3t" {
+		t.Errorf("credentials not loaded from files: %q / %q",
+			cfg.Storage.S3.AccessKey, cfg.Storage.S3.SecretKey)
+	}
+
+	// Setting both forms is a configuration mistake, not a silent winner.
+	both := strings.Replace(body, "access_key_file: "+access,
+		"access_key: inline\n    access_key_file: "+access, 1)
+	dual := filepath.Join(dir, "dual.yaml")
+	if err := os.WriteFile(dual, []byte(both), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dual); err == nil {
+		t.Error("Load accepted both an inline credential and its file")
 	}
 }

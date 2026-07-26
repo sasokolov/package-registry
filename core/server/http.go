@@ -43,6 +43,11 @@ func (s *Server) feedHandler(rt *runtime, fr *feedRuntime) http.HandlerFunc {
 		// Quarantined coordinates are never served, whatever the policies
 		// say (manual takedown, cross-site publish conflict).
 		if blocked, reason := s.quarantine.Blocked(ctx, fr.feed.Name, intent.Coord.String()); blocked {
+			if reason == "cross_site_conflict" {
+				// Name the cause so operators (and clients) can tell a
+				// federation conflict from a policy takedown.
+				w.Header().Set("X-Registry-Conflict", intent.Coord.String())
+			}
 			s.audit.Warn("quarantined coordinate requested",
 				"feed", fr.feed.Name, "identity", id.String(),
 				"coordinate", intent.Coord.String(), "reason", reason)

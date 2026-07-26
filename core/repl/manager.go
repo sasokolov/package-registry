@@ -20,26 +20,43 @@ const journalBatch = 200
 // Manager runs the pull loops: for every peer, for every origin that peer
 // knows, apply what we are missing and advance the cursor.
 type Manager struct {
-	db      *state.DB
-	store   api.BlobStore
-	site    string
-	clients []*Client
-	applier *Applier
-	logger  *slog.Logger
-	metrics *Metrics
-	digests func(ctx context.Context) map[string]string
+	db        *state.DB
+	store     api.BlobStore
+	site      string
+	clients   []*Client
+	applier   *Applier
+	logger    *slog.Logger
+	metrics   *Metrics
+	digests   func(ctx context.Context) map[string]string
+	retention time.Duration
+
+	// missing is a negative cache for peer lookups: a coordinate no peer
+	// has must not trigger a fan-out on every request.
+	missingMu sync.Mutex
+	missing   map[string]time.Time
+	missTTL   time.Duration
+
+	// peers is swapped wholesale on config reload; running loops for peers
+	// that disappeared stop on their own next tick.
+	peersMu sync.RWMutex
+	peers   map[string]*Client
+	// running tracks which peers already have a poll loop.
+	running map[string]context.CancelFunc
 }
 
 // ManagerOptions wires the replication manager.
 type ManagerOptions struct {
-	DB      *state.DB
-	Store   api.BlobStore
-	Site    string
-	Clients []*Client
-	Applier *Applier
-	Logger  *slog.Logger
-	Metrics *Metrics
-	Digests func(ctx context.Context) map[string]string
+	DB        *state.DB
+	Store     api.BlobStore
+	Site      string
+	Clients   []*Client
+	Applier   *Applier
+	Logger    *slog.Logger
+	Metrics   *Metrics
+	Digests   func(ctx context.Context) map[string]string
+	Retention time.Duration
+	// MissTTL bounds the negative cache of peer lookups (default 10s).
+	MissTTL time.Duration
 }
 
 // NewManager builds the manager.
@@ -47,7 +64,15 @@ func NewManager(o ManagerOptions) *Manager {
 	m := &Manager{
 		db: o.DB, store: o.Store, site: o.Site, clients: o.Clients,
 		applier: o.Applier, logger: o.Logger, metrics: o.Metrics,
-		digests: o.Digests,
+		digests: o.Digests, retention: o.Retention,
+		missing: map[string]time.Time{}, missTTL: o.MissTTL,
+		peers: map[string]*Client{}, running: map[string]context.CancelFunc{},
+	}
+	for _, c := range o.Clients {
+		m.peers[c.Name()] = c
+	}
+	if m.missTTL <= 0 {
+		m.missTTL = 10 * time.Second
 	}
 	if m.logger == nil {
 		m.logger = slog.Default()
@@ -55,18 +80,72 @@ func NewManager(o ManagerOptions) *Manager {
 	return m
 }
 
-// Run polls every peer until ctx is done. Each peer has its own loop, so a
-// slow or unreachable peer never blocks the others.
-func (m *Manager) Run(ctx context.Context) {
-	var wg sync.WaitGroup
-	for _, c := range m.clients {
-		wg.Add(1)
-		go func(c *Client) {
-			defer wg.Done()
-			m.runPeer(ctx, c)
-		}(c)
+// clientList snapshots the current peer set.
+func (m *Manager) clientList() []*Client {
+	m.peersMu.RLock()
+	defer m.peersMu.RUnlock()
+	out := make([]*Client, 0, len(m.peers))
+	for _, c := range m.peers {
+		out = append(out, c)
 	}
-	wg.Wait()
+	return out
+}
+
+// Run polls every peer until ctx is done. Each peer has its own loop, so a
+// slow or unreachable peer never blocks the others; loops start and stop as
+// the configured peer set changes.
+func (m *Manager) Run(ctx context.Context) {
+	m.syncLoops(ctx)
+	<-ctx.Done()
+
+	m.peersMu.Lock()
+	for _, cancel := range m.running {
+		cancel()
+	}
+	m.running = map[string]context.CancelFunc{}
+	m.peersMu.Unlock()
+}
+
+// syncLoops starts a poll loop for every peer that lacks one and stops the
+// loops of peers that were removed from the config.
+func (m *Manager) syncLoops(ctx context.Context) {
+	m.peersMu.Lock()
+	defer m.peersMu.Unlock()
+	for name, c := range m.peers {
+		if _, ok := m.running[name]; ok {
+			continue
+		}
+		peerCtx, cancel := context.WithCancel(ctx)
+		m.running[name] = cancel
+		go m.runPeer(peerCtx, c)
+		m.logger.Info("replication peer loop started", "peer", name)
+	}
+	for name, cancel := range m.running {
+		if _, ok := m.peers[name]; ok {
+			continue
+		}
+		cancel()
+		delete(m.running, name)
+		m.logger.Info("replication peer loop stopped (removed from config)", "peer", name)
+	}
+}
+
+// SetPeers replaces the peer set after a config reload. Peers that are
+// unchanged keep their client (and its pinned site UUID), so a reload never
+// re-opens the trust decision.
+func (m *Manager) SetPeers(ctx context.Context, clients []*Client) {
+	m.peersMu.Lock()
+	next := make(map[string]*Client, len(clients))
+	for _, c := range clients {
+		if existing, ok := m.peers[c.Name()]; ok && existing.SameEndpoint(c) {
+			next[c.Name()] = existing
+			continue
+		}
+		next[c.Name()] = c
+	}
+	m.peers = next
+	m.peersMu.Unlock()
+	m.syncLoops(ctx)
 }
 
 func (m *Manager) runPeer(ctx context.Context, c *Client) {
@@ -74,14 +153,34 @@ func (m *Manager) runPeer(ctx context.Context, c *Client) {
 	defer ticker.Stop()
 
 	// Poll immediately so a fresh site converges without waiting an interval.
-	m.pollPeer(ctx, c)
+	m.pollOnce(ctx, c)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			m.pollPeer(ctx, c)
+			m.pollOnce(ctx, c)
 		}
+	}
+}
+
+// pollOnce runs a poll cycle under a per-peer lease, so the N stateless
+// replicas of a site do not all pull the same stream (invariant 9: the
+// coordination primitive is a PostgreSQL advisory lock, not Redis).
+func (m *Manager) pollOnce(ctx context.Context, c *Client) {
+	ran, err := m.db.TryLease(ctx, "repl-poll:"+m.site+":"+c.Name(), func(ctx context.Context) error {
+		m.pollPeer(ctx, c)
+		return nil
+	})
+	if err != nil {
+		// The lease backend is down: poll anyway. Apply is idempotent, so
+		// a duplicated poll costs traffic, not correctness (invariant 7).
+		m.logger.Warn("replication lease unavailable, polling without it", "peer", c.Name(), "error", err)
+		m.pollPeer(ctx, c)
+		return
+	}
+	if !ran {
+		m.logger.Debug("another replica is polling this peer", "peer", c.Name())
 	}
 }
 
@@ -128,6 +227,8 @@ func (m *Manager) pollPeer(ctx context.Context, c *Client) {
 		}
 		m.updateLag(ctx, c.Name(), origin, head)
 	}
+
+	m.pruneJournal(ctx, c.Name())
 
 	if err := m.applier.RetryParked(ctx, c.Name()); err != nil {
 		m.logger.Warn("retrying parked events failed", "peer", c.Name(), "error", err)
@@ -276,6 +377,32 @@ func (m *Manager) bootstrap(ctx context.Context, c *Client, touched map[string]b
 	return nil
 }
 
+// pruneJournal drops our own journal entries every peer has durably
+// applied, bounded by the configured retention: a peer that has not
+// acknowledged yet always keeps its history.
+func (m *Manager) pruneJournal(ctx context.Context, peer string) {
+	if m.retention <= 0 {
+		return
+	}
+	names := make([]string, 0, len(m.peers))
+	for _, c := range m.clientList() {
+		names = append(names, c.Name())
+	}
+	watermark, ok, err := m.db.MinCursorAcrossPeers(ctx, m.site, names)
+	if err != nil || !ok || watermark <= 0 {
+		return
+	}
+	n, err := m.db.PruneJournal(ctx, m.site, watermark+1)
+	if err != nil {
+		m.logger.Warn("journal prune failed", "error", err)
+		return
+	}
+	if n > 0 {
+		m.logger.Info("journal pruned",
+			"site", m.site, "below_seq", watermark+1, "entries", n, "acked_by", peer)
+	}
+}
+
 // updateLag publishes the per-stream lag gauges.
 func (m *Manager) updateLag(ctx context.Context, peer, origin string, head int64) {
 	if m.metrics == nil {
@@ -337,8 +464,9 @@ func (m *Manager) EnsureBlob(ctx context.Context, sha256hex string, size int64, 
 	if m.HasBlob(ctx, sha256hex) {
 		return nil
 	}
-	ordered := make([]*Client, 0, len(m.clients))
-	for _, c := range m.clients {
+	clients := m.clientList()
+	ordered := make([]*Client, 0, len(clients))
+	for _, c := range clients {
 		if c.Name() == fromPeer {
 			ordered = append([]*Client{c}, ordered...)
 			continue
@@ -370,8 +498,12 @@ func (m *Manager) HasBlob(ctx context.Context, sha256hex string) bool {
 // FetchManifest implements pipeline.PeerSource: ask peers for a hosted
 // coordinate this site does not have yet.
 func (m *Manager) FetchManifest(ctx context.Context, feed api.Feed, path string) (string, int64, error) {
+	key := feed.Name + "/" + path
+	if m.recentlyMissing(key) {
+		return "", 0, api.ErrNotFound
+	}
 	var lastErr = api.ErrNotFound
-	for _, c := range m.clients {
+	for _, c := range m.clientList() {
 		res, err := c.Manifest(ctx, feed.Name, path)
 		if err != nil {
 			lastErr = err
@@ -379,14 +511,41 @@ func (m *Manager) FetchManifest(ctx context.Context, feed api.Feed, path string)
 		}
 		return res.SHA256, res.Size, nil
 	}
+	// Remember the miss briefly: a 404 storm must not fan out to every peer
+	// on every request.
+	m.noteMissing(key)
 	return "", 0, lastErr
+}
+
+func (m *Manager) recentlyMissing(key string) bool {
+	m.missingMu.Lock()
+	defer m.missingMu.Unlock()
+	until, ok := m.missing[key]
+	if !ok {
+		return false
+	}
+	if time.Now().After(until) {
+		delete(m.missing, key)
+		return false
+	}
+	return true
+}
+
+func (m *Manager) noteMissing(key string) {
+	m.missingMu.Lock()
+	defer m.missingMu.Unlock()
+	// Bound the map: this is a cache, not a ledger.
+	if len(m.missing) > 4096 {
+		m.missing = map[string]time.Time{}
+	}
+	m.missing[key] = time.Now().Add(m.missTTL)
 }
 
 // ForwardPublish sends a write to the named home site over the replication
 // channel.
 func (m *Manager) ForwardPublish(ctx context.Context, site, feed, path, method string,
 	body io.Reader, identity, projectPath string) (int, []byte, error) {
-	for _, c := range m.clients {
+	for _, c := range m.clientList() {
 		if c.Name() == site {
 			return c.ForwardPublish(ctx, feed, path, method, body, identity, projectPath)
 		}
@@ -396,7 +555,7 @@ func (m *Manager) ForwardPublish(ctx context.Context, site, feed, path, method s
 
 // NudgePeers tells every peer that new events exist (best effort).
 func (m *Manager) NudgePeers(ctx context.Context) {
-	for _, c := range m.clients {
+	for _, c := range m.clientList() {
 		go c.Nudge(ctx)
 	}
 }
