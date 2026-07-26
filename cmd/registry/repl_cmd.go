@@ -18,6 +18,7 @@ import (
 
 	"github.com/sasokolov/package-registry/core/api"
 	"github.com/sasokolov/package-registry/core/config"
+	"github.com/sasokolov/package-registry/core/pipeline"
 	"github.com/sasokolov/package-registry/core/repl"
 	"github.com/sasokolov/package-registry/core/state"
 )
@@ -167,8 +168,8 @@ func replConflicts(ctx context.Context, db *state.DB, out io.Writer, openOnly, a
 	return nil
 }
 
-// replResolve records an operator's decision and journals it, so every site
-// converges on the same choice.
+// replResolve applies an operator's decision through the same code path the
+// applier uses, so the local site and every peer end in identical state.
 func replResolve(ctx context.Context, db *state.DB, cfg *config.Config, out io.Writer,
 	feed, path, keep string) error {
 	if feed == "" || path == "" || keep == "" {
@@ -197,38 +198,24 @@ func replResolve(ctx context.Context, db *state.DB, cfg *config.Config, out io.W
 			truncate(keep, 12), truncate(target.WinnerSHA, 12), truncate(target.LoserSHA, 12))
 	}
 
-	tx, err := db.Begin(ctx)
+	// The read path serves from the blob store, so the projection has to
+	// follow the decision as well.
+	store, err := api.NewStorage(cfg.Storage.Type, cfg.Storage.Options())
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	if _, err := tx.Exec(ctx,
-		"UPDATE hosted_manifests SET sha256=$3, updated_at=now() WHERE feed=$1 AND path=$2",
-		feed, path, keep); err != nil {
-		return fmt.Errorf("apply resolution locally: %w", err)
-	}
-	if _, err := tx.Exec(ctx,
-		"UPDATE quarantine SET released_at = now() WHERE feed=$1 AND coordinate=$2 AND reason='cross_site_conflict' AND released_at IS NULL",
-		feed, target.Coordinate); err != nil {
-		return fmt.Errorf("release quarantine: %w", err)
-	}
-	if _, err := tx.Exec(ctx,
-		"UPDATE publish_conflicts SET resolved_at=now(), resolved_sha256=$3 WHERE feed=$1 AND path=$2 AND resolved_at IS NULL",
-		feed, path, keep); err != nil {
-		return fmt.Errorf("close conflict: %w", err)
-	}
+	publisher := pipeline.NewPublisher(pipeline.PublisherOptions{
+		Store: store, DB: db, Site: cfg.Site.Name,
+		Logger: slog.New(slog.NewJSONHandler(os.Stderr, nil)),
+	})
 
 	operator := os.Getenv("USER")
 	if operator == "" {
 		operator = "operator"
 	}
-	writer := repl.NewWriter(cfg.Site.Name)
-	if err := writer.AppendConflictResolve(ctx, tx, feed, path, target.Coordinate, keep, operator); err != nil {
+	if err := repl.ResolveConflict(ctx, db, publisher, cfg.Site.Name,
+		feed, path, target.Coordinate, keep, operator); err != nil {
 		return err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit resolution: %w", err)
 	}
 
 	_, _ = fmt.Fprintf(out, "resolved %s %s -> %s (announced to peers)\n", feed, path, truncate(keep, 12))

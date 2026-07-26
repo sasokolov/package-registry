@@ -2,6 +2,7 @@ package repl
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 
@@ -74,4 +75,74 @@ func (w *Writer) AppendConflictResolve(ctx context.Context, tx pgx.Tx, feed, pat
 		Feed: feed, Path: path, Coord: coord, KeepSHA: keepSHA, Operator: operator,
 	})
 	return err
+}
+
+// ProjectionWriter writes the blob-store view of a coordinate. The
+// pipeline's Publisher implements it; naming it here keeps the resolve
+// operation in one place instead of duplicated between the applier and the
+// CLI, where the two drifted apart.
+type ProjectionWriter interface {
+	WriteReplicatedManifest(ctx context.Context, feed, path, sha256 string, size int64,
+		checksums, metadata map[string]string, originSite, publisher string) error
+}
+
+// ResolveConflict applies an operator's decision at this site and announces
+// it: the coordinate is pointed at the kept digest WITH that digest's own
+// size and checksums, the projection is rewritten, the conflict is closed,
+// the quarantine lifted, and the decision recorded as terminal state so a
+// late publish cannot re-open it. All of it commits together with the
+// journal entry, so peers cannot see a half-applied resolution.
+func ResolveConflict(ctx context.Context, db *state.DB, projection ProjectionWriter,
+	site, feed, path, coord, keepSHA, operator string) error {
+	if len(keepSHA) != 64 || !isHex(keepSHA) {
+		return fmt.Errorf("keep digest %q is not a sha256 hex digest", keepSHA)
+	}
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	side, ok, err := conflictSide(ctx, tx, feed, path, keepSHA)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("digest %s is not one of the recorded sides of the conflict for %s %s",
+			keepSHA[:12], feed, path)
+	}
+
+	// The decision is stamped so peers order it against everything else.
+	var wall, logical int64
+	if err := tx.QueryRow(ctx, "SELECT hlc_wall, hlc_logical FROM repl_hlc_now()").Scan(&wall, &logical); err != nil {
+		return fmt.Errorf("stamp resolution: %w", err)
+	}
+	decision := resolution{
+		KeepSHA: side.SHA256, Size: side.Size,
+		Checksums: side.Checksums, Metadata: side.Metadata,
+		HLC: state.HLC{Wall: wall, Logical: logical},
+	}
+	if err := recordResolution(ctx, tx, feed, path, coord, decision, operator, site); err != nil {
+		return err
+	}
+	if err := applyResolutionTx(ctx, tx, feed, path, coord, decision, site); err != nil {
+		return err
+	}
+	if err := NewWriter(site).AppendConflictResolve(ctx, tx, feed, path, coord, decision.KeepSHA, operator); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit resolution: %w", err)
+	}
+
+	// The read path serves from the projection, so it has to follow the
+	// decision too. It is a projection of committed state, hence written
+	// after the commit and repaired by the repair loop if this fails.
+	if projection != nil {
+		if err := projection.WriteReplicatedManifest(ctx, feed, path, decision.KeepSHA,
+			decision.Size, decision.Checksums, decision.Metadata, site, operator); err != nil {
+			return fmt.Errorf("rewrite the resolved manifest projection: %w", err)
+		}
+	}
+	return nil
 }
