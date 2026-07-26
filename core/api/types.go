@@ -231,12 +231,30 @@ type Synthesizer interface {
 	Synthesize(feed Feed, intent Intent) (SyntheticResponse, error)
 }
 
+// IndirectTarget is the real artifact location named by a protocol
+// indirection, plus the checksum that indirection published (if any).
+type IndirectTarget struct {
+	// Location is an absolute URL, or a URL relative to the indirection
+	// document.
+	Location string
+	// Checksum, when set, must match the fetched content (invariant 5).
+	Checksum Checksum
+}
+
 // IndirectResolver is an optional FormatModule capability for protocols
 // where the upstream response to Intent.RemotePath is an indirection that
-// names the real artifact location (absolute URL or relative to the
-// indirection document). Arguments are serializable on purpose.
+// names the real artifact location. Arguments are serializable on purpose.
 type IndirectResolver interface {
-	ResolveIndirect(feed Feed, intent Intent, status int, header map[string][]string, body []byte) (string, error)
+	ResolveIndirect(feed Feed, intent Intent, status int, header map[string][]string, body []byte) (IndirectTarget, error)
+}
+
+// FeedSetValidator is an optional FormatModule capability: validate the
+// whole set of feeds configured for this format (e.g. a protocol that can
+// expose only one feed per host through root-level service discovery).
+// Called during config validation, so misconfigurations are rejected at
+// startup and on reload instead of silently misrouting clients.
+type FeedSetValidator interface {
+	ValidateFeeds(feeds []Feed) error
 }
 
 // RootRouter is an optional FormatModule capability for protocol endpoints

@@ -63,13 +63,15 @@ func TestParseDownloadIsSynthetic(t *testing.T) {
 		t.Errorf("X-Terraform-Get = %q, want %q", resp.Header["X-Terraform-Get"], wantGet)
 	}
 
-	// Fallback without external_url: relative location.
+	// Without external_url: "./"-prefixed relative location, which
+	// terraform resolves against the download URL (a bare "archive.tar.gz"
+	// is rejected by the client).
 	resp, err = Module{}.Synthesize(api.Feed{Name: "tf"}, intent)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Header["X-Terraform-Get"] != "archive.tar.gz" {
-		t.Errorf("fallback X-Terraform-Get = %q", resp.Header["X-Terraform-Get"])
+	if resp.Header["X-Terraform-Get"] != "./archive.tar.gz" {
+		t.Errorf("fallback X-Terraform-Get = %q, want ./archive.tar.gz", resp.Header["X-Terraform-Get"])
 	}
 }
 
@@ -103,10 +105,13 @@ func TestParseRejectsGarbage(t *testing.T) {
 
 func TestResolveIndirect(t *testing.T) {
 	m := Module{}
-	loc, err := m.ResolveIndirect(api.Feed{}, api.Intent{}, http.StatusNoContent,
+	target, err := m.ResolveIndirect(api.Feed{}, api.Intent{}, http.StatusNoContent,
 		map[string][]string{"X-Terraform-Get": {"/archives/mod-2.0.0.tar.gz"}}, nil)
-	if err != nil || loc != "/archives/mod-2.0.0.tar.gz" {
-		t.Errorf("ResolveIndirect = %q, %v", loc, err)
+	if err != nil || target.Location != "/archives/mod-2.0.0.tar.gz" {
+		t.Errorf("ResolveIndirect = %+v, %v", target, err)
+	}
+	if !target.Checksum.IsZero() {
+		t.Errorf("unexpected checksum %+v", target.Checksum)
 	}
 
 	if _, err := m.ResolveIndirect(api.Feed{}, api.Intent{}, http.StatusNoContent, map[string][]string{}, nil); err == nil {
@@ -121,6 +126,61 @@ func TestResolveIndirect(t *testing.T) {
 	if _, err := m.ResolveIndirect(api.Feed{}, api.Intent{}, http.StatusBadGateway,
 		map[string][]string{"X-Terraform-Get": {"x"}}, nil); err == nil {
 		t.Error("bad status accepted")
+	}
+}
+
+func TestResolveIndirectGetterParams(t *testing.T) {
+	m := Module{}
+	digest := strings.Repeat("ab", 32)
+
+	// go-getter checksum parameter becomes the expected checksum and is
+	// stripped from the fetched URL (invariant 5).
+	target, err := m.ResolveIndirect(api.Feed{}, api.Intent{}, http.StatusNoContent,
+		map[string][]string{"X-Terraform-Get": {"https://cdn.example.com/m.tar.gz?checksum=sha256:" + digest}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Location != "https://cdn.example.com/m.tar.gz" {
+		t.Errorf("location = %q, checksum param must be stripped", target.Location)
+	}
+	if target.Checksum != (api.Checksum{Algo: "sha256", Hex: digest}) {
+		t.Errorf("checksum = %+v", target.Checksum)
+	}
+
+	// Other query parameters survive.
+	target, err = m.ResolveIndirect(api.Feed{}, api.Intent{}, http.StatusNoContent,
+		map[string][]string{"X-Terraform-Get": {"https://cdn.example.com/m.tar.gz?token=t&checksum=sha1:" + strings.Repeat("c", 40)}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(target.Location, "token=t") || strings.Contains(target.Location, "checksum") {
+		t.Errorf("location = %q", target.Location)
+	}
+
+	// Unsupported forms are rejected rather than silently mis-cached.
+	for _, loc := range []string{
+		"https://cdn.example.com/m.tar.gz//subdir",
+		"https://cdn.example.com/m.tar.gz?checksum=crc32:1234",
+		"https://cdn.example.com/m.tar.gz?checksum=nonsense",
+	} {
+		if _, err := m.ResolveIndirect(api.Feed{}, api.Intent{}, http.StatusNoContent,
+			map[string][]string{"X-Terraform-Get": {loc}}, nil); err == nil {
+			t.Errorf("ResolveIndirect(%q) succeeded, want error", loc)
+		}
+	}
+}
+
+func TestValidateFeeds(t *testing.T) {
+	m := Module{}
+	if err := m.ValidateFeeds([]api.Feed{{Name: "tf"}}); err != nil {
+		t.Errorf("single feed rejected: %v", err)
+	}
+	err := m.ValidateFeeds([]api.Feed{{Name: "tf"}, {Name: "other"}})
+	if err == nil {
+		t.Fatal("two terraform feeds accepted; discovery is host-wide")
+	}
+	if !strings.Contains(err.Error(), "one feed per site") {
+		t.Errorf("error = %v", err)
 	}
 }
 

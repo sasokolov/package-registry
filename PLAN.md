@@ -90,7 +90,10 @@
       в этой фазе SNAPSHOT-запросы → 404 с понятным телом.
 - [x] `modules/format/terraform`: service discovery (`/.well-known/terraform.json`),
       протокол Module Registry v1 (`versions`, `download` с `X-Terraform-Get`);
-      download указывает на blob-эндпоинт registry, не на апстрим.
+      download указывает на archive-маршрут самого registry
+      (`.../{version}/archive.tar.gz`), не на апстрим. Отдельный
+      blob-эндпоинт для этого не нужен и не заводится: в гео-ADR peer-fetch
+      живёт на internal listener'е (Фаза 7).
 - [x] Fixtures fake-upstream: минимальный Maven-репозиторий (2 библиотеки с
       настоящими jar/pom/чексуммами) и Terraform-registry (1 модуль, 2 версии).
 - [x] Conformance-сценарии (клиенты — официальные docker-образы
@@ -102,7 +105,9 @@
       - [x] Запрос запрещённой allowlist-политикой координаты → 403, аудит-лог
             содержит запись с Identity и координатой.
       - [x] Скачивание с анонимом при `anonymous: false` → 401; с валидным
-            статическим токеном → 200.
+            статическим токеном → 200 (Bearer и HTTP Basic; `mvn` с
+            `<server>`-кредами из settings.xml).
+      - [x] Битая чексума в fixtures → 502, ничего не закэшировано.
 
 - [x] `make conformance-live`: наполнить цель — прогон сценариев фазы против
       реальных апстримов (Maven Central, registry.terraform.io), ручной
@@ -110,11 +115,12 @@
 - [x] Задел гео (см. docs/geo-replication.md): зарезервировать в YAML-схеме
       ключи `site: {name, external_url}` и `replication: {}` (strict-парсер
       иначе уронит поды старого образа при rolling upgrade); `site` — в root
-      slog, audit и info-метрику. Generic authenticated blob-эндпоинт
-      `/-/blobs/sha256/<hex>` (нужен terraform download уже сейчас; позже —
-      peer-fetch федерации). Задокументировать лексикографический порядок
-      `List` в контракте BlobStore; правило «meta/ и прокси-кэш —
+      slog, audit и info-метрику. Задокументировать лексикографический
+      порядок `List` в контракте BlobStore; правило «meta/ и прокси-кэш —
       сайт-локальные производные, bucket-репликация поверх них запрещена».
+      Публичный blob-эндпоинт по хэшу НЕ заводится (обходил бы цепочку
+      политик): peer-fetch появится в Фазе 7 на отдельном internal
+      listener'е с mTLS, как требует ADR.
 
 **Acceptance:** все сценарии фазы зелёные в `make conformance`; golden-тесты
 RewriteMetadata покрывают оба формата.

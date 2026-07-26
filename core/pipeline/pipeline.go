@@ -314,11 +314,14 @@ func (p *Pipeline) fetchAndStore(ctx context.Context, req Request, mkey string) 
 		expected = c // may stay zero: the protocol has no checksum here
 	}
 
-	resp, err := p.openArtifactStream(ctx, req)
+	resp, indirectChecksum, err := p.openArtifactStream(ctx, req)
 	if err != nil {
 		return manifest{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if expected.IsZero() {
+		expected = indirectChecksum // digest published by the indirection
+	}
 
 	// Spool to a temp file while hashing so the checksum is verified before
 	// anything becomes visible in the store (invariant 5). All digests are
@@ -387,37 +390,44 @@ func (p *Pipeline) fetchAndStore(ctx context.Context, req Request, mkey string) 
 
 // openArtifactStream fetches the artifact body, resolving one level of
 // protocol indirection (Intent.Indirect) via the module's IndirectResolver.
-func (p *Pipeline) openArtifactStream(ctx context.Context, req Request) (*http.Response, error) {
+// It returns the checksum the indirection published, if any.
+func (p *Pipeline) openArtifactStream(ctx context.Context, req Request) (*http.Response, api.Checksum, error) {
 	resp, err := req.Upstream.Fetch(ctx, req.Intent.RemotePath)
 	if err != nil {
-		return nil, err
+		return nil, api.Checksum{}, err
 	}
 	if !req.Intent.Indirect {
-		return resp, nil
+		return resp, api.Checksum{}, nil
 	}
 
 	resolver, ok := req.Module.(api.IndirectResolver)
 	if !ok {
 		_ = resp.Body.Close()
-		return nil, fmt.Errorf("intent for %s is indirect but module %q lacks IndirectResolver",
+		return nil, api.Checksum{}, fmt.Errorf("intent for %s is indirect but module %q lacks IndirectResolver",
 			req.Intent.Coord, req.Module.Name())
 	}
 	body, err := readAllCapped(resp.Body, 1<<20)
 	_ = resp.Body.Close()
 	if err != nil {
-		return nil, fmt.Errorf("read indirection response: %w", err)
+		return nil, api.Checksum{}, fmt.Errorf("read indirection response: %w", err)
 	}
-	loc, err := resolver.ResolveIndirect(req.Feed, req.Intent, resp.StatusCode, resp.Header, body)
+	indirect, err := resolver.ResolveIndirect(req.Feed, req.Intent, resp.StatusCode, resp.Header, body)
 	if err != nil {
-		return nil, fmt.Errorf("resolve indirect location for %s: %w", req.Intent.Coord, err)
+		return nil, api.Checksum{}, fmt.Errorf("resolve indirect location for %s: %w", req.Intent.Coord, err)
 	}
-	target, err := req.Upstream.ResolveReference(req.Intent.RemotePath, loc)
+	target, err := req.Upstream.ResolveReference(req.Intent.RemotePath, indirect.Location)
 	if err != nil {
-		return nil, err
+		return nil, api.Checksum{}, err
 	}
 	p.logger.Debug("following indirect artifact location",
-		"feed", req.Feed.Name, "coord", req.Intent.Coord.String(), "target", target)
-	return req.Upstream.FetchURL(ctx, target)
+		"feed", req.Feed.Name, "coord", req.Intent.Coord.String(), "target", redactURL(target))
+	// The location comes from the upstream, i.e. from untrusted input: the
+	// fetch is restricted to public destinations (SSRF guard in FetchURL).
+	stream, err := req.Upstream.FetchURL(ctx, target)
+	if err != nil {
+		return nil, api.Checksum{}, err
+	}
+	return stream, indirect.Checksum, nil
 }
 
 // fetchRemoteChecksum obtains the expected digest from the protocol's

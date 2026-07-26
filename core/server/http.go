@@ -5,9 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
-
-	"github.com/go-chi/chi/v5"
 
 	"github.com/sasokolov/package-registry/core/api"
 	"github.com/sasokolov/package-registry/core/pipeline"
@@ -144,41 +141,6 @@ func (s *Server) serveSynthetic(w http.ResponseWriter, fr *feedRuntime, intent a
 	}
 }
 
-// blobHandler serves content-addressed blobs by digest for authenticated
-// callers: the geo peer-fetch path and Terraform-style download targets.
-func (s *Server) blobHandler(rt *runtime) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id, err := rt.authn.Identify(r.Context(), r)
-		if err != nil {
-			s.writeError(w, err, "")
-			return
-		}
-		if id.IsAnonymous() {
-			s.writeError(w, api.ErrUnauthorized, "authentication required")
-			return
-		}
-		digest := chi.URLParam(r, "digest")
-		if !blobDigestRE.MatchString(digest) {
-			s.writeError(w, api.ErrNotFound, "")
-			return
-		}
-		rc, info, err := s.store.Get(r.Context(), "blobs/sha256/"+digest)
-		if err != nil {
-			s.writeError(w, err, "")
-			return
-		}
-		defer func() { _ = rc.Close() }()
-		w.Header().Set(api.SourceHeader, string(api.SourceCache))
-		w.Header().Set("Content-Type", "application/octet-stream")
-		if info.Size > 0 {
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size))
-		}
-		_, _ = io.Copy(w, rc)
-	}
-}
-
-var blobDigestRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
-
 // errorStatus maps sentinel errors to an HTTP status and a generic message.
 func errorStatus(err error) (int, string) {
 	switch {
@@ -223,7 +185,9 @@ func (s *Server) writeErrorText(w http.ResponseWriter, err error, text string) {
 
 func (s *Server) finishError(w http.ResponseWriter, status int, msg string) {
 	if status == http.StatusUnauthorized {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="package-registry"`)
+		// Basic is advertised too: maven-resolver and Gradle send
+		// username/password credentials only for a scheme they support.
+		w.Header().Set("WWW-Authenticate", `Basic realm="package-registry", Bearer realm="package-registry"`)
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(status)

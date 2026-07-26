@@ -35,18 +35,24 @@ if [[ "$code" != "200" ]]; then
   exit 1
 fi
 
-echo "--> blob endpoint: 401 anonymous, 200 with token"
-digest="$(sha256sum "$CONFORMANCE_DIR/fixtures/maven/com/example/liba/1.0.0/liba-1.0.0.jar" | cut -d' ' -f1)"
-code="$(client_curl -sS -o /dev/null -w '%{http_code}' "http://registry:8080/-/blobs/sha256/$digest")"
-if [[ "$code" != "401" ]]; then
-  echo "anonymous blob access returned $code, want 401" >&2
-  exit 1
-fi
-code="$(client_curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $secret" \
-  "http://registry:8080/-/blobs/sha256/$digest")"
+echo "--> HTTP Basic with the token as password (maven settings.xml form)"
+code="$(client_curl -sS -o /dev/null -w '%{http_code}' -u "ci:$secret" "$URL")"
 if [[ "$code" != "200" ]]; then
-  echo "authenticated blob access returned $code, want 200" >&2
+  echo "Basic-authenticated request returned $code, want 200" >&2
   exit 1
 fi
+if ! grep -qi 'basic' <<<"$www"; then
+  echo "401 challenge does not advertise Basic: $www" >&2
+  exit 1
+fi
+
+echo "--> real mvn resolve against the private feed using settings.xml credentials"
+out="$(compose run --rm -T -e REGISTRY_TOKEN="$secret" maven-client \
+  -B -s /work/settings-auth.xml -f /work/pom.xml \
+  org.apache.maven.plugins:maven-dependency-plugin:3.6.1:resolve 2>&1)" || {
+  echo "$out" | tail -30
+  exit 1
+}
+grep -q "BUILD SUCCESS" <<<"$out" || { echo "authenticated mvn resolve failed" >&2; exit 1; }
 
 echo "auth token ok"

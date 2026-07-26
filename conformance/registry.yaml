@@ -1,8 +1,9 @@
 # Registry config used inside the conformance compose stack: blobs in MinIO,
 # state in Postgres, feeds proxying the fake upstream.
+# No site.external_url on purpose: terraform must work off the "./"-relative
+# X-Terraform-Get form, which needs no per-site configuration.
 site:
   name: conformance
-  external_url: https://registry.local
 
 server:
   listen: ":8080"

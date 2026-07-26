@@ -22,10 +22,15 @@ func NewAuthenticator(tokens *TokenVerifier, oidc *OIDC) *Authenticator {
 
 // Identify maps the request's Authorization header to an identity:
 //
-//	absent header          -> anonymous identity, nil error
-//	Bearer reg_...         -> static token
-//	Bearer <compact JWT>   -> OIDC id_token
-//	anything else          -> ErrUnauthorized
+//	absent header            -> anonymous identity, nil error
+//	Bearer reg_...           -> static token
+//	Bearer <compact JWT>     -> OIDC id_token
+//	Basic <user:credential>  -> same credential kinds in the password field
+//	anything else            -> ErrUnauthorized
+//
+// Basic is accepted because Maven's settings.xml <server> and Gradle's
+// PasswordCredentials can only emit Basic: the username is ignored and the
+// password carries the token or id_token.
 //
 // Whether an anonymous identity may read a feed is the server's decision.
 func (a *Authenticator) Identify(ctx context.Context, r *http.Request) (api.Identity, error) {
@@ -33,11 +38,26 @@ func (a *Authenticator) Identify(ctx context.Context, r *http.Request) (api.Iden
 	if header == "" {
 		return api.Anonymous(), nil
 	}
-	scheme, cred, ok := strings.Cut(header, " ")
-	if !ok || !strings.EqualFold(scheme, "Bearer") || cred == "" {
-		return api.Identity{}, fmt.Errorf("unsupported Authorization scheme: %w", api.ErrUnauthorized)
+	scheme, rest, ok := strings.Cut(header, " ")
+	if !ok || rest == "" {
+		return api.Identity{}, fmt.Errorf("malformed Authorization header: %w", api.ErrUnauthorized)
 	}
-	cred = strings.TrimSpace(cred)
+	var cred string
+	switch {
+	case strings.EqualFold(scheme, "Bearer"):
+		cred = strings.TrimSpace(rest)
+	case strings.EqualFold(scheme, "Basic"):
+		_, password, ok := r.BasicAuth()
+		if !ok {
+			return api.Identity{}, fmt.Errorf("malformed Basic credentials: %w", api.ErrUnauthorized)
+		}
+		cred = strings.TrimSpace(password)
+		if cred == "" {
+			return api.Identity{}, fmt.Errorf("empty Basic password: %w", api.ErrUnauthorized)
+		}
+	default:
+		return api.Identity{}, fmt.Errorf("unsupported Authorization scheme %q: %w", scheme, api.ErrUnauthorized)
+	}
 
 	switch {
 	case strings.HasPrefix(cred, TokenPrefix):

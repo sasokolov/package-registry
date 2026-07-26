@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -74,6 +75,16 @@ func NewUpstream(o UpstreamOptions) (*Upstream, error) {
 	if u.client == nil {
 		u.client = &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 15 * time.Second}}
 	}
+	// Re-check every redirect hop: the first hop's destination check must
+	// not be bypassable with a 302 to an internal address.
+	if u.client.CheckRedirect == nil {
+		u.client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			return u.checkDestination(req.URL)
+		}
+	}
 	if u.retries <= 0 {
 		u.retries = defaultRetries
 	}
@@ -103,17 +114,78 @@ func (u *Upstream) Fetch(ctx context.Context, remotePath string) (*http.Response
 }
 
 // FetchURL is Fetch for an absolute URL — indirect artifact locations may
-// live on another host (e.g. Terraform's X-Terraform-Get). The feed's
-// retry/breaker/rate-limit discipline still applies.
+// live on another host (e.g. Terraform's X-Terraform-Get). Such locations
+// come from the upstream, i.e. from untrusted input, so the destination is
+// restricted: same host as the feed's upstream, or a public address.
+// Redirects are re-checked hop by hop. The feed's retry/breaker/rate-limit
+// discipline still applies.
 func (u *Upstream) FetchURL(ctx context.Context, absURL string) (*http.Response, error) {
 	parsed, err := url.Parse(absURL)
 	if err != nil || !parsed.IsAbs() {
-		return nil, fmt.Errorf("upstream %s: invalid absolute URL %q: %w", u.feed, absURL, err)
+		return nil, fmt.Errorf("upstream %s: invalid absolute URL %q: %w", u.feed, redactURL(absURL), err)
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return nil, fmt.Errorf("upstream %s: unsupported scheme in %q", u.feed, absURL)
+		return nil, fmt.Errorf("upstream %s: unsupported scheme in %q", u.feed, redactURL(absURL))
+	}
+	if err := u.checkDestination(parsed); err != nil {
+		return nil, err
 	}
 	return u.fetchTarget(ctx, absURL)
+}
+
+// checkDestination rejects upstream-supplied locations that point at
+// non-public addresses (SSRF guard). The feed's own upstream host is always
+// allowed: it is operator-configured, hence trusted.
+func (u *Upstream) checkDestination(target *url.URL) error {
+	if strings.EqualFold(target.Hostname(), u.base.Hostname()) {
+		return nil
+	}
+	host := target.Hostname()
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("upstream %s: cannot resolve indirect host %q: %w", u.feed, host, err)
+	}
+	for _, ip := range ips {
+		if !isPublicIP(ip) {
+			return fmt.Errorf("upstream %s: indirect location host %q resolves to non-public address %s: %w",
+				u.feed, host, ip, api.ErrUpstreamUnavailable)
+		}
+	}
+	return nil
+}
+
+// isPublicIP reports whether ip is routable on the public internet:
+// loopback, private, link-local (incl. cloud metadata 169.254.169.254),
+// multicast and unspecified addresses are rejected.
+func isPublicIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() {
+		return false
+	}
+	// Carrier-grade NAT (100.64.0.0/10) and IPv6 unique-local (fc00::/7)
+	// are not covered by IsPrivate.
+	if v4 := ip.To4(); v4 != nil {
+		if v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+			return false
+		}
+		return true
+	}
+	return ip[0]&0xfe != 0xfc
+}
+
+// redactURL strips the query string: presigned upstream locations carry
+// credentials there and must never reach the logs (invariant 12).
+func redactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "<unparsable url>"
+	}
+	if u.RawQuery != "" {
+		u.RawQuery = "REDACTED"
+	}
+	u.User = nil
+	return u.String()
 }
 
 // ResolveReference resolves loc (absolute, or relative to the upstream
@@ -174,7 +246,7 @@ func (u *Upstream) fetchTarget(ctx context.Context, target string) (*http.Respon
 			u.count("error")
 			lastErr = err
 			u.logger.Warn("upstream attempt failed",
-				"feed", u.feed, "url", target, "attempt", attempt+1, "error", err)
+				"feed", u.feed, "url", redactURL(target), "attempt", attempt+1, "error", err)
 			if !u.breaker.Allow() {
 				return nil, fmt.Errorf("upstream %s: circuit breaker opened after failures: %w", u.feed, api.ErrUpstreamUnavailable)
 			}

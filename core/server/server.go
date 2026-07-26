@@ -98,9 +98,12 @@ func New(ctx context.Context, o Options) (*Server, error) {
 }
 
 // ValidateConfig is the manager's semantic validation hook: every feed's
-// format must be registered and its policy chain constructible.
+// format must be registered, its policy chain constructible, and the whole
+// per-format feed set acceptable to modules that constrain it
+// (api.FeedSetValidator).
 func ValidateConfig(cfg *config.Config) error {
 	var errs []error
+	byFormat := make(map[string][]api.Feed)
 	for _, fc := range cfg.Feeds {
 		if _, ok := api.Format(fc.Format); !ok {
 			errs = append(errs, fmt.Errorf("feed %s: format %q is not registered (have %v)",
@@ -111,6 +114,18 @@ func ValidateConfig(cfg *config.Config) error {
 		}
 		if _, err := pipeline.NewUpstream(pipeline.UpstreamOptions{Feed: fc.Name, BaseURL: fc.Upstream}); err != nil {
 			errs = append(errs, fmt.Errorf("feed %s: %w", fc.Name, err))
+		}
+		byFormat[fc.Format] = append(byFormat[fc.Format], fc.API())
+	}
+	for format, feeds := range byFormat {
+		module, ok := api.Format(format)
+		if !ok {
+			continue
+		}
+		if v, ok := module.(api.FeedSetValidator); ok {
+			if err := v.ValidateFeeds(feeds); err != nil {
+				errs = append(errs, fmt.Errorf("format %s: %w", format, err))
+			}
 		}
 	}
 	return errors.Join(errs...)
@@ -184,14 +199,12 @@ func (s *Server) buildRuntime(cfg *config.Config) (*runtime, error) {
 		feeds := feedsByFormat[name]
 		for _, route := range rootRouter.RootRoutes() {
 			rt.router.Method(route.Method, route.Pattern, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Protocol documents answered from config alone (invariant 11).
+				w.Header().Set(api.SourceHeader, string(api.SourceLocal))
 				rootRouter.ServeRoot(w, r, feeds)
 			}))
 		}
 	}
-
-	// Content-addressed blob access for authenticated callers (Terraform
-	// download targets today, the geo peer-fetch path in Phase 7).
-	rt.router.Get("/-/blobs/sha256/{digest}", s.blobHandler(rt))
 
 	return rt, nil
 }

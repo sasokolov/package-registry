@@ -171,15 +171,19 @@ func TestMetadataWantChecksumHashesServedBytes(t *testing.T) {
 // Terraform's X-Terraform-Get.
 type indirectModule struct{ echoModule }
 
-func (indirectModule) ResolveIndirect(_ api.Feed, _ api.Intent, status int, header map[string][]string, _ []byte) (string, error) {
+func (indirectModule) ResolveIndirect(_ api.Feed, _ api.Intent, status int, header map[string][]string, _ []byte) (api.IndirectTarget, error) {
 	if status != http.StatusNoContent {
-		return "", api.NotFoundf("unexpected indirection status %d", status)
+		return api.IndirectTarget{}, api.NotFoundf("unexpected indirection status %d", status)
 	}
 	locs := header["X-Test-Location"]
 	if len(locs) == 0 {
-		return "", errors.New("no X-Test-Location header")
+		return api.IndirectTarget{}, errors.New("no X-Test-Location header")
 	}
-	return locs[0], nil
+	target := api.IndirectTarget{Location: locs[0]}
+	if sums := header["X-Test-Checksum"]; len(sums) > 0 {
+		target.Checksum = api.Checksum{Algo: "sha256", Hex: sums[0]}
+	}
+	return target, nil
 }
 
 func TestIndirectArtifact(t *testing.T) {
@@ -220,6 +224,83 @@ func TestIndirectArtifact(t *testing.T) {
 	_ = mustBody(t, res)
 	if h.requests.Load() != before {
 		t.Error("cached indirect artifact still touched the upstream")
+	}
+}
+
+func TestIndirectChecksumVerified(t *testing.T) {
+	h := newHarness(t)
+	h.set("real/good.tgz", "verified archive")
+	h.set("real/bad.tgz", "tampered archive")
+	h.custom["mod/ok/download"] = func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Test-Location", "../../real/good.tgz")
+		w.Header().Set("X-Test-Checksum", sha256hex("verified archive"))
+		w.WriteHeader(http.StatusNoContent)
+	}
+	h.custom["mod/bad/download"] = func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Test-Location", "../../real/bad.tgz")
+		w.Header().Set("X-Test-Checksum", sha256hex("what it should have been"))
+		w.WriteHeader(http.StatusNoContent)
+	}
+	up := h.upstream(0)
+	ctx := t.Context()
+
+	good := artifactIntent("mod/ok/download")
+	good.Indirect = true
+	req := h.request(good, up)
+	req.Module = indirectModule{}
+	res, err := h.pipe.Serve(ctx, req)
+	if err != nil {
+		t.Fatalf("Serve with matching indirect checksum: %v", err)
+	}
+	_ = mustBody(t, res)
+
+	bad := artifactIntent("mod/bad/download")
+	bad.Indirect = true
+	reqBad := h.request(bad, up)
+	reqBad.Module = indirectModule{}
+	if _, err := h.pipe.Serve(ctx, reqBad); !errors.Is(err, api.ErrChecksumMismatch) {
+		t.Fatalf("Serve = %v, want ErrChecksumMismatch", err)
+	}
+	if h.store.has("manifests/test-feed/mod/bad/download") {
+		t.Error("manifest stored despite indirect checksum mismatch")
+	}
+}
+
+func TestIndirectSSRFGuard(t *testing.T) {
+	h := newHarness(t)
+	// The upstream points the registry at a loopback address on ANOTHER
+	// host name: an upstream-controlled location must not reach internal
+	// services (the feed's own upstream host stays allowed).
+	h.custom["mod/evil/download"] = func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Test-Location", "http://localhost:9/secret")
+		w.WriteHeader(http.StatusNoContent)
+	}
+	up := h.upstream(0)
+
+	intent := artifactIntent("mod/evil/download")
+	intent.Indirect = true
+	req := h.request(intent, up)
+	req.Module = indirectModule{}
+
+	_, err := h.pipe.Serve(t.Context(), req)
+	if err == nil {
+		t.Fatal("Serve followed an upstream-supplied loopback location")
+	}
+	if !strings.Contains(err.Error(), "non-public address") {
+		t.Errorf("error = %v, want a non-public address rejection", err)
+	}
+}
+
+func TestRedactURL(t *testing.T) {
+	tests := map[string]string{
+		"https://h/p?X-Amz-Signature=secret": "https://h/p?REDACTED",
+		"https://user:pw@h/p":                "https://h/p",
+		"https://h/p":                        "https://h/p",
+	}
+	for in, want := range tests {
+		if got := redactURL(in); got != want {
+			t.Errorf("redactURL(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

@@ -98,15 +98,3 @@ func TestParseErrorBodyIsClientFacing(t *testing.T) {
 		t.Errorf("404 body %q lacks the module's explanation", body)
 	}
 }
-
-func TestBlobEndpointRequiresAuth(t *testing.T) {
-	e := newSynthEnv(t)
-	digest := strings.Repeat("ab", 32)
-	resp, _ := e.get("/-/blobs/sha256/"+digest, nil)
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("anonymous blob access status = %d, want 401", resp.StatusCode)
-	}
-	if resp.Header.Get("WWW-Authenticate") == "" {
-		t.Error("401 without WWW-Authenticate")
-	}
-}

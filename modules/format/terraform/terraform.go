@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -109,14 +110,18 @@ func (Module) RewriteMetadata(_ api.Feed, body []byte) ([]byte, error) {
 
 // Synthesize implements api.Synthesizer: the download endpoint answers with
 // 204 + X-Terraform-Get pointing at the registry's own archive path.
-// Terraform rejects bare relative locations ("cannot detect a supported
-// module source type"), so an absolute URL built from site.external_url is
-// required; without it we fall back to a relative location as a last resort.
+//
+// A bare relative location ("archive.tar.gz") is rejected by Terraform
+// ("cannot detect a supported module source type"); the "./"-prefixed form
+// is protocol-correct and is resolved against the download URL, so it works
+// behind any hostname without extra configuration. An absolute URL built
+// from site.external_url is used when configured, since it also survives
+// clients that rewrite the request path.
 func (Module) Synthesize(feed api.Feed, intent api.Intent) (api.SyntheticResponse, error) {
 	if intent.Kind != api.IntentSynthetic || !strings.HasSuffix(intent.RemotePath, "/download") {
 		return api.SyntheticResponse{}, api.NotFoundf("unexpected synthetic intent %q", intent.RemotePath)
 	}
-	location := archiveFile
+	location := "./" + archiveFile
 	if feed.ExternalURL != "" {
 		location = feed.ExternalURL + "/terraform/" + feed.Name + "/" +
 			strings.TrimSuffix(intent.RemotePath, "download") + archiveFile
@@ -127,6 +132,22 @@ func (Module) Synthesize(feed api.Feed, intent api.Intent) (api.SyntheticRespons
 	}, nil
 }
 
+// ValidateFeeds implements api.FeedSetValidator: root-level service
+// discovery can expose only one module registry per site, so a second
+// terraform feed would silently repoint every client.
+func (Module) ValidateFeeds(feeds []api.Feed) error {
+	if len(feeds) > 1 {
+		names := make([]string, 0, len(feeds))
+		for _, f := range feeds {
+			names = append(names, f.Name)
+		}
+		sort.Strings(names)
+		return fmt.Errorf("terraform supports one feed per site (service discovery at /.well-known/terraform.json is host-wide), got %d: %s",
+			len(feeds), strings.Join(names, ", "))
+	}
+	return nil
+}
+
 // ResolveIndirect implements api.IndirectResolver: extract the module
 // archive location from the upstream download response.
 //
@@ -135,20 +156,59 @@ func (Module) Synthesize(feed api.Feed, intent api.Intent) (api.SyntheticRespons
 // (git::https://github.com/...) — fetching those is a git operation, not an
 // HTTP download, and is out of scope for a pull-through cache; such modules
 // yield a clear 502.
-func (Module) ResolveIndirect(_ api.Feed, _ api.Intent, status int, header map[string][]string, _ []byte) (string, error) {
+func (Module) ResolveIndirect(_ api.Feed, _ api.Intent, status int, header map[string][]string, _ []byte) (api.IndirectTarget, error) {
 	if status != http.StatusNoContent && status != http.StatusOK {
-		return "", fmt.Errorf("upstream download endpoint returned status %d", status)
+		return api.IndirectTarget{}, fmt.Errorf("upstream download endpoint returned status %d", status)
 	}
 	vals := header[http.CanonicalHeaderKey("X-Terraform-Get")]
 	if len(vals) == 0 || vals[0] == "" {
-		return "", errors.New("upstream download response lacks X-Terraform-Get")
+		return api.IndirectTarget{}, errors.New("upstream download response lacks X-Terraform-Get")
 	}
 	loc := vals[0]
 	if strings.Contains(loc, "::") || strings.HasPrefix(loc, "git@") {
-		return "", fmt.Errorf("module archive location %q is a VCS source, not an HTTP archive; such upstream modules cannot be proxied: %w",
+		return api.IndirectTarget{}, fmt.Errorf("module archive location %q is a VCS source, not an HTTP archive; such upstream modules cannot be proxied: %w",
 			loc, api.ErrUpstreamUnavailable)
 	}
-	return loc, nil
+	return splitGetterURL(loc)
+}
+
+// splitGetterURL separates go-getter control parameters from the plain
+// download URL: "checksum=<algo>:<hex>" becomes the expected checksum
+// (invariant 5), and the unsupported subdirectory syntax is rejected
+// outright rather than silently caching the wrong bytes.
+func splitGetterURL(loc string) (api.IndirectTarget, error) {
+	u, err := url.Parse(loc)
+	if err != nil {
+		return api.IndirectTarget{}, fmt.Errorf("invalid module archive location %q: %w", loc, err)
+	}
+	// go-getter's "//subdir" selects a directory inside the archive; the
+	// double slash appears in the path, after the scheme and host.
+	if strings.Contains(u.Path, "//") {
+		return api.IndirectTarget{}, fmt.Errorf("module archive location %q uses go-getter subdirectory syntax, which cannot be proxied: %w",
+			loc, api.ErrUpstreamUnavailable)
+	}
+	q := u.Query()
+	raw := q.Get("checksum")
+	if raw == "" {
+		return api.IndirectTarget{Location: loc}, nil
+	}
+	q.Del("checksum")
+	u.RawQuery = q.Encode()
+
+	algo, hexDigest, ok := strings.Cut(raw, ":")
+	if !ok {
+		return api.IndirectTarget{}, fmt.Errorf("unsupported checksum parameter %q in module archive location", raw)
+	}
+	algo = strings.ToLower(algo)
+	switch algo {
+	case "md5", "sha1", "sha256", "sha512":
+	default:
+		return api.IndirectTarget{}, fmt.Errorf("unsupported checksum algorithm %q in module archive location", algo)
+	}
+	return api.IndirectTarget{
+		Location: u.String(),
+		Checksum: api.Checksum{Algo: algo, Hex: strings.ToLower(hexDigest)},
+	}, nil
 }
 
 // RootRoutes implements api.RootRouter: terraform requires service
