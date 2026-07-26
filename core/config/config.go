@@ -1,8 +1,9 @@
 // Package config defines the declarative YAML configuration of the registry
-// (schema v0: server, storage, feeds) and its loading and validation.
+// (server, storage, database, auth, feeds) with loading, validation and
+// hot-reload (SIGHUP + interval, see Manager).
 //
-// Configuration is file-based only; it is never stored in the database.
-// Hot-reload (SIGHUP/interval) is a Phase 1 task in PLAN.md.
+// Configuration is file-based only; it is never stored in the database
+// (invariant 8).
 package config
 
 import (
@@ -16,6 +17,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sasokolov/package-registry/core/api"
 )
 
 // Storage backend types accepted in Config.Storage.Type.
@@ -24,11 +27,13 @@ const (
 	StorageS3 = "s3"
 )
 
-// Config is the root of the registry configuration (schema v0).
+// Config is the root of the registry configuration.
 type Config struct {
-	Server  ServerConfig  `yaml:"server"`
-	Storage StorageConfig `yaml:"storage"`
-	Feeds   []FeedConfig  `yaml:"feeds"`
+	Server   ServerConfig   `yaml:"server"`
+	Storage  StorageConfig  `yaml:"storage"`
+	Database DatabaseConfig `yaml:"database"`
+	Auth     AuthConfig     `yaml:"auth"`
+	Feeds    []FeedConfig   `yaml:"feeds"`
 }
 
 // ServerConfig configures the HTTP listener.
@@ -37,6 +42,37 @@ type ServerConfig struct {
 	Listen string `yaml:"listen"`
 	// ShutdownTimeout bounds graceful shutdown. Default 10s.
 	ShutdownTimeout Duration `yaml:"shutdown_timeout"`
+	// ReloadInterval is how often the config file is re-read in addition to
+	// SIGHUP. 0 disables interval reloading. Default 30s.
+	ReloadInterval Duration `yaml:"reload_interval"`
+}
+
+// DatabaseConfig configures PostgreSQL. An empty DSN falls back to the
+// standard PG* environment variables; if those are absent too, the registry
+// runs without a database (publish/tokens/audit unavailable, reads work).
+type DatabaseConfig struct {
+	DSN string `yaml:"dsn"`
+}
+
+// AuthConfig configures authentication.
+type AuthConfig struct {
+	// TokenCacheTTL bounds the in-memory cache of verified static tokens;
+	// within the TTL reads keep working while PostgreSQL is down
+	// (invariant 7). Default 5m.
+	TokenCacheTTL Duration     `yaml:"token_cache_ttl"`
+	OIDC          []OIDCIssuer `yaml:"oidc_issuers"`
+}
+
+// OIDCIssuer declares a trusted OIDC issuer (e.g. a GitLab instance) whose
+// id_tokens are accepted as identities.
+type OIDCIssuer struct {
+	// Issuer is the expected "iss" claim, e.g. "https://gitlab.com".
+	Issuer string `yaml:"issuer"`
+	// Audience is the required "aud" claim value.
+	Audience string `yaml:"audience"`
+	// JWKSURL overrides the JWKS endpoint; default <issuer>/oauth/discovery/keys
+	// via OIDC discovery is derived by core/auth when empty.
+	JWKSURL string `yaml:"jwks_url"`
 }
 
 // StorageConfig selects and configures the blob storage backend.
@@ -62,12 +98,49 @@ type S3Config struct {
 	UseSSL    bool   `yaml:"use_ssl"`
 }
 
-// FeedConfig declares a single feed. In schema v0 only identity and the
-// optional upstream are described; auth and policy settings arrive in Phase 1.
+// FeedConfig declares a single feed.
 type FeedConfig struct {
 	Name     string `yaml:"name"`
 	Format   string `yaml:"format"`
 	Upstream string `yaml:"upstream"`
+	// Anonymous allows unauthenticated reads from this feed. Default false.
+	Anonymous bool `yaml:"anonymous"`
+	// UpstreamRPS rate-limits requests to this feed's upstream. 0 = unlimited.
+	UpstreamRPS float64 `yaml:"upstream_rps"`
+	// Policies is the ordered policy chain for this feed.
+	Policies []PolicyConfig `yaml:"policies"`
+}
+
+// PolicyConfig names a registered policy and carries its options verbatim.
+type PolicyConfig struct {
+	Name    string         `yaml:"name"`
+	Options map[string]any `yaml:"config"`
+}
+
+// API converts the feed declaration to the canonical api.Feed passed to
+// modules.
+func (f FeedConfig) API() api.Feed {
+	return api.Feed{Name: f.Name, Format: f.Format, Upstream: f.Upstream, Anonymous: f.Anonymous}
+}
+
+// Options returns the active storage backend's options as a generic map for
+// api.NewStorage.
+func (s StorageConfig) Options() map[string]any {
+	switch s.Type {
+	case StorageFS:
+		return map[string]any{"path": s.FS.Path}
+	case StorageS3:
+		return map[string]any{
+			"endpoint":   s.S3.Endpoint,
+			"bucket":     s.S3.Bucket,
+			"region":     s.S3.Region,
+			"access_key": s.S3.AccessKey,
+			"secret_key": s.S3.SecretKey,
+			"use_ssl":    s.S3.UseSSL,
+		}
+	default:
+		return nil
+	}
 }
 
 var (
@@ -115,6 +188,12 @@ func (c *Config) applyDefaults() {
 	if c.Server.ShutdownTimeout == 0 {
 		c.Server.ShutdownTimeout = Duration(10 * time.Second)
 	}
+	if c.Server.ReloadInterval == 0 {
+		c.Server.ReloadInterval = Duration(30 * time.Second)
+	}
+	if c.Auth.TokenCacheTTL == 0 {
+		c.Auth.TokenCacheTTL = Duration(5 * time.Minute)
+	}
 }
 
 // Validate checks the whole config and returns all violations joined into a
@@ -127,6 +206,27 @@ func (c *Config) Validate() error {
 	}
 	if c.Server.ShutdownTimeout < 0 {
 		errs = append(errs, errors.New("server.shutdown_timeout must not be negative"))
+	}
+	if c.Server.ReloadInterval < 0 {
+		errs = append(errs, errors.New("server.reload_interval must not be negative"))
+	}
+	if c.Auth.TokenCacheTTL < 0 {
+		errs = append(errs, errors.New("auth.token_cache_ttl must not be negative"))
+	}
+
+	for i, iss := range c.Auth.OIDC {
+		at := fmt.Sprintf("auth.oidc_issuers[%d]", i)
+		if err := validateHTTPURL(iss.Issuer); err != nil {
+			errs = append(errs, fmt.Errorf("%s: issuer: %w", at, err))
+		}
+		if iss.Audience == "" {
+			errs = append(errs, fmt.Errorf("%s: audience is required", at))
+		}
+		if iss.JWKSURL != "" {
+			if err := validateHTTPURL(iss.JWKSURL); err != nil {
+				errs = append(errs, fmt.Errorf("%s: jwks_url: %w", at, err))
+			}
+		}
 	}
 
 	switch c.Storage.Type {
@@ -170,8 +270,16 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("%s: format must match %s", at, formatRE))
 		}
 		if feed.Upstream != "" {
-			if err := validateUpstream(feed.Upstream); err != nil {
+			if err := validateHTTPURL(feed.Upstream); err != nil {
 				errs = append(errs, fmt.Errorf("%s: upstream: %w", at, err))
+			}
+		}
+		if feed.UpstreamRPS < 0 {
+			errs = append(errs, fmt.Errorf("%s: upstream_rps must not be negative", at))
+		}
+		for j, pol := range feed.Policies {
+			if pol.Name == "" {
+				errs = append(errs, fmt.Errorf("%s: policies[%d]: name is required", at, j))
 			}
 		}
 	}
@@ -179,7 +287,10 @@ func (c *Config) Validate() error {
 	return errors.Join(errs...)
 }
 
-func validateUpstream(raw string) error {
+func validateHTTPURL(raw string) error {
+	if raw == "" {
+		return errors.New("URL is required")
+	}
 	u, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
