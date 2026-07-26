@@ -103,6 +103,10 @@ type Result struct {
 	SHA256  string
 	ModTime time.Time
 	Source  api.Source
+	// BlobKey is the content-addressed storage key of an artifact result,
+	// empty for metadata and synthesized bodies. The server uses it to
+	// answer with a pre-signed redirect where that is safe.
+	BlobKey string
 }
 
 // manifest is the pointer from a coordinate to its content-addressed blob.
@@ -287,6 +291,7 @@ func (p *Pipeline) openBlob(ctx context.Context, m manifest, source api.Source) 
 		SHA256:  m.SHA256,
 		ModTime: info.ModTime,
 		Source:  source,
+		BlobKey: blobKey(m.SHA256),
 	}, nil
 }
 

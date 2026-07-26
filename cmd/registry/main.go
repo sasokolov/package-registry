@@ -42,6 +42,8 @@ func run(args []string, logOut io.Writer) error {
 		switch args[0] {
 		case "token":
 			return tokenCmd(args[1:], logOut)
+		case "gc":
+			return gcCmd(args[1:], logOut)
 		case "serve":
 			args = args[1:]
 		}

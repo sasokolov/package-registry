@@ -89,6 +89,10 @@ func (s *Server) feedHandler(rt *runtime, fr *feedRuntime) http.HandlerFunc {
 			return
 		}
 
+		if s.tryRedirect(ctx, w, r, fr, intent, res) {
+			return
+		}
+
 		w.Header().Set(api.SourceHeader, string(res.Source))
 		if res.Size >= 0 {
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", res.Size))
@@ -104,6 +108,35 @@ func (s *Server) feedHandler(rt *runtime, fr *feedRuntime) http.HandlerFunc {
 				"feed", fr.feed.Name, "coord", intent.Coord.String(), "error", err)
 		}
 	}
+}
+
+// tryRedirect answers a cached artifact with a 302 to a pre-signed storage
+// URL when the feed opted in, the storage can pre-sign and the protocol is
+// redirect-safe. Any failure falls back to streaming: a redirect is an
+// optimization, never a correctness requirement.
+func (s *Server) tryRedirect(ctx context.Context, w http.ResponseWriter, r *http.Request,
+	fr *feedRuntime, intent api.Intent, res *pipeline.Result) bool {
+	if !fr.redirect || res.BlobKey == "" || r.Method != http.MethodGet {
+		return false
+	}
+	safe, ok := fr.module.(api.RedirectSafe)
+	if !ok || !safe.RedirectSafeIntent(intent) {
+		return false
+	}
+	presigner, ok := s.store.(api.Presigner)
+	if !ok {
+		return false
+	}
+	url, err := presigner.PresignGet(ctx, res.BlobKey, fr.redirectTTL)
+	if err != nil {
+		s.logger.Warn("pre-signing failed, streaming instead",
+			"feed", fr.feed.Name, "coord", intent.Coord.String(), "error", err)
+		return false
+	}
+	w.Header().Set(api.SourceHeader, string(res.Source))
+	w.Header().Set("X-Registry-Site", s.site)
+	http.Redirect(w, r, url, http.StatusFound)
+	return true
 }
 
 // artifactMetadata asks the format module which document carries the

@@ -235,3 +235,9 @@ func (Module) ServeRoot(w http.ResponseWriter, _ *http.Request, feeds []api.Feed
 		"modules.v1": "/terraform/" + names[0] + "/v1/modules/",
 	})
 }
+
+// RedirectSafeIntent implements api.RedirectSafe: module archives may be
+// answered with a pre-signed redirect; go-getter follows it.
+func (Module) RedirectSafeIntent(intent api.Intent) bool {
+	return intent.Kind == api.IntentArtifact
+}

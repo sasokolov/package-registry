@@ -207,3 +207,10 @@ func rewriteTarballURL(base, tarball string) (string, error) {
 	}
 	return base + "/" + path, nil
 }
+
+// RedirectSafeIntent implements api.RedirectSafe: tarballs may be answered
+// with a pre-signed redirect (npm verifies dist.integrity itself); package
+// documents are rewritten by the registry and must be streamed.
+func (Module) RedirectSafeIntent(intent api.Intent) bool {
+	return intent.Kind == api.IntentArtifact
+}

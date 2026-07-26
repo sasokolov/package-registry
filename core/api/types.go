@@ -315,6 +315,16 @@ type IndirectResolver interface {
 	ResolveIndirect(feed Feed, intent Intent, status int, header map[string][]string, body []byte) (IndirectTarget, error)
 }
 
+// RedirectSafe is an optional FormatModule capability: the protocol
+// tolerates a 302 to a pre-signed storage URL for artifact downloads.
+// Clients that verify checksums themselves (maven, npm tarballs, terraform
+// archives, nuget flat container) are redirect-safe; metadata never is.
+type RedirectSafe interface {
+	// RedirectSafeIntent reports whether this particular intent may be
+	// answered with a redirect.
+	RedirectSafeIntent(intent Intent) bool
+}
+
 // PublishRouter is an optional Hoster capability: declare the write routes
 // explicitly instead of the default catch-all PUT/POST.
 type PublishRouter interface {

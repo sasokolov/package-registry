@@ -269,3 +269,10 @@ func rewriteEndpoint(raw, base string) (string, bool) {
 	}
 	return raw, false
 }
+
+// RedirectSafeIntent implements api.RedirectSafe: flat-container packages
+// may be answered with a pre-signed redirect; registration documents carry
+// rewritten URLs and must be streamed.
+func (Module) RedirectSafeIntent(intent api.Intent) bool {
+	return intent.Kind == api.IntentArtifact
+}

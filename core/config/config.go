@@ -129,6 +129,12 @@ type FeedConfig struct {
 	Publishers []string `yaml:"publishers"`
 	// UpstreamRPS rate-limits requests to this feed's upstream. 0 = unlimited.
 	UpstreamRPS float64 `yaml:"upstream_rps"`
+	// Redirect serves cached artifacts as a 302 to a pre-signed storage URL
+	// instead of streaming them, when the storage supports it. Only
+	// redirect-safe protocols honour it (see api.RedirectSafe).
+	Redirect bool `yaml:"redirect"`
+	// RedirectTTL bounds a pre-signed URL. Default 15m.
+	RedirectTTL Duration `yaml:"redirect_ttl"`
 	// Policies is the ordered policy chain for this feed.
 	Policies []PolicyConfig `yaml:"policies"`
 }
@@ -143,6 +149,14 @@ type PolicyConfig struct {
 // modules.
 func (f FeedConfig) API() api.Feed {
 	return api.Feed{Name: f.Name, Format: f.Format, Upstream: f.Upstream, Anonymous: f.Anonymous}
+}
+
+// RedirectTTLOrDefault is the pre-signed URL lifetime for this feed.
+func (f FeedConfig) RedirectTTLOrDefault() time.Duration {
+	if f.RedirectTTL > 0 {
+		return f.RedirectTTL.Std()
+	}
+	return 15 * time.Minute
 }
 
 // Options returns the active storage backend's options as a generic map for
@@ -306,6 +320,9 @@ func (c *Config) Validate() error {
 			if err := validateHTTPURL(feed.Upstream); err != nil {
 				errs = append(errs, fmt.Errorf("%s: upstream: %w", at, err))
 			}
+		}
+		if feed.RedirectTTL < 0 {
+			errs = append(errs, fmt.Errorf("%s: redirect_ttl must not be negative", at))
 		}
 		if feed.UpstreamRPS < 0 {
 			errs = append(errs, fmt.Errorf("%s: upstream_rps must not be negative", at))

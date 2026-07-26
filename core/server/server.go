@@ -56,12 +56,14 @@ type runtime struct {
 }
 
 type feedRuntime struct {
-	feed       api.Feed
-	module     api.FormatModule
-	chain      *policy.Chain
-	upstream   *pipeline.Upstream
-	publishers *auth.Publishers
-	hosted     bool
+	feed        api.Feed
+	module      api.FormatModule
+	chain       *policy.Chain
+	upstream    *pipeline.Upstream
+	publishers  *auth.Publishers
+	hosted      bool
+	redirect    bool
+	redirectTTL time.Duration
 }
 
 // New builds the server and its initial runtime from the manager's current
@@ -196,6 +198,19 @@ func (s *Server) buildRuntime(cfg *config.Config) (*runtime, error) {
 		fr := &feedRuntime{
 			feed: feed, module: module, chain: chain,
 			publishers: publishers, hosted: fc.Hosted,
+			redirect:    fc.Redirect,
+			redirectTTL: fc.RedirectTTLOrDefault(),
+		}
+		if fc.Redirect {
+			if _, ok := s.store.(api.Presigner); !ok {
+				s.logger.Warn("feed asks for redirect mode but the storage cannot pre-sign; streaming instead",
+					"feed", fc.Name)
+				fr.redirect = false
+			} else if _, ok := module.(api.RedirectSafe); !ok {
+				s.logger.Warn("feed asks for redirect mode but the format is not redirect-safe; streaming instead",
+					"feed", fc.Name, "format", fc.Format)
+				fr.redirect = false
+			}
 		}
 		if fc.Upstream != "" {
 			fr.upstream, err = pipeline.NewUpstream(pipeline.UpstreamOptions{
