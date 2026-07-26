@@ -1,0 +1,12 @@
+# Registry config for `make dev`: registry runs on the host,
+# minio and postgres come from the compose stack (project registry-dev).
+server:
+  listen: "127.0.0.1:8080"
+  shutdown_timeout: 10s
+
+storage:
+  type: fs
+  fs:
+    path: ./.devdata
+
+feeds: []

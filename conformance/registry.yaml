@@ -1,0 +1,11 @@
+# Registry config used inside the conformance compose stack.
+server:
+  listen: ":8080"
+  shutdown_timeout: 10s
+
+storage:
+  type: fs
+  fs:
+    path: /data
+
+feeds: []

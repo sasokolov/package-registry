@@ -1,0 +1,11 @@
+# Overlay for `make dev`: publish minio/postgres ports to the host so the
+# registry process running on the host can reach them. Conformance runs do not
+# use this file and publish nothing.
+services:
+  minio:
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
