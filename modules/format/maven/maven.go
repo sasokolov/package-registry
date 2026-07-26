@@ -5,7 +5,9 @@
 // Sidecar checksum files (.sha1/.md5/.sha256/.sha512) are served from
 // digests stored at ingest, never proxied as separate upstream requests;
 // artifact ingest is verified against the upstream's .sha1 document.
-// SNAPSHOT versions are not proxied until Phase 5 and yield a clear 404.
+// SNAPSHOTs: timestamped builds are immutable artifacts, while the
+// "-SNAPSHOT" aliases and version-level indexes are mutable (see
+// snapshot.go).
 package maven
 
 import (
@@ -18,6 +20,10 @@ import (
 
 // metadataTTL bounds maven-metadata.xml freshness (SWR beyond it).
 const metadataTTL = 5 * time.Minute
+
+// snapshotMetadataTTL bounds SNAPSHOT indexes and the mutable
+// "-SNAPSHOT" aliases, which move on every deploy.
+const snapshotMetadataTTL = 1 * time.Minute
 
 func init() {
 	api.RegisterFormat(Module{})
@@ -75,9 +81,20 @@ func parseMetadata(segs []string, base, wantChecksum string) (api.Intent, error)
 	if len(dirs) == 0 {
 		return api.Intent{}, api.NotFoundf("metadata path has no group")
 	}
-	if strings.HasSuffix(dirs[len(dirs)-1], "-SNAPSHOT") {
-		return api.Intent{}, api.NotFoundf(
-			"SNAPSHOT versions are not proxied yet (planned in Phase 5): %s", base)
+	// Version-level metadata of a SNAPSHOT: .../artifact/1.0-SNAPSHOT/maven-metadata.xml
+	if len(dirs) >= 3 && isSnapshotVersion(dirs[len(dirs)-1]) {
+		version := dirs[len(dirs)-1]
+		artifact := dirs[len(dirs)-2]
+		group := strings.Join(dirs[:len(dirs)-2], ".")
+		return api.Intent{
+			Kind:  api.IntentMetadata,
+			Coord: api.PackageCoordinate{Format: "maven", Name: group + ":" + artifact, Version: version},
+			// SNAPSHOT indexes move with every deploy, so they are short-lived.
+			CacheTTL:     snapshotMetadataTTL,
+			RemotePath:   base,
+			WantChecksum: wantChecksum,
+			ContentType:  contentTypeFor("maven-metadata.xml", wantChecksum),
+		}, nil
 	}
 	// Artifact-level metadata (.../group/artifact/maven-metadata.xml) is the
 	// common case; a single directory means group-level metadata.
@@ -105,13 +122,7 @@ func parseArtifact(segs []string, base, wantChecksum string) (api.Intent, error)
 	artifact := segs[len(segs)-3]
 	group := strings.Join(segs[:len(segs)-3], ".")
 
-	if strings.HasSuffix(version, "-SNAPSHOT") {
-		return api.Intent{}, api.NotFoundf(
-			"SNAPSHOT versions are not proxied yet (planned in Phase 5): %s:%s:%s",
-			group, artifact, version)
-	}
-
-	return api.Intent{
+	intent := api.Intent{
 		Kind:       api.IntentArtifact,
 		Coord:      api.PackageCoordinate{Format: "maven", Name: group + ":" + artifact, Version: version},
 		RemotePath: base,
@@ -120,7 +131,15 @@ func parseArtifact(segs []string, base, wantChecksum string) (api.Intent, error)
 		RemoteChecksum: api.ChecksumSource{Algo: "sha1", Path: base + ".sha1"},
 		WantChecksum:   wantChecksum,
 		ContentType:    contentTypeFor(file, wantChecksum),
-	}, nil
+	}
+	if isSnapshotVersion(version) && !timestampedRE.MatchString(file) {
+		// "lib-1.0-SNAPSHOT.jar" is an alias for the newest build: mutable,
+		// short TTL. Timestamped builds stay immutable artifacts.
+		intent.Kind = api.IntentMetadata
+		intent.CacheTTL = snapshotMetadataTTL
+		intent.RemoteChecksum = api.ChecksumSource{}
+	}
+	return intent, nil
 }
 
 func contentTypeFor(file, wantChecksum string) string {

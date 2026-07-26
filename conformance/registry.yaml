@@ -95,3 +95,22 @@ feeds:
     format: composer
     upstream: http://fake-upstream/composer-upstream
     anonymous: true
+
+  - name: nugetorg
+    format: nuget
+    upstream: http://fake-upstream/nuget-upstream
+    anonymous: true
+
+  # Hosted npm feed for `npm publish`.
+  - name: npm-hosted
+    format: npm
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+
+  # Hosted maven feed for SNAPSHOT deploys.
+  - name: snapshots
+    format: maven
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]

@@ -109,6 +109,16 @@ services:
     volumes:
       - ./clients/composer/project:/src:ro
 
+  dotnet-client:
+    image: mcr.microsoft.com/dotnet/sdk:8.0
+    profiles: ["tools"]
+    working_dir: /work
+    environment:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+    volumes:
+      - ./clients/dotnet/project:/src:ro
+
   terraform-client:
     image: hashicorp/terraform:1.9
     profiles: ["tools"]

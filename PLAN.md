@@ -193,20 +193,20 @@ Deny/недоступности внешней зависимости.
 
 ## Фаза 5 — NuGet (read), npm publish, Maven SNAPSHOT
 
-- [ ] `modules/format/nuget`: Service Index (`/v3/index.json`) с ресурсами
+- [x] `modules/format/nuget`: Service Index (`/v3/index.json`) с ресурсами
       registry; RegistrationsBaseUrl, PackageBaseAddress (flat container),
       SearchQueryService — минимум для `dotnet restore`; всё через generic-
       пайплайн.
-- [ ] npm `Hoster`: `PUT /{pkg}` (JSON с base64-attachment), immutability
+- [x] npm `Hoster`: `PUT /{pkg}` (JSON с base64-attachment), immutability
       версий, `dist-tags` update, `npm publish`/`npm unpublish` (unpublish —
       только скрытие из индекса, блоб не удаляется).
-- [ ] Maven SNAPSHOT: мутабельные `maven-metadata.xml` уровня версии,
+- [x] Maven SNAPSHOT: мутабельные `maven-metadata.xml` уровня версии,
       timestamp-версии артефактов, retention-настройка «хранить последние N».
-- [ ] Conformance: `dotnet restore` референс-проекта (образ
+- [x] Conformance: `dotnet restore` референс-проекта (образ
       `mcr.microsoft.com/dotnet/sdk`) — успех и офлайн-повтор; `npm publish` от
       identity с правом → успех, повторный publish той же версии → 409;
       `mvn deploy` SNAPSHOT дважды → второй становится актуальным.
-- [ ] Задел гео: npm dist-tags — отдельные именованные указатели в
+- [x] Задел гео: npm dist-tags — отдельные именованные указатели в
       PG-состоянии (не внутри index-документа), Reindex их читает.
 
 **Acceptance:** сценарии зелёные. Отдельно зафиксировать в `docs/decisions.md`

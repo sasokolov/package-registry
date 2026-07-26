@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <!-- The fixture package carries no real assembly: restore is what the
+         scenario verifies, not compilation. -->
+    <NoWarn>NU1701;NU5104</NoWarn>
+    <RestorePackagesPath>packages</RestorePackagesPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="conformance.lib" Version="1.2.3" />
+  </ItemGroup>
+</Project>

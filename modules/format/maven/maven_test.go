@@ -1,11 +1,9 @@
 package maven
 
 import (
-	"errors"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/sasokolov/package-registry/core/api"
@@ -104,18 +102,42 @@ func TestParseMetadata(t *testing.T) {
 	}
 }
 
-func TestParseSnapshotRejectedWithClearMessage(t *testing.T) {
-	for _, p := range []string{
-		"/com/example/liba/1.0.0-SNAPSHOT/liba-1.0.0-SNAPSHOT.jar",
-		"/com/example/liba/1.0.0-SNAPSHOT/maven-metadata.xml",
-	} {
-		_, err := parse(t, p)
-		if !errors.Is(err, api.ErrNotFound) {
-			t.Fatalf("%s: err = %v, want ErrNotFound", p, err)
-		}
-		if !strings.Contains(err.Error(), "SNAPSHOT") || !strings.Contains(err.Error(), "Phase 5") {
-			t.Errorf("%s: error %q is not a clear SNAPSHOT message", p, err)
-		}
+func TestParseSnapshot(t *testing.T) {
+	// The "-SNAPSHOT" alias is mutable: it points at whatever build is
+	// newest, so it must not be cached as an immutable artifact.
+	intent, err := parse(t, "/com/example/liba/1.0.0-SNAPSHOT/liba-1.0.0-SNAPSHOT.jar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent.Kind != api.IntentMetadata {
+		t.Errorf("snapshot alias kind = %s, want metadata (mutable)", intent.Kind)
+	}
+	if intent.CacheTTL != snapshotMetadataTTL {
+		t.Errorf("snapshot alias ttl = %s", intent.CacheTTL)
+	}
+
+	// A timestamped build is an immutable artifact.
+	intent, err = parse(t, "/com/example/liba/1.0.0-SNAPSHOT/liba-1.0.0-20260726.101500-3.jar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent.Kind != api.IntentArtifact {
+		t.Errorf("timestamped build kind = %s, want artifact (immutable)", intent.Kind)
+	}
+	if intent.Coord.Version != "1.0.0-SNAPSHOT" {
+		t.Errorf("timestamped build coord = %+v", intent.Coord)
+	}
+
+	// Version-level metadata of a SNAPSHOT.
+	intent, err = parse(t, "/com/example/liba/1.0.0-SNAPSHOT/maven-metadata.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent.Kind != api.IntentMetadata || intent.Coord.Version != "1.0.0-SNAPSHOT" {
+		t.Errorf("snapshot metadata intent = %+v", intent)
+	}
+	if intent.CacheTTL != snapshotMetadataTTL {
+		t.Errorf("snapshot metadata ttl = %s", intent.CacheTTL)
 	}
 }
 

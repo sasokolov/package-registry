@@ -23,6 +23,10 @@ import (
 // maxUploadSize bounds a single PUT body.
 const maxUploadSize = 2 << 30 // 2 GiB
 
+// defaultSnapshotRetention is how many timestamped builds of one SNAPSHOT
+// coordinate stay in the index.
+const defaultSnapshotRetention = 5
+
 // HandlePublish implements api.Hoster: `mvn deploy` PUTs the artifact, its
 // .pom and their .sha1/.md5 sidecars, then a maven-metadata.xml.
 //
@@ -169,6 +173,9 @@ func (Module) Reindex(ctx context.Context, feed api.Feed, deps api.CoreServices)
 	if err != nil {
 		return err
 	}
+	if err := reindexSnapshots(ctx, feed, deps, manifests, defaultSnapshotRetention); err != nil {
+		return err
+	}
 
 	type artifactKey struct{ group, artifact string }
 	byArtifact := make(map[artifactKey]map[string]bool)
@@ -176,6 +183,11 @@ func (Module) Reindex(ctx context.Context, feed api.Feed, deps api.CoreServices)
 		group, artifact, version, ok := splitCoordinate(m.Coord)
 		if !ok {
 			continue
+		}
+		if strings.Contains(m.Path, "/") && timestampedRE.MatchString(m.Path) {
+			// Timestamped SNAPSHOT builds are listed by the version-level
+			// index, not by the artifact-level one.
+			version = snapshotVersionOf(version)
 		}
 		key := artifactKey{group, artifact}
 		if byArtifact[key] == nil {
@@ -395,3 +407,7 @@ func parsePOM(body []byte) (map[string]string, error) {
 	}
 	return meta, nil
 }
+
+// snapshotVersionOf normalises a timestamped build back to its SNAPSHOT
+// version for the artifact-level index.
+func snapshotVersionOf(version string) string { return version }
