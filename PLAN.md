@@ -43,7 +43,7 @@
 - [x] `core/api`: все интерфейсы и типы из CLAUDE.md (`BlobStore`, `Presigner`,
       `FormatModule`, `Hoster`, `Policy`, `Intent`, `PackageCoordinate`,
       `Identity`, `Decision`, sentinel-ошибки). Пакет без внешних зависимостей.
-- [ ] `modules/storage/fs`: реализация BlobStore поверх директории; атомарная
+- [x] `modules/storage/fs`: реализация BlobStore поверх директории; атомарная
       запись через tmp+rename; тесты.
 - [ ] `modules/storage/s3`: minio-go; Put через multipart для больших блобов;
       реализация `Presigner`; тесты против MinIO из compose

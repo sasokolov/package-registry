@@ -29,7 +29,8 @@ type PutOpts struct {
 	// the written content and fail with ErrChecksumMismatch without leaving
 	// a visible object on mismatch.
 	SHA256 string
-	// Size is the expected content length; -1 when unknown.
+	// Size, if > 0, is the expected content length; 0 or negative means
+	// unknown (a zero-length blob needs no size check to begin with).
 	Size int64
 }
 
