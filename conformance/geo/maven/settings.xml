@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- No mirror: the client image already holds every plugin the deploy
+     lifecycle needs, and the geo stack has no proxy feed. -->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
+  <servers>
+    <server>
+      <id>registry-deploy</id>
+      <username>ci</username>
+      <password>${env.REGISTRY_TOKEN}</password>
+    </server>
+  </servers>
+</settings>

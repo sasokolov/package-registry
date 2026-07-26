@@ -34,6 +34,11 @@ replication:
       public_url: http://registry-eu:8080
       pull_interval: 2s
 
+    - name: ap-1
+      url: http://registry-ap:8081
+      public_url: http://registry-ap:8080
+      pull_interval: 2s
+
 feeds:
   # Write-affinity: this feed is published at eu-1 only; us-1 forwards.
   - name: homed
@@ -53,4 +58,15 @@ feeds:
     publishers: ["token:ci-*"]
     publish_policy: local
     replication_mode: lazy
+    peer_fallback: true
+
+  # npm hosted feed homed at eu-1: `npm publish` against us-1 must be
+  # forwarded, and `npm install` must work at both sites.
+  - name: npmhosted
+    format: npm
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+    publish_policy: forward:eu-1
+    replication_mode: eager
     peer_fallback: true

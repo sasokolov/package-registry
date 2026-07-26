@@ -13,7 +13,7 @@ geo_curl() {
 }
 
 # site_url renders a site's public base URL.
-site_url() { # <eu|us>
+site_url() { # <eu|us|ap>
   echo "http://registry-$1:8080"
 }
 

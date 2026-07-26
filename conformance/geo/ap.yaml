@@ -1,7 +1,7 @@
-# Geo site eu-1 (docs/geo-replication.md).
+# Geo site ap-1: started empty to exercise snapshot bootstrap.
 site:
-  name: eu-1
-  external_url: http://registry-eu:8080
+  name: ap-1
+  external_url: http://registry-ap:8080
 
 server:
   listen: ":8080"
@@ -10,13 +10,13 @@ server:
 storage:
   type: s3
   s3:
-    endpoint: minio-eu:9000
+    endpoint: minio-ap:9000
     bucket: registry
     access_key: registry
     secret_key: registry-secret
 
 database:
-  dsn: postgres://registry:registry@postgres-eu:5432/registry
+  dsn: postgres://registry:registry@postgres-ap:5432/registry
 
 replication:
   enabled: true
@@ -29,28 +29,27 @@ replication:
   journal_retention: 720h
   max_clock_skew: 5m
   peers:
+    - name: eu-1
+      url: http://registry-eu:8081
+      public_url: http://registry-eu:8080
+      pull_interval: 2s
     - name: us-1
       url: http://registry-us:8081
       public_url: http://registry-us:8080
       pull_interval: 2s
 
-    - name: ap-1
-      url: http://registry-ap:8081
-      public_url: http://registry-ap:8080
-      pull_interval: 2s
-
 feeds:
-  # Write-affinity: this feed is published at eu-1 only; us-1 forwards.
   - name: homed
     format: maven
     hosted: true
     anonymous: true
     publishers: ["token:ci-*"]
     publish_policy: forward:eu-1
-    replication_mode: eager
+    # Lazy: the manifest replicates first and the bytes are fetched from a
+    # peer on demand, which is the window peer-fallback exists for.
+    replication_mode: lazy
     peer_fallback: true
 
-  # Symmetric active-active publishing: conflicts resolve by rule K1.
   - name: shared
     format: maven
     hosted: true
@@ -60,13 +59,11 @@ feeds:
     replication_mode: lazy
     peer_fallback: true
 
-  # npm hosted feed homed at eu-1: `npm publish` against us-1 must be
-  # forwarded, and `npm install` must work at both sites.
   - name: npmhosted
     format: npm
     hosted: true
     anonymous: true
     publishers: ["token:ci-*"]
     publish_policy: forward:eu-1
-    replication_mode: eager
+    replication_mode: lazy
     peer_fallback: true

@@ -26,6 +26,13 @@ type Peer struct {
 	PullInterval time.Duration
 }
 
+// controlTimeout bounds status, journal and manifest calls. It is short on
+// purpose: an unreachable peer must fail fast, because the poll loop holds
+// a cross-replica lease while it runs and a hung handshake would stall the
+// whole site's replication with it. Blob transfers keep the client's long
+// timeout.
+const controlTimeout = 10 * time.Second
+
 // Client talks to one peer's internal API.
 type Client struct {
 	peer   Peer
@@ -53,20 +60,38 @@ func NewClient(peer Peer, httpClient *http.Client, authz func(*http.Request), lo
 }
 
 func (c *Client) do(ctx context.Context, path string, query url.Values) (*http.Response, error) {
+	ctx, cancel := context.WithTimeout(ctx, controlTimeout)
 	u := c.peer.URL + InternalPrefix + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("build request to peer %s: %w", c.peer.Name, err)
 	}
 	c.authz(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("peer %s unreachable: %w", c.peer.Name, err)
 	}
+	// The body outlives this call; cancel when the caller closes it.
+	resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
 	return resp, nil
+}
+
+// cancelOnClose ties a request context's cancellation to the body's Close,
+// so the timeout covers reading the response as well.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnClose) Close() error {
+	err := c.ReadCloser.Close()
+	c.cancel()
+	return err
 }
 
 // Status fetches the peer handshake, pinning its UUID on first contact.

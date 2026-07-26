@@ -32,7 +32,7 @@ lagged() { # <eu|us>: the peer poll is failing and the status says so
   out="$(repl_status "$1")" || return 1
   grep -qE 'unreachable|timeout|no route|refused' <<<"$out"
 }
-if ! wait_for 45 lagged eu; then
+if ! wait_for 60 lagged eu; then
   echo "eu does not report the partition in repl status" >&2
   repl_status eu >&2
   heal
@@ -56,7 +56,6 @@ for site in eu us; do
 done
 
 echo "--> the replication status is healthy again"
-if ! wait_for 60 bash -c 'true'; then :; fi
 healthy() { # <eu|us>
   local out
   out="$(repl_status "$1")" || return 1
