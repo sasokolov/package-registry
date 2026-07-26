@@ -216,8 +216,16 @@ func randomEvents(t *testing.T, rng *rand.Rand) []state.JournalEntry {
 	var events []state.JournalEntry
 	wall := int64(1_700_000_000_000)
 
+	logical := int64(0)
 	for i := 0; i < 12; i++ {
-		wall += int64(rng.IntN(1000) + 1)
+		// Sometimes keep the wall clock and bump only the logical counter:
+		// that is the case HLCs exist for (same millisecond, causal order).
+		if rng.IntN(4) == 0 {
+			logical++
+		} else {
+			wall += int64(rng.IntN(1000) + 1)
+			logical = 0
+		}
 		site := []string{"eu-1", "us-1", "ap-1"}[rng.IntN(3)]
 		seq := int64(i + 1)
 		switch rng.IntN(5) {
@@ -226,24 +234,24 @@ func randomEvents(t *testing.T, rng *rand.Rand) []state.JournalEntry {
 			// content, which exercises rule K1.
 			pkg := fmt.Sprintf("pkg-%d", rng.IntN(4))
 			content := fmt.Sprintf("content-%d", rng.IntN(3))
-			events = append(events, mkEvent(t, site, seq, wall, 0, KindManifestPut, ManifestPut{
+			events = append(events, mkEvent(t, site, seq, wall, logical, KindManifestPut, ManifestPut{
 				Feed: "hosted", Path: pkg + "/1.0.0/" + pkg + ".jar",
 				Coord:  "maven:com.example:" + pkg + "@1.0.0",
 				SHA256: digestOf(content), Size: int64(len(content)),
 			}))
 		case 2:
 			// Mutable pointer: dist-tag style, converges by HLC.
-			events = append(events, mkEvent(t, site, seq, wall, 0, KindManifestPut, ManifestPut{
+			events = append(events, mkEvent(t, site, seq, wall, logical, KindManifestPut, ManifestPut{
 				Feed: "hosted", Path: "-/hosted/pkg/dist-tags/latest",
 				Coord: "npm:pkg", SHA256: digestOf(fmt.Sprintf("v%d", rng.IntN(5))),
 				Mutable: true,
 			}))
 		case 3:
-			events = append(events, mkEvent(t, site, seq, wall, 0, KindTokenRevoke, TokenRevoke{
+			events = append(events, mkEvent(t, site, seq, wall, logical, KindTokenRevoke, TokenRevoke{
 				Hash: digestOf(fmt.Sprintf("token-%d", rng.IntN(3))),
 			}))
 		case 4:
-			events = append(events, mkEvent(t, site, seq, wall, 0, KindQuarantineSet, QuarantineSet{
+			events = append(events, mkEvent(t, site, seq, wall, logical, KindQuarantineSet, QuarantineSet{
 				Feed: "hosted", Coordinate: fmt.Sprintf("maven:com.example:pkg-%d@1.0.0", rng.IntN(4)),
 				Reason: "manual",
 			}))
