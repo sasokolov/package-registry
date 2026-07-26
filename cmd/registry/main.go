@@ -32,6 +32,18 @@ func main() {
 }
 
 func run(args []string, logOut io.Writer) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "token":
+			return tokenCmd(args[1:], logOut)
+		case "serve":
+			args = args[1:]
+		}
+	}
+	return serveCmd(args, logOut)
+}
+
+func serveCmd(args []string, logOut io.Writer) error {
 	flags := flag.NewFlagSet("registry", flag.ContinueOnError)
 	configPath := flags.String("config", "/etc/registry/config.yaml", "path to the YAML config file")
 	logLevel := flags.String("log-level", "info", "log level: debug, info, warn or error")

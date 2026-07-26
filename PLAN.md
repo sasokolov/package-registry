@@ -51,7 +51,7 @@
 - [x] `core/state`: pgx-пул, goose-миграции (таблицы: `tokens`, `audit`,
       `publish_sessions`, `quarantine`), helper для advisory locks; тесты
       против Postgres из compose.
-- [ ] `core/auth`: статические токены (создание через CLI-субкоманду
+- [x] `core/auth`: статические токены (создание через CLI-субкоманду
       `registry token create`, хэш в БД, кэш в памяти с TTL); OIDC: валидация
       JWT по JWKS издателя из конфига, маппинг claims → `Identity`
       (`project_path`, `ref`, `sub`); тесты с локально сгенерированным JWKS.
