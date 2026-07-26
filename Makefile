@@ -6,7 +6,7 @@ GOLANGCI_LINT := $(BIN_DIR)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 
 COMPOSE_FILE := conformance/docker-compose.yml
 
-.PHONY: build test lint conformance conformance-live dev dev-down
+.PHONY: build test test-integration lint conformance conformance-live dev dev-down
 
 build:
 	go build ./...
@@ -20,6 +20,18 @@ lint: $(GOLANGCI_LINT)
 $(GOLANGCI_LINT):
 	GOBIN=$(BIN_DIR) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 	mv $(BIN_DIR)/golangci-lint $(GOLANGCI_LINT)
+
+INT_COMPOSE := docker compose -f $(COMPOSE_FILE) -f conformance/compose.integration.yml -p registry-int
+INT_ENV := S3_TEST_ENDPOINT=127.0.0.1:19000 \
+	S3_TEST_ACCESS_KEY=registry S3_TEST_SECRET_KEY=registry-secret \
+	PG_TEST_DSN=postgres://registry:registry@127.0.0.1:15432/registry
+
+# Integration tests (build tag "integration") against MinIO and Postgres
+# from the compose stack.
+test-integration:
+	$(INT_COMPOSE) up -d --wait minio postgres
+	$(INT_ENV) go test -tags integration -count=1 ./...; status=$$?; \
+		$(INT_COMPOSE) down -v; exit $$status
 
 conformance:
 	./conformance/run.sh

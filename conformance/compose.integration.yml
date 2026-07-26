@@ -1,0 +1,10 @@
+# Overlay for `make test-integration`: publish minio/postgres on dedicated
+# host ports (distinct from compose.dev.yml) so `go test -tags integration`
+# on the host can reach them without clashing with a running `make dev`.
+services:
+  minio:
+    ports:
+      - "127.0.0.1:19000:9000"
+  postgres:
+    ports:
+      - "127.0.0.1:15432:5432"

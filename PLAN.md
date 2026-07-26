@@ -45,7 +45,7 @@
       `Identity`, `Decision`, sentinel-ошибки). Пакет без внешних зависимостей.
 - [x] `modules/storage/fs`: реализация BlobStore поверх директории; атомарная
       запись через tmp+rename; тесты.
-- [ ] `modules/storage/s3`: minio-go; Put через multipart для больших блобов;
+- [x] `modules/storage/s3`: minio-go; Put через multipart для больших блобов;
       реализация `Presigner`; тесты против MinIO из compose
       (build-tag `integration`).
 - [ ] `core/state`: pgx-пул, goose-миграции (таблицы: `tokens`, `audit`,

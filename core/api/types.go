@@ -60,6 +60,13 @@ type Presigner interface {
 	PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error)
 }
 
+// Initializer is an optional module capability: one-time startup
+// initialization that needs the process context (e.g. ensuring a bucket
+// exists). Called by the assembly code in cmd/registry.
+type Initializer interface {
+	Init(ctx context.Context) error
+}
+
 // ---------------------------------------------------------------------------
 // Feeds and request intents
 
