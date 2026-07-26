@@ -48,7 +48,7 @@
 - [x] `modules/storage/s3`: minio-go; Put через multipart для больших блобов;
       реализация `Presigner`; тесты против MinIO из compose
       (build-tag `integration`).
-- [ ] `core/state`: pgx-пул, goose-миграции (таблицы: `tokens`, `audit`,
+- [x] `core/state`: pgx-пул, goose-миграции (таблицы: `tokens`, `audit`,
       `publish_sessions`, `quarantine`), helper для advisory locks; тесты
       против Postgres из compose.
 - [ ] `core/auth`: статические токены (создание через CLI-субкоманду
