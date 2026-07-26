@@ -24,34 +24,63 @@ type modelState struct {
 	manifests map[string]string // feed/path -> sha256
 	mutable   map[string]bool
 	hlc       map[string]state.HLC
-	// quarantine holds the SET of active reasons per coordinate: reasons
-	// are independent, so adding and releasing them commute.
-	quarantine map[string]map[string]bool
+	// quarantine is one last-writer-wins register per (coordinate, reason):
+	// a release that arrives before its set must still win, so state and
+	// timestamp travel together.
+	quarantine map[string]map[string]quarantineState
 	revoked    map[string]bool
 	// conflicts holds the SET of digests ever seen for a coordinate: a set
 	// is order-independent, a winner/loser pair is not.
 	conflicts map[string]map[string]bool
 	// resolved records operator decisions, which are terminal: a late
 	// conflicting publish must not undo them.
-	resolved map[string]string
+	resolved    map[string]string
+	resolvedHLC map[string]state.HLC
+	// parked mirrors the applier's dead-letter: an event that cannot be
+	// applied yet is retried after every subsequent event, which is what
+	// makes out-of-order delivery converge rather than drop.
+	parked []state.JournalEntry
 }
 
 func newModel() *modelState {
 	return &modelState{
-		manifests:  map[string]string{},
-		mutable:    map[string]bool{},
-		hlc:        map[string]state.HLC{},
-		quarantine: map[string]map[string]bool{},
-		revoked:    map[string]bool{},
-		conflicts:  map[string]map[string]bool{},
-		resolved:   map[string]string{},
+		manifests:   map[string]string{},
+		mutable:     map[string]bool{},
+		hlc:         map[string]state.HLC{},
+		quarantine:  map[string]map[string]quarantineState{},
+		revoked:     map[string]bool{},
+		conflicts:   map[string]map[string]bool{},
+		resolved:    map[string]string{},
+		resolvedHLC: map[string]state.HLC{},
 	}
 }
 
 // apply mirrors Applier.dispatch's decision logic without a database. Any
 // change to the real rules must be mirrored here, and the conformance geo
 // scenarios verify the two agree end to end.
+// apply merges one event and then retries anything parked, exactly as the
+// puller does on every poll cycle.
 func (m *modelState) apply(e state.JournalEntry, localSite string) {
+	m.applyOne(e, localSite)
+	m.retryParked(localSite)
+}
+
+// retryParked re-attempts parked events until a pass makes no progress.
+func (m *modelState) retryParked(localSite string) {
+	for {
+		pending := m.parked
+		m.parked = nil
+		before := len(pending)
+		for _, e := range pending {
+			m.applyOne(e, localSite)
+		}
+		if len(m.parked) >= before {
+			return // no progress
+		}
+	}
+}
+
+func (m *modelState) applyOne(e state.JournalEntry, localSite string) {
 	switch e.Kind {
 	case KindManifestPut:
 		var p ManifestPut
@@ -60,9 +89,18 @@ func (m *modelState) apply(e state.JournalEntry, localSite string) {
 		}
 		key := p.Feed + "/" + p.Path
 		if keep, resolved := m.resolved[key]; resolved {
-			// An operator already decided this coordinate; replaying the
-			// losing publish must not reopen it.
+			// An operator already decided this coordinate; replaying either
+			// publish converges on the decision and never re-quarantines.
+			// The digest is still recorded, so the observed set is a union
+			// and identical on every site.
 			m.manifests[key] = keep
+			if p.SHA256 != keep {
+				if m.conflicts[key] == nil {
+					m.conflicts[key] = map[string]bool{keep: true}
+				}
+				m.conflicts[key][p.SHA256] = true
+			}
+			m.forceRelease(p.Feed+"/"+p.Coord, "cross_site_conflict")
 			return
 		}
 		existing, found := m.manifests[key]
@@ -96,7 +134,7 @@ func (m *modelState) apply(e state.JournalEntry, localSite string) {
 			if p.SHA256 < existing {
 				m.manifests[key] = p.SHA256
 			}
-			m.addQuarantine(p.Feed+"/"+p.Coord, "cross_site_conflict")
+			m.setQuarantine(p.Feed+"/"+p.Coord, "cross_site_conflict", true, e.HLC)
 		}
 	case KindTokenRevoke:
 		var p TokenRevoke
@@ -106,40 +144,83 @@ func (m *modelState) apply(e state.JournalEntry, localSite string) {
 	case KindQuarantineSet:
 		var p QuarantineSet
 		if err := json.Unmarshal(e.Payload, &p); err == nil {
-			m.addQuarantine(p.Feed+"/"+p.Coordinate, p.Reason)
+			m.setQuarantine(p.Feed+"/"+p.Coordinate, p.Reason, true, e.HLC)
 		}
 	case KindQuarantineRelease:
 		var p QuarantineRelease
 		if err := json.Unmarshal(e.Payload, &p); err == nil {
-			m.releaseQuarantine(p.Feed+"/"+p.Coordinate, p.Reason)
+			reason := p.Reason
+			if reason == "" {
+				reason = "manual"
+			}
+			m.setQuarantine(p.Feed+"/"+p.Coordinate, reason, false, e.HLC)
 		}
 	case KindConflictResolve:
 		var p ConflictResolve
 		if err := json.Unmarshal(e.Payload, &p); err == nil {
-			m.manifests[p.Feed+"/"+p.Path] = p.KeepSHA
-			m.releaseQuarantine(p.Feed+"/"+p.Coord, "cross_site_conflict")
-			delete(m.conflicts, p.Feed+"/"+p.Path)
-			m.resolved[p.Feed+"/"+p.Path] = p.KeepSHA
+			// A resolution only applies to a conflict this site has seen,
+			// mirroring the applier's validation; otherwise it parks and
+			// is retried once the conflicting publishes arrive.
+			key := p.Feed + "/" + p.Path
+			if m.conflicts[key] == nil || !m.conflicts[key][p.KeepSHA] {
+				m.parked = append(m.parked, e)
+				return
+			}
+			// Two operators can decide one coordinate: the newest decision
+			// wins by HLC, so the outcome does not depend on arrival order.
+			if prev, ok := m.resolvedHLC[key]; ok && !prev.Before(e.HLC) {
+				m.manifests[key] = m.resolved[key]
+				return
+			}
+			m.resolved[key] = p.KeepSHA
+			m.resolvedHLC[key] = e.HLC
+			m.manifests[key] = p.KeepSHA
+			// Terminal: the conflict quarantine is lifted unconditionally,
+			// because the stamp that set it differs per site.
+			m.forceRelease(p.Feed+"/"+p.Coord, "cross_site_conflict")
 		}
 	}
 	_ = localSite
 }
 
-func (m *modelState) addQuarantine(key, reason string) {
-	if m.quarantine[key] == nil {
-		m.quarantine[key] = map[string]bool{}
-	}
-	m.quarantine[key][reason] = true
+// quarantineState is one reason's register: active or not, plus when it was
+// last decided.
+type quarantineState struct {
+	active bool
+	hlc    state.HLC
 }
 
-func (m *modelState) releaseQuarantine(key, reason string) {
+func (m *modelState) setQuarantine(key, reason string, active bool, hlc state.HLC) {
 	if m.quarantine[key] == nil {
-		return
+		m.quarantine[key] = map[string]quarantineState{}
 	}
-	delete(m.quarantine[key], reason)
-	if len(m.quarantine[key]) == 0 {
-		delete(m.quarantine, key)
+	if cur, ok := m.quarantine[key][reason]; ok && !cur.hlc.Before(hlc) {
+		return // an older decision never overwrites a newer one
 	}
+	m.quarantine[key][reason] = quarantineState{active: active, hlc: hlc}
+}
+
+// forceRelease clears a reason regardless of timestamps, for state that is
+// derived rather than decided (a resolved conflict).
+func (m *modelState) forceRelease(key, reason string) {
+	if m.quarantine[key] == nil {
+		m.quarantine[key] = map[string]quarantineState{}
+	}
+	st := m.quarantine[key][reason]
+	st.active = false
+	m.quarantine[key][reason] = st
+}
+
+// activeReasons lists the reasons currently blocking a coordinate.
+func (m *modelState) activeReasons(key string) []string {
+	var out []string
+	for reason, st := range m.quarantine[key] {
+		if st.active {
+			out = append(out, reason)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // fingerprint renders the state so two models can be compared exactly.
@@ -162,12 +243,9 @@ func (m *modelState) fingerprint() string {
 	}
 	sort.Strings(quarantined)
 	for _, k := range quarantined {
-		reasons := make([]string, 0, len(m.quarantine[k]))
-		for r := range m.quarantine[k] {
-			reasons = append(reasons, r)
+		if reasons := m.activeReasons(k); len(reasons) > 0 {
+			fmt.Fprintf(&b, "quarantine|%s=%s\n", k, strings.Join(reasons, ","))
 		}
-		sort.Strings(reasons)
-		fmt.Fprintf(&b, "quarantine|%s=%s\n", k, strings.Join(reasons, ","))
 	}
 	revoked := make([]string, 0, len(m.revoked))
 	for h := range m.revoked {
@@ -217,7 +295,7 @@ func randomEvents(t *testing.T, rng *rand.Rand) []state.JournalEntry {
 	wall := int64(1_700_000_000_000)
 
 	logical := int64(0)
-	for i := 0; i < 12; i++ {
+	for i := 0; i < 20; i++ {
 		// Sometimes keep the wall clock and bump only the logical counter:
 		// that is the case HLCs exist for (same millisecond, causal order).
 		if rng.IntN(4) == 0 {
@@ -228,7 +306,7 @@ func randomEvents(t *testing.T, rng *rand.Rand) []state.JournalEntry {
 		}
 		site := []string{"eu-1", "us-1", "ap-1"}[rng.IntN(3)]
 		seq := int64(i + 1)
-		switch rng.IntN(5) {
+		switch rng.IntN(7) {
 		case 0, 1:
 			// Immutable publish; some coordinates collide with different
 			// content, which exercises rule K1.
@@ -253,7 +331,25 @@ func randomEvents(t *testing.T, rng *rand.Rand) []state.JournalEntry {
 		case 4:
 			events = append(events, mkEvent(t, site, seq, wall, logical, KindQuarantineSet, QuarantineSet{
 				Feed: "hosted", Coordinate: fmt.Sprintf("maven:com.example:pkg-%d@1.0.0", rng.IntN(4)),
-				Reason: "manual",
+				Reason: []string{"manual", "policy_osv"}[rng.IntN(2)],
+			}))
+		case 5:
+			// Releases are generated independently of their sets: the two
+			// usually originate at different sites and therefore travel in
+			// separate streams that arrive in any order.
+			events = append(events, mkEvent(t, site, seq, wall, logical, KindQuarantineRelease, QuarantineRelease{
+				Feed: "hosted", Coordinate: fmt.Sprintf("maven:com.example:pkg-%d@1.0.0", rng.IntN(4)),
+				Reason: []string{"manual", "policy_osv"}[rng.IntN(2)],
+			}))
+		case 6:
+			// An operator resolution for a coordinate that may or may not
+			// have conflicted yet, keeping either of the two contents.
+			pkg := fmt.Sprintf("pkg-%d", rng.IntN(4))
+			content := fmt.Sprintf("content-%d", rng.IntN(3))
+			events = append(events, mkEvent(t, site, seq, wall, logical, KindConflictResolve, ConflictResolve{
+				Feed: "hosted", Path: pkg + "/1.0.0/" + pkg + ".jar",
+				Coord:   "maven:com.example:" + pkg + "@1.0.0",
+				KeepSHA: digestOf(content), Operator: "alice",
 			}))
 		}
 	}
@@ -319,7 +415,7 @@ func TestK1PicksSmallestDigest(t *testing.T) {
 		if got := m.manifests["hosted/lib/1.0.0/lib.jar"]; got != smaller {
 			t.Errorf("order %v: canonical digest = %s, want the smallest (%s)", order, got, smaller)
 		}
-		if _, quarantined := m.quarantine["hosted/maven:com.example:lib@1.0.0"]; !quarantined {
+		if len(m.activeReasons("hosted/maven:com.example:lib@1.0.0")) == 0 {
 			t.Errorf("order %v: conflicting coordinate was not quarantined", order)
 		}
 	}
@@ -349,7 +445,7 @@ func TestK1ResolutionConverges(t *testing.T) {
 		if got := m.manifests["hosted/lib/1.0.0/lib.jar"]; got != b {
 			t.Errorf("order %v: digest = %s, want the operator's choice %s", order, got, b)
 		}
-		if _, quarantined := m.quarantine["hosted/maven:lib@1.0.0"]; quarantined {
+		if len(m.activeReasons("hosted/maven:lib@1.0.0")) > 0 {
 			t.Errorf("order %v: coordinate still quarantined after resolution", order)
 		}
 	}

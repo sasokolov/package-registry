@@ -373,3 +373,54 @@ feeds:
 		t.Error("Load accepted both an inline credential and its file")
 	}
 }
+
+func TestConfigExpandsEnvironmentReferences(t *testing.T) {
+	t.Setenv("TEST_S3_SECRET", "s3cr3t|with&specials\\chars")
+	t.Setenv("TEST_DSN", "postgres://u:p@h/db?sslmode=require&pool_max_conns=10")
+
+	cfg, err := Parse(strings.NewReader(`
+site: {name: eu-1}
+storage:
+  type: s3
+  s3:
+    endpoint: minio:9000
+    bucket: registry
+    access_key: static
+    secret_key: ${TEST_S3_SECRET}
+database:
+  dsn: ${TEST_DSN}
+feeds:
+  - name: npmjs
+    format: npm
+    upstream: https://registry.npmjs.org
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	// Characters that break naive sed substitution must survive intact.
+	if got := cfg.Storage.S3.SecretKey; got != "s3cr3t|with&specials\\chars" {
+		t.Errorf("secret key = %q", got)
+	}
+	if got := cfg.Database.DSN; got != "postgres://u:p@h/db?sslmode=require&pool_max_conns=10" {
+		t.Errorf("dsn = %q", got)
+	}
+}
+
+func TestConfigRejectsUnsetEnvironmentReference(t *testing.T) {
+	_, err := Parse(strings.NewReader(`
+site: {name: eu-1}
+storage: {type: fs, fs: {path: /tmp/x}}
+database:
+  dsn: ${DEFINITELY_NOT_SET_ANYWHERE}
+feeds:
+  - name: npmjs
+    format: npm
+    upstream: https://registry.npmjs.org
+`))
+	if err == nil {
+		t.Fatal("Parse accepted a config referencing an unset variable")
+	}
+	if !strings.Contains(err.Error(), "DEFINITELY_NOT_SET_ANYWHERE") {
+		t.Errorf("error does not name the missing variable: %v", err)
+	}
+}

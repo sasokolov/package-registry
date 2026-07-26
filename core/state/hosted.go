@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -53,6 +54,20 @@ func (db *DB) InsertHosted(ctx context.Context, r HostedRow) (created bool, err 
 // InsertHostedTx is InsertHosted inside a caller-provided transaction, so a
 // publish and its replication journal entry commit together.
 func InsertHostedTx(ctx context.Context, tx pgx.Tx, r HostedRow) (created bool, err error) {
+	// Stamp the row with the site's hybrid logical clock. Mutable
+	// coordinates (dist-tags, SNAPSHOT aliases) are ordered by this stamp
+	// when a replicated update arrives; an unstamped row would read as
+	// (0,0) and lose to every remote event, however old.
+	if r.Metadata == nil {
+		r.Metadata = map[string]string{}
+	}
+	var wall, logical int64
+	if err := tx.QueryRow(ctx, "SELECT hlc_wall, hlc_logical FROM repl_hlc_now()").Scan(&wall, &logical); err != nil {
+		return false, classify(fmt.Errorf("stamp hybrid logical clock: %w", err))
+	}
+	r.Metadata["hlc_wall"] = strconv.FormatInt(wall, 10)
+	r.Metadata["hlc_logical"] = strconv.FormatInt(logical, 10)
+
 	checksums, err := json.Marshal(nonNilMap(r.Checksums))
 	if err != nil {
 		return false, fmt.Errorf("encode checksums: %w", err)
@@ -121,18 +136,36 @@ func nonNilMap(m map[string]string) map[string]string {
 	return m
 }
 
-// ListHosted returns published coordinates of a feed under a path prefix,
-// ordered by path (deterministic Reindex input).
+// ListHosted returns published coordinates ordered by path (a deterministic
+// Reindex input). An empty feed means every feed — snapshot, projection
+// repair and backfill all need the whole set.
 func (db *DB) ListHosted(ctx context.Context, feed, prefix string) ([]HostedRow, error) {
-	rows, err := db.pool.Query(ctx, `
-		SELECT feed, path, coordinate, sha256, size, checksums, metadata, mutable,
-		       origin, site, published_by, published_at
-		  FROM hosted_manifests
-		 WHERE feed = $1 AND path LIKE $2 || '%'
-		 ORDER BY path`, feed, prefix)
+	rows, err := db.pool.Query(ctx, listHostedQuery, feed, prefix)
 	if err != nil {
 		return nil, classify(fmt.Errorf("list hosted manifests: %w", err))
 	}
+	return scanHosted(rows)
+}
+
+// ListHostedTx is ListHosted inside a caller's transaction, so a snapshot
+// can read manifests and journal watermarks at one point in time.
+func ListHostedTx(ctx context.Context, tx pgx.Tx, feed, prefix string) ([]HostedRow, error) {
+	rows, err := tx.Query(ctx, listHostedQuery, feed, prefix)
+	if err != nil {
+		return nil, fmt.Errorf("list hosted manifests: %w", err)
+	}
+	return scanHosted(rows)
+}
+
+const listHostedQuery = `
+		SELECT feed, path, coordinate, sha256, size, checksums, metadata, mutable,
+		       origin, site, published_by, published_at
+		  FROM hosted_manifests
+		 WHERE ($1 = '' OR feed = $1) AND path LIKE $2 || '%'
+		 ORDER BY feed, path`
+
+// scanHosted materializes hosted rows from a query result.
+func scanHosted(rows pgx.Rows) ([]HostedRow, error) {
 	defer rows.Close()
 
 	var out []HostedRow

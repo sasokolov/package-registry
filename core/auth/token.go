@@ -65,9 +65,10 @@ type LookupFunc func(ctx context.Context, hashHex string) (name string, err erro
 // front of the lookup backend, so cached identities keep working while
 // PostgreSQL is down (invariant 7).
 type TokenVerifier struct {
-	lookup LookupFunc
-	ttl    time.Duration
-	now    func() time.Time
+	lookup   LookupFunc
+	ttl      time.Duration
+	staleFor time.Duration
+	now      func() time.Time
 
 	mu    sync.Mutex
 	cache map[string]tokenCacheEntry
@@ -76,17 +77,28 @@ type TokenVerifier struct {
 type tokenCacheEntry struct {
 	name    string
 	expires time.Time
+	// staleUntil bounds how long this verdict may still be served after
+	// the TTL when the backend is unreachable. Revocations still take
+	// effect: the sweeper evicts revoked hashes, and a database that is
+	// down cannot have accepted a revocation either.
+	staleUntil time.Time
 }
 
 // NewTokenVerifier builds a verifier; ttl bounds the cache.
 func NewTokenVerifier(lookup LookupFunc, ttl time.Duration) *TokenVerifier {
 	return &TokenVerifier{
-		lookup: lookup,
-		ttl:    ttl,
-		now:    time.Now,
-		cache:  make(map[string]tokenCacheEntry),
+		lookup:   lookup,
+		ttl:      ttl,
+		staleFor: defaultStaleWindow,
+		now:      time.Now,
+		cache:    make(map[string]tokenCacheEntry),
 	}
 }
+
+// defaultStaleWindow is how long a verified identity may be reused while
+// the token backend is unreachable (invariant 7: a database outage degrades
+// the read path, it does not stop it).
+const defaultStaleWindow = 6 * time.Hour
 
 // Authenticate resolves a presented secret to an identity.
 func (v *TokenVerifier) Authenticate(ctx context.Context, secret string) (api.Identity, error) {
@@ -102,8 +114,13 @@ func (v *TokenVerifier) Authenticate(ctx context.Context, secret string) (api.Id
 	name, err := v.lookup(ctx, hash)
 	switch {
 	case err == nil:
+		now := v.now()
 		v.mu.Lock()
-		v.cache[hash] = tokenCacheEntry{name: name, expires: v.now().Add(v.ttl)}
+		v.cache[hash] = tokenCacheEntry{
+			name:       name,
+			expires:    now.Add(v.ttl),
+			staleUntil: now.Add(v.staleFor),
+		}
 		v.mu.Unlock()
 		return api.Identity{Kind: api.IdentityToken, Subject: name}, nil
 	case errors.Is(err, api.ErrNotFound):
@@ -112,7 +129,14 @@ func (v *TokenVerifier) Authenticate(ctx context.Context, secret string) (api.Id
 		v.mu.Unlock()
 		return api.Identity{}, fmt.Errorf("unknown token (hash %s…): %w", hash[:8], api.ErrUnauthorized)
 	default:
-		// Backend down and no fresh cache entry: degrade loudly.
+		// The backend is unreachable. A previously verified identity keeps
+		// working within the stale window rather than turning a database
+		// outage into an authentication outage (invariant 7). Revocation
+		// is unaffected: the sweeper evicts revoked hashes, and a database
+		// that is down cannot have accepted new revocations either.
+		if ok && v.now().Before(e.staleUntil) {
+			return api.Identity{Kind: api.IdentityToken, Subject: e.name, Stale: true}, nil
+		}
 		return api.Identity{}, fmt.Errorf("token backend unavailable (hash %s…): %w", hash[:8], api.ErrUnavailable)
 	}
 }

@@ -10,6 +10,12 @@ spec:
     - name: http
       port: {{ .Values.service.port }}
       targetPort: http
+    {{- if .Values.replication.enabled }}
+    # Peers connect to this port; the NetworkPolicy restricts who may.
+    - name: replication
+      port: {{ .Values.replication.servicePort }}
+      targetPort: replication
+    {{- end }}
   selector:
     app.kubernetes.io/name: {{ include "registry.name" . }}
     app.kubernetes.io/instance: {{ .Release.Name }}

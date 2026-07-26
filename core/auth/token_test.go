@@ -62,11 +62,24 @@ func TestTokenVerifier(t *testing.T) {
 		t.Errorf("Authenticate with down backend and fresh cache: %v", err)
 	}
 
-	// TTL expired + backend down: loud degradation.
+	// TTL expired + backend down: the last verdict is reused within the
+	// stale window, marked stale, rather than turning a database outage
+	// into an authentication outage (invariant 7).
 	now = now.Add(6 * time.Minute)
-	if _, err := v.Authenticate(ctx, secret); !errors.Is(err, api.ErrUnavailable) {
-		t.Errorf("Authenticate = %v, want ErrUnavailable", err)
+	staleID, staleErr := v.Authenticate(ctx, secret)
+	if staleErr != nil {
+		t.Errorf("Authenticate past the TTL with the backend down: %v", staleErr)
 	}
+	if !staleID.Stale {
+		t.Error("identity served past the TTL is not marked stale")
+	}
+
+	// Past the stale window it does degrade loudly.
+	now = now.Add(defaultStaleWindow)
+	if _, err := v.Authenticate(ctx, secret); !errors.Is(err, api.ErrUnavailable) {
+		t.Errorf("Authenticate past the stale window = %v, want ErrUnavailable", err)
+	}
+	now = now.Add(-defaultStaleWindow)
 
 	// Backend up again: cache repopulates.
 	backend.down = false
@@ -97,5 +110,64 @@ func TestHashPrefixNeverLeaksSecret(t *testing.T) {
 	}
 	if strings.Contains(secret, p) {
 		t.Error("hash prefix appears inside the secret — suspicious")
+	}
+}
+
+// A database outage must degrade the read path, not stop it: an identity
+// verified before the outage keeps working within the stale window
+// (invariant 7), and is marked so writes can still refuse it.
+func TestVerifierServesStaleIdentityWhileBackendIsDown(t *testing.T) {
+	var down bool
+	lookup := func(_ context.Context, _ string) (string, error) {
+		if down {
+			return "", errors.New("connection refused")
+		}
+		return "ci-bot", nil
+	}
+	now := time.Now()
+	v := NewTokenVerifier(lookup, time.Minute)
+	v.now = func() time.Time { return now }
+
+	secret := "reg_" + strings.Repeat("a", 40)
+	if _, err := v.Authenticate(context.Background(), secret); err != nil {
+		t.Fatalf("first authenticate: %v", err)
+	}
+
+	down = true
+	now = now.Add(2 * time.Minute) // past the cache TTL
+
+	id, err := v.Authenticate(context.Background(), secret)
+	if err != nil {
+		t.Fatalf("authenticate during outage: %v", err)
+	}
+	if id.Subject != "ci-bot" {
+		t.Errorf("subject = %q", id.Subject)
+	}
+	if !id.Stale {
+		t.Error("identity served during an outage is not marked stale")
+	}
+
+	// Past the stale window the outage does surface.
+	now = now.Add(defaultStaleWindow)
+	if _, err := v.Authenticate(context.Background(), secret); !errors.Is(err, api.ErrUnavailable) {
+		t.Errorf("after the stale window: %v, want ErrUnavailable", err)
+	}
+}
+
+// A revoked token must not survive on the stale path.
+func TestRevocationBeatsStaleCache(t *testing.T) {
+	lookup := func(_ context.Context, _ string) (string, error) { return "ci-bot", nil }
+	v := NewTokenVerifier(lookup, time.Minute)
+	secret := "reg_" + strings.Repeat("b", 40)
+	if _, err := v.Authenticate(context.Background(), secret); err != nil {
+		t.Fatal(err)
+	}
+	if n := v.Revoke([]string{hashHex(secret)}); n != 1 {
+		t.Fatalf("Revoke evicted %d entries, want 1", n)
+	}
+	// With the entry gone there is nothing stale to fall back to.
+	v.lookup = func(_ context.Context, _ string) (string, error) { return "", errors.New("down") }
+	if _, err := v.Authenticate(context.Background(), secret); !errors.Is(err, api.ErrUnavailable) {
+		t.Errorf("revoked token during an outage: %v, want ErrUnavailable", err)
 	}
 }

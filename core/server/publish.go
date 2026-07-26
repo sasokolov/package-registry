@@ -41,6 +41,13 @@ func (s *Server) publishHandler(rt *runtime, fr *feedRuntime, hoster api.Hoster)
 			s.writeError(w, api.ErrUnauthorized, "authentication required to publish")
 			return
 		}
+		if id.Stale {
+			s.audit.Warn("publish refused: identity could not be re-verified",
+				"feed", fr.feed.Name, "identity", id.String(), "path", r.URL.Path)
+			s.writeError(w, api.ErrUnavailable,
+				"the token backend is unavailable, so this credential cannot be verified for a write")
+			return
+		}
 		if !fr.publishers.Allowed(id) {
 			s.audit.Warn("publish denied: identity has no publish permission",
 				"feed", fr.feed.Name, "identity", id.String(),
@@ -186,10 +193,19 @@ func (s *Server) ApplyForwardedPublish(ctx context.Context, feed, path, method s
 		return http.StatusServiceUnavailable, []byte("publishing is unavailable: no database\n"), nil
 	}
 
-	// The peer authenticated the client and vouches for this identity; we
-	// still re-authorize it below, and the audit records both.
+	// The peer authenticated the client and vouches for this identity. That
+	// is a real trust delegation: a compromised peer could assert any
+	// identity, so the mesh credential is what actually gates this path,
+	// and the audit records the forwarding peer alongside the claimed
+	// publisher. Authorization is still re-checked here — replication and
+	// forwarding never widen what an identity may do (invariant 14).
 	id := api.ParseIdentity(identity)
 	id.ProjectPath = projectPath
+	if id.Kind == api.IdentityAnonymous {
+		s.audit.Warn("forwarded publish refused: unusable identity assertion",
+			"feed", feed, "path", path, "identity", identity, "forwarded_by", peer)
+		return http.StatusForbidden, []byte("forwarded identity is not a token or OIDC subject\n"), nil
+	}
 	if !fr.publishers.Allowed(id) {
 		s.audit.Warn("forwarded publish denied: identity has no publish permission",
 			"feed", feed, "path", path, "identity", identity, "peer", peer,

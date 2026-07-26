@@ -67,9 +67,16 @@ func setupReplication(ctx context.Context, cfg *config.Config, db *state.DB,
 	if err != nil {
 		return nil, err
 	}
+	// No global client timeout: each call sets its own deadline (control
+	// calls are short, snapshots and blob transfers are not). A blanket
+	// timeout here would cap large artifacts at whatever the WAN could move
+	// in a minute, and no retry would ever make progress.
 	httpClient := &http.Client{
-		Timeout:   60 * time.Second,
-		Transport: &http.Transport{TLSClientConfig: tlsConf},
+		Transport: &http.Transport{
+			TLSClientConfig:       tlsConf,
+			ResponseHeaderTimeout: 30 * time.Second,
+			IdleConnTimeout:       90 * time.Second,
+		},
 	}
 	clients, err := peerClients(rc, httpClient, logger)
 	if err != nil {

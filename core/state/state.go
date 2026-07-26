@@ -19,8 +19,8 @@ import (
 	"net"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
@@ -150,28 +150,45 @@ func LockID(key string) int64 {
 	return int64(h.Sum64())     //nolint:gosec // deliberate wraparound into the signed lock keyspace
 }
 
-// WithLock runs fn while holding the cross-replica advisory lock for key.
-// The lock is session-scoped on a dedicated connection: if the connection
-// dies, PostgreSQL releases the lock automatically.
-func (db *DB) WithLock(ctx context.Context, key string, fn func(ctx context.Context) error) error {
-	conn, err := db.pool.Acquire(ctx)
+// lockConn opens a connection OUTSIDE the shared pool for a session-scoped
+// advisory lock. Holding a pooled connection for the whole critical section
+// would be a deadlock waiting to happen: the protected function does its own
+// database work (often several connections deep, including nested locks),
+// and with a small pool the holder and its own callees compete for the same
+// connections.
+func (db *DB) lockConn(ctx context.Context) (*pgx.Conn, error) {
+	conn, err := pgx.ConnectConfig(ctx, db.cfg.ConnConfig)
 	if err != nil {
-		return fmt.Errorf("advisory lock %q: acquire conn: %w (%w)", key, err, ErrLockUnavailable)
+		return nil, fmt.Errorf("open lock connection: %w (%w)", err, ErrLockUnavailable)
 	}
-	defer conn.Release()
+	return conn, nil
+}
+
+// WithLock runs fn while holding the cross-replica advisory lock for key.
+// The lock is session-scoped on its own connection: if the connection dies,
+// PostgreSQL releases the lock automatically.
+func (db *DB) WithLock(ctx context.Context, key string, fn func(ctx context.Context) error) error {
+	conn, err := db.lockConn(ctx)
+	if err != nil {
+		return fmt.Errorf("advisory lock %q: %w", key, err)
+	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = conn.Close(closeCtx)
+	}()
 
 	id := LockID(key)
 	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", id); err != nil {
 		return fmt.Errorf("advisory lock %q: %w (%w)", key, err, ErrLockUnavailable)
 	}
 	defer func() {
-		// Unlock even when ctx is already cancelled; a broken connection is
-		// fine — releasing it drops the session lock server-side.
+		// Unlock even when ctx is already cancelled; closing the connection
+		// would release it anyway, but an explicit unlock is cheaper.
 		unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		if _, err := conn.Exec(unlockCtx, "SELECT pg_advisory_unlock($1)", id); err != nil {
-			db.logger.Warn("advisory unlock failed; connection will be discarded", "key", key, "error", err)
-			conn.Conn().Close(unlockCtx) //nolint:errcheck // best effort: closing forces the server to drop the lock
+			db.logger.Warn("advisory unlock failed; the connection will be closed", "key", key, "error", err)
 		}
 	}()
 	return fn(ctx)

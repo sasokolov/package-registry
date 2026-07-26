@@ -67,6 +67,10 @@ type runtime struct {
 	router chi.Router
 	authn  *auth.Authenticator
 	feeds  map[string]*feedRuntime
+	// stop tears down this runtime's background work (the revocation
+	// sweeper and the OIDC key cache). Config reloads build a new runtime,
+	// so without it every reload would leak a goroutine and a poller.
+	stop context.CancelFunc
 }
 
 type feedRuntime struct {
@@ -127,8 +131,19 @@ func New(ctx context.Context, o Options) (*Server, error) {
 			s.logger.Error("runtime rebuild failed, keeping previous", "error", err)
 			return
 		}
-		s.rt.Store(next)
+		previous := s.rt.Swap(next)
 		s.logger.Info("feed runtime rebuilt", "feeds", len(cfg.Feeds))
+		if previous != nil && previous.stop != nil {
+			// In-flight requests still hold the old runtime; give them a
+			// moment before tearing down its background work.
+			go func() {
+				select {
+				case <-s.runCtx.Done():
+				case <-time.After(time.Minute):
+				}
+				previous.stop()
+			}()
+		}
 	})
 	return s, nil
 }
@@ -240,20 +255,22 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) buildRuntime(cfg *config.Config) (*runtime, error) {
+	runtimeCtx, stopRuntime := context.WithCancel(s.runCtx)
 	var verifier *auth.TokenVerifier
 	if s.db != nil {
 		tokens := auth.NewTokens(s.db)
 		verifier = auth.NewTokenVerifier(tokens.Lookup, cfg.Auth.TokenCacheTTL.Std())
 		// A revoked token must stop working within seconds, not within the
 		// cache TTL — whether it was revoked here or at another geo site.
-		go verifier.WatchRevocations(s.runCtx, tokens,
+		go verifier.WatchRevocations(runtimeCtx, tokens,
 			cfg.Auth.RevocationSweepOrDefault(), s.logger)
 	}
-	oidc := auth.NewOIDC(s.runCtx, cfg.Auth.OIDC, nil)
+	oidc := auth.NewOIDC(runtimeCtx, cfg.Auth.OIDC, nil)
 	rt := &runtime{
 		router: chi.NewRouter(),
 		authn:  auth.NewAuthenticator(verifier, oidc),
 		feeds:  map[string]*feedRuntime{},
+		stop:   stopRuntime,
 	}
 
 	for _, fc := range cfg.Feeds {

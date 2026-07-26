@@ -210,6 +210,16 @@ func (s *Server) handleJournal(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	// A peer asking for entries after N has consumed everything up to N.
+	// That is the only acknowledgement in the protocol, and it is what
+	// makes journal pruning safe: nothing is dropped that a peer has not
+	// confirmed reading.
+	if origin == s.site && after > 0 {
+		if err := s.db.RecordPeerAck(ctx, peerOf(r), s.site, after); err != nil {
+			s.logger.Warn("recording a peer acknowledgement failed",
+				"peer", peerOf(r), "after", after, "error", err)
+		}
+	}
 	writeJSON(w, JournalResponse{Entries: entries, Head: head})
 }
 
@@ -328,7 +338,18 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	snap := SnapshotResponse{Site: s.site, Watermarks: map[string]int64{}}
 
-	rows, err := s.db.ListHosted(ctx, "", "")
+	// One repeatable-read transaction for both halves. A publish commits
+	// its row and its journal entry atomically, so reading them separately
+	// could produce a snapshot that misses a coordinate while claiming its
+	// sequence — which the bootstrapping site would then never fetch.
+	tx, err := s.db.BeginSnapshot(ctx)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	rows, err := state.ListHostedTx(ctx, tx, "", "")
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -342,13 +363,13 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	origins, err := s.db.KnownOrigins(ctx)
+	origins, err := state.KnownOriginsTx(ctx, tx)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
 	for _, origin := range origins {
-		head, _, err := s.db.JournalHead(ctx, origin)
+		head, _, err := state.JournalHeadTx(ctx, tx, origin)
 		if err != nil {
 			s.fail(w, err)
 			return

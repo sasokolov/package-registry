@@ -142,6 +142,14 @@ func (m *Manager) SetPeers(ctx context.Context, clients []*Client) {
 			continue
 		}
 		next[c.Name()] = c
+		// The endpoint changed: stop the loop that captured the old client,
+		// so syncLoops starts a fresh one against the new address instead
+		// of polling the old one forever.
+		if cancel, running := m.running[c.Name()]; running {
+			cancel()
+			delete(m.running, c.Name())
+			m.logger.Info("replication peer endpoint changed, restarting its loop", "peer", c.Name())
+		}
 	}
 	m.peers = next
 	m.peersMu.Unlock()
@@ -197,20 +205,18 @@ func (m *Manager) pollPeer(ctx context.Context, c *Client) {
 
 	// A reachable peer is recorded even when there is nothing to apply, so
 	// an idle healthy stream is distinguishable from an unreachable one.
-	origins := make([]string, 0, len(status.Heads))
-	for origin := range status.Heads {
-		if origin != m.site {
-			origins = append(origins, origin)
-		}
-	}
+	origins := []string{c.Name()}
 	if err := m.db.MarkPeerPollOK(ctx, c.Name(), origins); err != nil {
 		m.logger.Warn("recording a successful poll failed", "peer", c.Name(), "error", err)
 	}
 
 	touched := map[string]bool{}
+	// Mesh topology: every site pulls each origin from that origin itself,
+	// so only the peer's own stream is imported here. Third-party streams
+	// the peer happens to hold are ignored — they arrive first-hand from
+	// their own site, where they can be authenticated (invariant 14).
 	for origin, head := range status.Heads {
-		if origin == m.site {
-			// Our own events echoed by the peer: nothing to import.
+		if origin != c.Name() {
 			continue
 		}
 		applied, err := m.catchUp(ctx, c, origin, head, touched)
@@ -336,6 +342,7 @@ func (m *Manager) bootstrap(ctx context.Context, c *Client, touched map[string]b
 	m.logger.Info("bootstrapping from peer snapshot",
 		"peer", c.Name(), "manifests", len(snap.Manifests))
 
+	var imported, deferred int
 	for _, p := range snap.Manifests {
 		entry := state.JournalEntry{
 			OriginSite:    snap.Site,
@@ -347,6 +354,18 @@ func (m *Manager) bootstrap(ctx context.Context, c *Client, touched map[string]b
 			return err
 		}
 		entry.Payload = payload
+
+		// Snapshot entries have no sequence of their own, so they must not
+		// be parked: the parked table is keyed by (origin, seq) and every
+		// one of them would collide on seq 0. Fetch what an eager feed
+		// needs up front instead, and leave the rest to backfill.
+		if err := m.applier.prefetchBlob(ctx, c.Name(), entry); err != nil {
+			deferred++
+			m.logger.Warn("snapshot entry deferred to backfill",
+				"peer", c.Name(), "feed", p.Feed, "path", p.Path, "error", err)
+			continue
+		}
+
 		tx, err := m.db.Begin(ctx)
 		if err != nil {
 			return err
@@ -354,9 +373,9 @@ func (m *Manager) bootstrap(ctx context.Context, c *Client, touched map[string]b
 		if err := m.applier.dispatch(ctx, tx, c.Name(), entry, touched); err != nil {
 			_ = tx.Rollback(ctx)
 			if errors.Is(err, errPark) {
-				// Missing blob during bootstrap: park and retry later, the
-				// backfill will bring it.
-				_ = m.db.ParkEvent(ctx, entry, err.Error())
+				deferred++
+				m.logger.Warn("snapshot entry deferred to backfill",
+					"peer", c.Name(), "feed", p.Feed, "path", p.Path, "reason", err)
 				continue
 			}
 			return err
@@ -364,13 +383,19 @@ func (m *Manager) bootstrap(ctx context.Context, c *Client, touched map[string]b
 		if err := tx.Commit(ctx); err != nil {
 			return err
 		}
+		imported++
+	}
+	m.logger.Info("snapshot bootstrap finished",
+		"peer", c.Name(), "imported", imported, "deferred", deferred)
+	if deferred > 0 {
+		m.logger.Warn("some coordinates need `registry repl backfill` before this site can serve them locally",
+			"peer", c.Name(), "deferred", deferred)
 	}
 
-	for origin, seq := range snap.Watermarks {
-		if origin == m.site {
-			continue
-		}
-		if err := m.advanceCursor(ctx, c.Name(), origin, seq, 0); err != nil {
+	// Only the peer's own watermark is ours to record: we do not import
+	// third-party streams from it.
+	if seq, ok := snap.Watermarks[snap.Site]; ok {
+		if err := m.advanceCursor(ctx, c.Name(), snap.Site, seq, 0); err != nil {
 			return err
 		}
 	}

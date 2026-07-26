@@ -398,6 +398,9 @@ type Identity struct {
 	// ProjectPath and Ref carry GitLab CI OIDC claims when Kind is oidc.
 	ProjectPath string
 	Ref         string
+	// Stale marks an identity served from cache while the token backend is
+	// unreachable. Reads accept it (invariant 7); writes must not.
+	Stale bool
 }
 
 // ParseIdentity reverses Identity.String(). It is used when an identity

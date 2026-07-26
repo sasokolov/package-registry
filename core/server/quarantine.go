@@ -13,6 +13,9 @@ import (
 // with a short TTL cache. When PostgreSQL is down the last known answer is
 // reused, and unknown coordinates are treated as servable: the read path
 // degrades, it does not fail (invariant 7).
+// maxQuarantineEntries bounds the cache. It is a cache, not a ledger.
+const maxQuarantineEntries = 8192
+
 type quarantineCache struct {
 	db     *state.DB // nil: quarantine disabled
 	ttl    time.Duration
@@ -79,6 +82,13 @@ func (q *quarantineCache) Blocked(ctx context.Context, feed, coordinate string) 
 		}
 	}
 	q.mu.Lock()
+	if len(q.entries) >= maxQuarantineEntries {
+		// Every requested coordinate lands here, including ones that do not
+		// exist, so a scan over unique paths would otherwise grow the
+		// process without limit. Dropping the cache costs one database
+		// round-trip per coordinate afterwards, never correctness.
+		q.entries = make(map[string]quarantineEntry, maxQuarantineEntries)
+	}
 	q.entries[key] = next
 	q.mu.Unlock()
 	return next.blocked, next.reason

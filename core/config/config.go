@@ -7,6 +7,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -267,9 +268,47 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// expandEnv substitutes ${VAR} references from the environment. It is how
+// secrets reach the config without ever being written into it: the file
+// stays a ConfigMap, the values come from a Secret mounted as environment
+// variables, and hot reload keeps working because nothing rewrites the file
+// out of band. An unset variable is an error rather than an empty string —
+// a registry that silently starts with no S3 credentials is worse than one
+// that refuses to start.
+func expandEnv(raw []byte) ([]byte, error) {
+	var missing []string
+	out := envRef.ReplaceAllFunc(raw, func(match []byte) []byte {
+		name := string(match[2 : len(match)-1])
+		value, ok := os.LookupEnv(name)
+		if !ok {
+			missing = append(missing, name)
+			return match
+		}
+		return []byte(value)
+	})
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("config references unset environment variable(s): %s",
+			strings.Join(missing, ", "))
+	}
+	return out, nil
+}
+
+// envRef matches ${NAME} with a conventional environment-variable name.
+var envRef = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*\}`)
+
 // Parse decodes a YAML config from r, applies defaults and validates it.
 // Unknown fields are rejected.
 func Parse(r io.Reader) (*Config, error) {
+	raw, err := io.ReadAll(io.LimitReader(r, 8<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+	expanded, err := expandEnv(raw)
+	if err != nil {
+		return nil, err
+	}
+	r = bytes.NewReader(expanded)
+
 	dec := yaml.NewDecoder(r)
 	dec.KnownFields(true)
 	var cfg Config

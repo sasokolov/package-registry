@@ -59,28 +59,52 @@ func gcCmd(args []string, out io.Writer) error {
 		}
 	}
 
-	run := func(ctx context.Context) error {
-		return sweep(ctx, store, out, logger, *doDelete, *minAge)
-	}
-
 	if cfg.Database.DSN == "" {
-		logger.Warn("no database configured: running without the cross-replica lock")
-		return run(ctx)
+		logger.Warn("no database configured: sweeping from the blob store alone, without the cross-replica lock")
+		return sweep(ctx, store, nil, out, logger, *doDelete, *minAge)
 	}
 	db, err := state.Open(ctx, cfg.Database.DSN, logger)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	return db.WithLock(ctx, "gc", run)
+	return db.WithLock(ctx, "gc", func(ctx context.Context) error {
+		return sweep(ctx, store, db, out, logger, *doDelete, *minAge)
+	})
 }
 
 // sweep lists every manifest, collects the referenced digests and removes
 // blobs nothing points at.
-func sweep(ctx context.Context, store api.BlobStore, out io.Writer, logger *slog.Logger,
-	doDelete bool, minAge time.Duration) error {
+func sweep(ctx context.Context, store api.BlobStore, db *state.DB, out io.Writer,
+	logger *slog.Logger, doDelete bool, minAge time.Duration) error {
 
 	referenced := make(map[string]bool)
+
+	// PostgreSQL is the source of truth for hosted coordinates, and it also
+	// remembers the OTHER side of an unresolved cross-site conflict — a
+	// blob no projection points at, which an operator may yet choose with
+	// `repl resolve`. Sweeping from the blob store alone would collect it.
+	if db != nil {
+		rows, err := db.ListHosted(ctx, "", "")
+		if err != nil {
+			return fmt.Errorf("list hosted manifests: %w", err)
+		}
+		for _, r := range rows {
+			referenced[r.SHA256] = true
+		}
+		conflicts, err := db.ListConflicts(ctx, false)
+		if err != nil {
+			return fmt.Errorf("list publish conflicts: %w", err)
+		}
+		for _, c := range conflicts {
+			referenced[c.WinnerSHA] = true
+			referenced[c.LoserSHA] = true
+		}
+		logger.Info("marked from the database",
+			"hosted", len(rows), "conflict_sides", 2*len(conflicts))
+	} else {
+		logger.Warn("no database: hosted rows and conflict losers cannot be protected")
+	}
 	manifests, err := store.List(ctx, "manifests/")
 	if err != nil {
 		return fmt.Errorf("list manifests: %w", err)

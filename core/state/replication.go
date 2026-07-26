@@ -355,11 +355,13 @@ func (db *DB) ResolveConflict(ctx context.Context, feed, path, sha256 string) er
 // ParkEvent stores an event that could not be applied yet.
 func (db *DB) ParkEvent(ctx context.Context, e JournalEntry, reason string) error {
 	_, err := db.pool.Exec(ctx, `
-		INSERT INTO repl_parked (origin_site, origin_seq, kind, payload, reason)
-		VALUES ($1,$2,$3,$4,$5)
+		INSERT INTO repl_parked
+			(origin_site, origin_seq, kind, payload, reason, hlc_wall, hlc_logical, schema_version)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 		ON CONFLICT (origin_site, origin_seq)
 		DO UPDATE SET reason = EXCLUDED.reason, retries = repl_parked.retries + 1`,
-		e.OriginSite, e.OriginSeq, e.Kind, e.Payload, reason)
+		e.OriginSite, e.OriginSeq, e.Kind, e.Payload, reason,
+		e.HLC.Wall, e.HLC.Logical, e.SchemaVersion)
 	if err != nil {
 		return classify(fmt.Errorf("park event: %w", err))
 	}
@@ -372,7 +374,8 @@ func (db *DB) ParkedEvents(ctx context.Context, limit int) ([]JournalEntry, []st
 		limit = 100
 	}
 	rows, err := db.pool.Query(ctx, `
-		SELECT origin_site, origin_seq, kind, payload, reason
+		SELECT origin_site, origin_seq, kind, payload, reason,
+		       hlc_wall, hlc_logical, schema_version
 		  FROM repl_parked ORDER BY parked_at LIMIT $1`, limit)
 	if err != nil {
 		return nil, nil, classify(fmt.Errorf("list parked events: %w", err))
@@ -383,7 +386,8 @@ func (db *DB) ParkedEvents(ctx context.Context, limit int) ([]JournalEntry, []st
 	for rows.Next() {
 		var e JournalEntry
 		var reason string
-		if err := rows.Scan(&e.OriginSite, &e.OriginSeq, &e.Kind, &e.Payload, &reason); err != nil {
+		if err := rows.Scan(&e.OriginSite, &e.OriginSeq, &e.Kind, &e.Payload, &reason,
+			&e.HLC.Wall, &e.HLC.Logical, &e.SchemaVersion); err != nil {
 			return nil, nil, err
 		}
 		entries = append(entries, e)
@@ -422,11 +426,18 @@ func (db *DB) PruneJournal(ctx context.Context, origin string, below int64) (int
 // WithLock it never blocks: a replica that loses the race skips this round
 // and tries again on the next tick.
 func (db *DB) TryLease(ctx context.Context, key string, fn func(ctx context.Context) error) (ran bool, err error) {
-	conn, err := db.pool.Acquire(ctx)
+	// Like WithLock, the lease lives on its own connection: fn does plenty
+	// of pooled database work, and lending it the lock holder's connection
+	// would deadlock a small pool.
+	conn, err := db.lockConn(ctx)
 	if err != nil {
-		return false, classify(fmt.Errorf("lease %q: acquire conn: %w", key, err))
+		return false, classify(fmt.Errorf("lease %q: %w", key, err))
 	}
-	defer conn.Release()
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = conn.Close(closeCtx)
+	}()
 
 	id := LockID(key)
 	var got bool
@@ -440,11 +451,31 @@ func (db *DB) TryLease(ctx context.Context, key string, fn func(ctx context.Cont
 		unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		if _, uerr := conn.Exec(unlockCtx, "SELECT pg_advisory_unlock($1)", id); uerr != nil {
-			db.logger.Warn("lease unlock failed; connection will be discarded", "key", key, "error", uerr)
-			conn.Conn().Close(unlockCtx) //nolint:errcheck // closing forces the server to drop the lock
+			db.logger.Warn("lease unlock failed; the connection will be closed", "key", key, "error", uerr)
 		}
 	}()
 	return true, fn(ctx)
+}
+
+// RecordPeerAck notes how far a peer has consumed our journal. It is the
+// watermark journal pruning is allowed to drop below, and it only ever
+// moves forward.
+func (db *DB) RecordPeerAck(ctx context.Context, peer, origin string, seq int64) error {
+	if peer == "" || peer == "unknown" {
+		return nil
+	}
+	_, err := db.pool.Exec(ctx, `
+		INSERT INTO repl_cursors (peer, origin_site, applied_seq, durable_seq, last_ok_at)
+		VALUES ($1,$2,$3,$3, now())
+		ON CONFLICT (peer, origin_site) DO UPDATE
+		   SET applied_seq = GREATEST(repl_cursors.applied_seq, EXCLUDED.applied_seq),
+		       durable_seq = GREATEST(repl_cursors.durable_seq, EXCLUDED.durable_seq),
+		       last_ok_at  = now()`,
+		peer, origin, seq)
+	if err != nil {
+		return classify(fmt.Errorf("record peer acknowledgement: %w", err))
+	}
+	return nil
 }
 
 // MinCursorAcrossPeers reports how far every peer has acknowledged an
@@ -478,6 +509,48 @@ func (db *DB) PeerAckWatermark(ctx context.Context, peer, origin string) (int64,
 		return 0, err
 	}
 	return c.DurableSeq, nil
+}
+
+// BeginSnapshot starts a read-only repeatable-read transaction, so several
+// reads see one consistent point in time.
+func (db *DB) BeginSnapshot(ctx context.Context) (pgx.Tx, error) {
+	tx, err := db.pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return nil, classify(fmt.Errorf("begin snapshot: %w", err))
+	}
+	return tx, nil
+}
+
+// KnownOriginsTx is KnownOrigins inside a caller's transaction.
+func KnownOriginsTx(ctx context.Context, tx pgx.Tx) ([]string, error) {
+	rows, err := tx.Query(ctx, "SELECT DISTINCT origin_site FROM repl_journal ORDER BY origin_site")
+	if err != nil {
+		return nil, fmt.Errorf("list journal origins: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// JournalHeadTx is JournalHead inside a caller's transaction.
+func JournalHeadTx(ctx context.Context, tx pgx.Tx, origin string) (head, oldest int64, err error) {
+	err = tx.QueryRow(ctx,
+		"SELECT COALESCE(MAX(origin_seq),0), COALESCE(MIN(origin_seq),0) FROM repl_journal WHERE origin_site=$1",
+		origin).Scan(&head, &oldest)
+	if err != nil {
+		return 0, 0, fmt.Errorf("read journal head: %w", err)
+	}
+	return head, oldest, nil
 }
 
 // Begin starts a transaction (used by the applier to make apply+cursor

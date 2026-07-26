@@ -35,17 +35,11 @@ spec:
         - name: registry
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          # The config references credentials as ${VAR}; envsubst keeps
-          # secrets out of the ConfigMap (invariants 8 and 12).
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              set -eu
-              sed -e "s|\${REGISTRY_S3_ACCESS_KEY}|${REGISTRY_S3_ACCESS_KEY:-}|g" \
-                  -e "s|\${REGISTRY_S3_SECRET_KEY}|${REGISTRY_S3_SECRET_KEY:-}|g" \
-                  -e "s|\${REGISTRY_DATABASE_DSN}|${REGISTRY_DATABASE_DSN:-}|g" \
-                  /etc/registry/config.yaml > /tmp/config.yaml
-              exec /usr/local/bin/registry -config /tmp/config.yaml
+          # The config references credentials as ${VAR} and the registry
+          # expands them from the environment itself. Running straight off
+          # the mounted file is what keeps hot reload working: the kubelet
+          # updates the ConfigMap in place and the process re-reads it.
+          args: ["-config", "/etc/registry/config.yaml"]
           ports:
             - name: http
               containerPort: 8080

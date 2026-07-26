@@ -16,18 +16,38 @@ import (
 // the signatures readable.
 type pgxTx = pgx.Tx
 
-// hostedState reads the current digest and mutability of a coordinate.
-func hostedState(ctx context.Context, tx pgxTx, feed, path string) (sha256 string, mutable, found bool, err error) {
-	err = tx.QueryRow(ctx,
-		"SELECT sha256, mutable FROM hosted_manifests WHERE feed=$1 AND path=$2", feed, path).
-		Scan(&sha256, &mutable)
+// hostedRow is the part of a stored coordinate the merge rules need.
+type hostedRow struct {
+	SHA256    string
+	Size      int64
+	Checksums map[string]string
+	Metadata  map[string]string
+	Mutable   bool
+	// Site is where the stored bytes were published, which is what a
+	// conflict record must name — not whichever site happens to be merging.
+	Site string
+}
+
+// hostedState reads the stored coordinate, locking the row: the merge is a
+// read-then-write decision, and two appliers (or an applier and a local
+// publish) must not both act on the same pre-image.
+func hostedState(ctx context.Context, tx pgxTx, feed, path string) (hostedRow, bool, error) {
+	var r hostedRow
+	var checksums, metadata []byte
+	err := tx.QueryRow(ctx, `
+		SELECT sha256, size, checksums, metadata, mutable, site
+		  FROM hosted_manifests WHERE feed=$1 AND path=$2
+		FOR UPDATE`, feed, path).
+		Scan(&r.SHA256, &r.Size, &checksums, &metadata, &r.Mutable, &r.Site)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", false, false, nil
+		return hostedRow{}, false, nil
 	}
 	if err != nil {
-		return "", false, false, fmt.Errorf("read hosted manifest: %w", err)
+		return hostedRow{}, false, fmt.Errorf("read hosted manifest: %w", err)
 	}
-	return sha256, mutable, true, nil
+	r.Checksums = decodeStringMap(checksums)
+	r.Metadata = decodeStringMap(metadata)
+	return r, true, nil
 }
 
 // isNewerThanStored compares an incoming event's HLC with the stored row's
@@ -124,28 +144,273 @@ func encodeMaps(p ManifestPut, e state.JournalEntry) (checksums, metadata []byte
 	return checksums, metadata, nil
 }
 
-// quarantineTx blocks a coordinate inside the applier's transaction.
-func quarantineTx(ctx context.Context, tx pgxTx, feed, coordinate, reason, detail string) error {
+// quarantineTx activates a quarantine reason as a last-writer-wins register
+// stamped with the event's HLC. An older event never overwrites a newer
+// decision, so set and release commute: a release that arrives before the
+// set it lifts still wins, instead of matching zero rows and vanishing.
+func quarantineTx(ctx context.Context, tx pgxTx, feed, coordinate, reason, detail string, hlc state.HLC) error {
 	_, err := tx.Exec(ctx, `
-		INSERT INTO quarantine (feed, coordinate, reason, detail)
-		VALUES ($1,$2,$3,$4)
+		INSERT INTO quarantine (feed, coordinate, reason, detail, hlc_wall, hlc_logical)
+		VALUES ($1,$2,$3,$4,$5,$6)
 		ON CONFLICT ON CONSTRAINT quarantine_feed_coord_reason_key
-		DO UPDATE SET detail = EXCLUDED.detail, released_at = NULL`,
-		feed, coordinate, reason, detail)
+		DO UPDATE SET detail = EXCLUDED.detail,
+		              released_at = NULL,
+		              hlc_wall = EXCLUDED.hlc_wall,
+		              hlc_logical = EXCLUDED.hlc_logical
+		WHERE (quarantine.hlc_wall, quarantine.hlc_logical)
+		    < (EXCLUDED.hlc_wall, EXCLUDED.hlc_logical)`,
+		feed, coordinate, reason, detail, hlc.Wall, hlc.Logical)
 	if err != nil {
 		return fmt.Errorf("quarantine coordinate: %w", err)
 	}
 	return nil
 }
 
-// recordConflictTx stores both sides of a K1 conflict.
-func recordConflictTx(ctx context.Context, tx pgxTx, p ManifestPut,
-	winner, loser, winnerSite, loserSite string) error {
+// releaseQuarantineTx lifts one reason, creating the row if the matching
+// set has not arrived yet (the release still wins by HLC when it does).
+func releaseQuarantineTx(ctx context.Context, tx pgxTx, feed, coordinate, reason string, hlc state.HLC) error {
 	_, err := tx.Exec(ctx, `
+		INSERT INTO quarantine (feed, coordinate, reason, detail, released_at, hlc_wall, hlc_logical)
+		VALUES ($1,$2,$3,'', now(), $4,$5)
+		ON CONFLICT ON CONSTRAINT quarantine_feed_coord_reason_key
+		DO UPDATE SET released_at = now(),
+		              hlc_wall = EXCLUDED.hlc_wall,
+		              hlc_logical = EXCLUDED.hlc_logical
+		WHERE (quarantine.hlc_wall, quarantine.hlc_logical)
+		    < (EXCLUDED.hlc_wall, EXCLUDED.hlc_logical)`,
+		feed, coordinate, reason, hlc.Wall, hlc.Logical)
+	if err != nil {
+		return fmt.Errorf("release quarantine: %w", err)
+	}
+	return nil
+}
+
+// resolution is an operator's terminal decision for a conflicted
+// coordinate.
+type resolution struct {
+	KeepSHA   string
+	Size      int64
+	Checksums map[string]string
+	Metadata  map[string]string
+	HLC       state.HLC
+}
+
+// storedResolution reads the decision for a coordinate, if any.
+func storedResolution(ctx context.Context, tx pgxTx, feed, path string) (resolution, bool, error) {
+	var r resolution
+	var checksums, metadata []byte
+	err := tx.QueryRow(ctx, `
+		SELECT keep_sha256, size, checksums, metadata, hlc_wall, hlc_logical
+		  FROM conflict_resolutions WHERE feed=$1 AND path=$2`, feed, path).
+		Scan(&r.KeepSHA, &r.Size, &checksums, &metadata, &r.HLC.Wall, &r.HLC.Logical)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return resolution{}, false, nil
+	}
+	if err != nil {
+		return resolution{}, false, fmt.Errorf("read conflict resolution: %w", err)
+	}
+	r.Checksums = decodeStringMap(checksums)
+	r.Metadata = decodeStringMap(metadata)
+	return r, true, nil
+}
+
+// recordResolution stores the decision so later merges honour it.
+func recordResolution(ctx context.Context, tx pgxTx, feed, path, coord string,
+	r resolution, operator, decidedBy string) error {
+	checksums, err := json.Marshal(orEmpty(r.Checksums))
+	if err != nil {
+		return fmt.Errorf("encode resolution checksums: %w", err)
+	}
+	metadata, err := json.Marshal(orEmpty(r.Metadata))
+	if err != nil {
+		return fmt.Errorf("encode resolution metadata: %w", err)
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO conflict_resolutions
+			(feed, path, coordinate, keep_sha256, size, checksums, metadata,
+			 operator, decided_by, hlc_wall, hlc_logical)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+		ON CONFLICT (feed, path) DO UPDATE
+		   SET keep_sha256 = EXCLUDED.keep_sha256,
+		       size = EXCLUDED.size,
+		       checksums = EXCLUDED.checksums,
+		       metadata = EXCLUDED.metadata,
+		       operator = EXCLUDED.operator,
+		       decided_by = EXCLUDED.decided_by,
+		       hlc_wall = EXCLUDED.hlc_wall,
+		       hlc_logical = EXCLUDED.hlc_logical,
+		       decided_at = now()
+		WHERE (conflict_resolutions.hlc_wall, conflict_resolutions.hlc_logical)
+		    < (EXCLUDED.hlc_wall, EXCLUDED.hlc_logical)`,
+		feed, path, coord, r.KeepSHA, r.Size, checksums, metadata,
+		operator, decidedBy, r.HLC.Wall, r.HLC.Logical)
+	if err != nil {
+		return fmt.Errorf("record conflict resolution: %w", err)
+	}
+	return nil
+}
+
+func orEmpty(m map[string]string) map[string]string {
+	if m == nil {
+		return map[string]string{}
+	}
+	return m
+}
+
+func decodeStringMap(raw []byte) map[string]string {
+	out := map[string]string{}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &out)
+	}
+	return out
+}
+
+// conflictSide looks up the recorded manifest data of one side of an open
+// conflict. It is how a resolution is validated: only a digest this site
+// actually saw published can be chosen.
+func conflictSide(ctx context.Context, tx pgxTx, feed, path, sha256hex string) (sideMeta, bool, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT winner_sha256, loser_sha256, winner_meta, loser_meta
+		  FROM publish_conflicts WHERE feed=$1 AND path=$2`, feed, path)
+	if err != nil {
+		return sideMeta{}, false, fmt.Errorf("read conflict sides: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var winnerSHA, loserSHA string
+		var winnerRaw, loserRaw []byte
+		if err := rows.Scan(&winnerSHA, &loserSHA, &winnerRaw, &loserRaw); err != nil {
+			return sideMeta{}, false, err
+		}
+		for _, candidate := range []struct {
+			sha string
+			raw []byte
+		}{{winnerSHA, winnerRaw}, {loserSHA, loserRaw}} {
+			if candidate.sha != sha256hex {
+				continue
+			}
+			var meta sideMeta
+			if len(candidate.raw) > 0 {
+				_ = json.Unmarshal(candidate.raw, &meta)
+			}
+			// Conflicts recorded before this data was carried fall back to
+			// the digest alone; the row keeps whatever it had.
+			meta.SHA256 = candidate.sha
+			return meta, true, nil
+		}
+	}
+	return sideMeta{}, false, rows.Err()
+}
+
+// applyResolutionTx points the coordinate at the kept digest with that
+// digest's own size and checksums, closes the conflict and lifts the
+// conflict quarantine.
+func applyResolutionTx(ctx context.Context, tx pgxTx, feed, path, coord string,
+	r resolution, decidedBy string) error {
+	checksums, err := json.Marshal(orEmpty(r.Checksums))
+	if err != nil {
+		return fmt.Errorf("encode resolved checksums: %w", err)
+	}
+	metadata, err := json.Marshal(orEmpty(r.Metadata))
+	if err != nil {
+		return fmt.Errorf("encode resolved metadata: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE hosted_manifests
+		   SET sha256=$3, size=$4, checksums=$5, metadata=$6, site=$7, updated_at=now()
+		 WHERE feed=$1 AND path=$2`,
+		feed, path, r.KeepSHA, r.Size, checksums, metadata, decidedBy); err != nil {
+		return fmt.Errorf("apply conflict resolution: %w", err)
+	}
+	// A resolution is terminal, so the conflict quarantine is lifted
+	// unconditionally. Comparing HLCs here would make the outcome depend on
+	// which of the two conflicting publishes happened to trigger detection
+	// locally — that stamp differs per site, and the coordinate would stay
+	// blocked on some sites and not others.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO quarantine (feed, coordinate, reason, detail, released_at, hlc_wall, hlc_logical)
+		VALUES ($1,$2,'cross_site_conflict','', now(), $3,$4)
+		ON CONFLICT ON CONSTRAINT quarantine_feed_coord_reason_key
+		DO UPDATE SET released_at = now(),
+		              hlc_wall = GREATEST(quarantine.hlc_wall, EXCLUDED.hlc_wall),
+		              hlc_logical = GREATEST(quarantine.hlc_logical, EXCLUDED.hlc_logical)`,
+		feed, coord, r.HLC.Wall, r.HLC.Logical); err != nil {
+		return fmt.Errorf("release conflict quarantine: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE publish_conflicts SET resolved_at = now(), resolved_sha256 = $3
+		 WHERE feed=$1 AND path=$2 AND resolved_at IS NULL`, feed, path, r.KeepSHA); err != nil {
+		return fmt.Errorf("close conflict record: %w", err)
+	}
+	return nil
+}
+
+// recordResolvedConflictTx records a publish that arrived after an operator
+// had already decided the coordinate. It is filed as an already-resolved
+// conflict: informative for audit, and never blocking.
+func recordResolvedConflictTx(ctx context.Context, tx pgxTx, p ManifestPut,
+	kept, rejected sideMeta, rejectedSite string) error {
+	var exists bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM publish_conflicts
+			 WHERE feed=$1 AND path=$2 AND (winner_sha256=$3 OR loser_sha256=$3))`,
+		p.Feed, p.Path, rejected.SHA256).Scan(&exists); err != nil {
+		return fmt.Errorf("check recorded conflict: %w", err)
+	}
+	if exists {
+		return nil
+	}
+	keptJSON, err := json.Marshal(kept)
+	if err != nil {
+		return fmt.Errorf("encode kept side: %w", err)
+	}
+	rejectedJSON, err := json.Marshal(rejected)
+	if err != nil {
+		return fmt.Errorf("encode rejected side: %w", err)
+	}
+	_, err = tx.Exec(ctx, `
 		INSERT INTO publish_conflicts
-			(feed, path, coordinate, winner_sha256, loser_sha256, winner_site, loser_site)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-		p.Feed, p.Path, p.Coord, winner, loser, winnerSite, loserSite)
+			(feed, path, coordinate, winner_sha256, loser_sha256, winner_site, loser_site,
+			 winner_meta, loser_meta, resolved_at, resolved_sha256)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now(), $4)`,
+		p.Feed, p.Path, p.Coord, kept.SHA256, rejected.SHA256, "resolved", rejectedSite,
+		keptJSON, rejectedJSON)
+	if err != nil {
+		return fmt.Errorf("record post-resolution conflict: %w", err)
+	}
+	return nil
+}
+
+// sideMeta is one side of a conflict: enough to restore a consistent row if
+// an operator keeps this digest.
+type sideMeta struct {
+	SHA256    string            `json:"sha256"`
+	Size      int64             `json:"size"`
+	Checksums map[string]string `json:"checksums,omitempty"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
+}
+
+// recordConflictTx stores both sides of a K1 conflict, including each
+// side's size and checksums.
+func recordConflictTx(ctx context.Context, tx pgxTx, p ManifestPut,
+	winner, loser sideMeta, winnerSite, loserSite string) error {
+	winnerJSON, err := json.Marshal(winner)
+	if err != nil {
+		return fmt.Errorf("encode conflict winner: %w", err)
+	}
+	loserJSON, err := json.Marshal(loser)
+	if err != nil {
+		return fmt.Errorf("encode conflict loser: %w", err)
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO publish_conflicts
+			(feed, path, coordinate, winner_sha256, loser_sha256, winner_site, loser_site,
+			 winner_meta, loser_meta)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		p.Feed, p.Path, p.Coord, winner.SHA256, loser.SHA256, winnerSite, loserSite,
+		winnerJSON, loserJSON)
 	if err != nil {
 		return fmt.Errorf("record conflict: %w", err)
 	}

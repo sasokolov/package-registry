@@ -33,6 +33,15 @@ type Peer struct {
 // timeout.
 const controlTimeout = 10 * time.Second
 
+// snapshotTimeout bounds a bootstrap: the whole hosted manifest set of a
+// large site travels as one document, which the control timeout would cut
+// short on every attempt.
+const snapshotTimeout = 10 * time.Minute
+
+// blobTimeout bounds a single blob transfer attempt. Resume makes the retry
+// cheap, so this only has to be long enough for steady progress.
+const blobTimeout = 30 * time.Minute
+
 // Client talks to one peer's internal API.
 type Client struct {
 	peer   Peer
@@ -60,7 +69,12 @@ func NewClient(peer Peer, httpClient *http.Client, authz func(*http.Request), lo
 }
 
 func (c *Client) do(ctx context.Context, path string, query url.Values) (*http.Response, error) {
-	ctx, cancel := context.WithTimeout(ctx, controlTimeout)
+	return c.doWithTimeout(ctx, path, query, controlTimeout)
+}
+
+func (c *Client) doWithTimeout(ctx context.Context, path string, query url.Values,
+	timeout time.Duration) (*http.Response, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	u := c.peer.URL + InternalPrefix + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
@@ -161,7 +175,7 @@ func (c *Client) Journal(ctx context.Context, origin string, after int64, limit 
 
 // Snapshot fetches the peer's full replicable state.
 func (c *Client) Snapshot(ctx context.Context) (SnapshotResponse, error) {
-	resp, err := c.do(ctx, "/snapshot", nil)
+	resp, err := c.doWithTimeout(ctx, "/snapshot", nil, snapshotTimeout)
 	if err != nil {
 		return SnapshotResponse{}, err
 	}
@@ -192,11 +206,23 @@ func (c *Client) FetchBlob(ctx context.Context, store api.BlobStore, digest stri
 		_ = os.Remove(tmp.Name())
 	}()
 
+	// A hostile or broken peer must not be able to spool unbounded data
+	// before the digest is checked. The expected size is known up front;
+	// allow a small slack for a peer that reports it imprecisely.
+	limit := size + 1<<20
+	if size <= 0 {
+		limit = maxUnsizedBlob
+	}
+
 	h := sha256.New()
 	var written int64
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		n, err := c.streamBlob(ctx, digest, written, io.MultiWriter(tmp, h))
+		if written > limit {
+			return fmt.Errorf("peer %s sent more than the declared %d bytes for blob %s",
+				c.peer.Name, size, short(digest))
+		}
+		n, err := c.streamBlob(ctx, digest, written, io.MultiWriter(tmp, h), limit-written)
 		written += n
 		if err == nil {
 			lastErr = nil
@@ -233,9 +259,18 @@ func (c *Client) FetchBlob(ctx context.Context, store api.BlobStore, digest stri
 	return nil
 }
 
+// maxUnsizedBlob bounds a transfer whose size the peer did not declare.
+const maxUnsizedBlob = 8 << 30
+
 // streamBlob copies one (possibly partial) transfer into dst, starting at
-// offset. It returns how many bytes it wrote, so the caller can resume.
-func (c *Client) streamBlob(ctx context.Context, digest string, offset int64, dst io.Writer) (int64, error) {
+// offset and accepting at most limit bytes. It returns how many bytes it
+// wrote, so the caller can resume.
+func (c *Client) streamBlob(ctx context.Context, digest string, offset int64, dst io.Writer, limit int64) (int64, error) {
+	// A blob transfer gets its own deadline: long enough for a large
+	// artifact over a WAN, but never unbounded.
+	ctx, cancel := context.WithTimeout(ctx, blobTimeout)
+	defer cancel()
+
 	target := c.peer.URL + InternalPrefix + "/blobs/sha256/" + digest
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
@@ -266,9 +301,13 @@ func (c *Client) streamBlob(ctx context.Context, digest string, offset int64, ds
 		return 0, fmt.Errorf("peer %s blob fetch returned %d", c.peer.Name, resp.StatusCode)
 	}
 
-	n, err := io.Copy(dst, resp.Body)
+	n, err := io.Copy(dst, io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return n, fmt.Errorf("read peer blob: %w", err)
+	}
+	if n > limit {
+		return n, fmt.Errorf("peer %s exceeded the declared size for blob %s",
+			c.peer.Name, short(digest))
 	}
 	return n, nil
 }
@@ -308,6 +347,11 @@ func (c *Client) ForwardPublish(ctx context.Context, feed, path, method string,
 	q.Set("feed", feed)
 	q.Set("path", path)
 	target := c.peer.URL + InternalPrefix + "/publish?" + q.Encode()
+
+	// A forwarded publish carries an artifact body: it needs the transfer
+	// budget, not the control-call one.
+	ctx, cancel := context.WithTimeout(ctx, blobTimeout)
+	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, body)
 	if err != nil {

@@ -94,6 +94,10 @@ feeds:
 replication:
   enabled: false
   internalPort: 8081
+  # Port the Service publishes for peers. Expose it to other sites with
+  # your own LoadBalancer/Gateway (peers need a routable address); the
+  # NetworkPolicy below still restricts who may connect.
+  servicePort: 8081
   # Peers allowed to reach the replication listener. At least one of
   # peerCIDRs / peerNamespaceSelector is required when enabled.
   peerCIDRs: []

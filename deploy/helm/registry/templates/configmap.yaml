@@ -39,7 +39,13 @@ data:
       {{- end }}
 
     database:
+      {{- if .Values.database.existingSecret }}
       dsn: ${REGISTRY_DATABASE_DSN}
+      {{- else }}
+      # No database: reads work, publishing and static tokens do not
+      # (invariant 7).
+      dsn: ""
+      {{- end }}
 
     auth:
       token_cache_ttl: {{ .Values.auth.tokenCacheTTL | quote }}
