@@ -55,7 +55,7 @@
       `registry token create`, хэш в БД, кэш в памяти с TTL); OIDC: валидация
       JWT по JWKS издателя из конфига, маппинг claims → `Identity`
       (`project_path`, `ref`, `sub`); тесты с локально сгенерированным JWKS.
-- [ ] `core/policy`: движок цепочки (первый Deny побеждает; пустая цепочка =
+- [x] `core/policy`: движок цепочки (первый Deny побеждает; пустая цепочка =
       Allow), регистрация политик как модулей; политика `allowlist` (glob по
       координатам из YAML) как референс; тесты.
 - [ ] `core/pipeline` (read-path): cache lookup в BlobStore → miss →
