@@ -21,11 +21,12 @@ type Chain struct {
 	policies []namedPolicy
 }
 
-// NewChain instantiates every configured policy via the registry.
-func NewChain(cfgs []config.PolicyConfig) (*Chain, error) {
+// NewChain instantiates every configured policy via the registry, handing
+// each one the core services it may use.
+func NewChain(cfgs []config.PolicyConfig, deps api.PolicyServices) (*Chain, error) {
 	c := &Chain{policies: make([]namedPolicy, 0, len(cfgs))}
 	for _, pc := range cfgs {
-		p, err := api.NewPolicy(pc.Name, pc.Options)
+		p, err := api.NewPolicy(pc.Name, pc.Options, deps)
 		if err != nil {
 			return nil, fmt.Errorf("build policy chain: %w", err)
 		}

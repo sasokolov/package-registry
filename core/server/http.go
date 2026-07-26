@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -39,6 +40,17 @@ func (s *Server) feedHandler(rt *runtime, fr *feedRuntime) http.HandlerFunc {
 			return
 		}
 
+		// Quarantined coordinates are never served, whatever the policies
+		// say (manual takedown, cross-site publish conflict).
+		if blocked, reason := s.quarantine.Blocked(ctx, fr.feed.Name, intent.Coord.String()); blocked {
+			s.audit.Warn("quarantined coordinate requested",
+				"feed", fr.feed.Name, "identity", id.String(),
+				"coordinate", intent.Coord.String(), "reason", reason)
+			w.Header().Set("X-Registry-Conflict", reason)
+			s.writeError(w, api.ErrQuarantined, reason)
+			return
+		}
+
 		if d := fr.chain.OnResolve(ctx, id, intent.Coord); !d.Allow {
 			s.auditDeny("resolve", fr, id, intent.Coord, d)
 			s.writeError(w, api.ErrForbidden, d.Reason)
@@ -69,6 +81,7 @@ func (s *Server) feedHandler(rt *runtime, fr *feedRuntime) http.HandlerFunc {
 			Coord:    intent.Coord,
 			Size:     res.Size,
 			Checksum: api.Checksum{Algo: "sha256", Hex: res.SHA256},
+			Metadata: s.artifactMetadata(ctx, fr, intent),
 		}
 		if d := fr.chain.OnServe(ctx, id, artifact); !d.Allow {
 			s.auditDeny("serve", fr, id, intent.Coord, d)
@@ -91,6 +104,49 @@ func (s *Server) feedHandler(rt *runtime, fr *feedRuntime) http.HandlerFunc {
 				"feed", fr.feed.Name, "coord", intent.Coord.String(), "error", err)
 		}
 	}
+}
+
+// artifactMetadata asks the format module which document carries the
+// artifact's metadata (Maven: the sibling .pom), fetches it through the
+// normal cached pipeline and lets the module translate it into canonical
+// keys. Policies therefore see licenses and publication dates without any
+// format knowledge (invariant 1). Failures degrade to empty metadata: a
+// policy that needs a key decides for itself what missing means.
+func (s *Server) artifactMetadata(ctx context.Context, fr *feedRuntime, intent api.Intent) map[string]string {
+	if intent.Kind != api.IntentArtifact || intent.WantChecksum != "" {
+		return map[string]string{}
+	}
+	source, ok := fr.module.(api.MetadataSource)
+	if !ok {
+		return map[string]string{}
+	}
+	metaIntent, ok := source.MetadataIntent(fr.feed, intent.Coord)
+	if !ok {
+		return map[string]string{}
+	}
+	res, err := s.pipe.Serve(ctx, pipeline.Request{
+		Feed: fr.feed, Intent: metaIntent, Module: fr.module, Upstream: fr.upstream,
+	})
+	if err != nil {
+		s.logger.Debug("artifact metadata unavailable",
+			"feed", fr.feed.Name, "coord", intent.Coord.String(), "error", err)
+		return map[string]string{}
+	}
+	defer func() { _ = res.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(res.Body, 4<<20))
+	if err != nil {
+		return map[string]string{}
+	}
+	meta, err := source.ExtractMetadata(body)
+	if err != nil {
+		s.logger.Debug("artifact metadata unparsable",
+			"feed", fr.feed.Name, "coord", intent.Coord.String(), "error", err)
+		return map[string]string{}
+	}
+	if meta == nil {
+		return map[string]string{}
+	}
+	return meta
 }
 
 func (s *Server) auditDeny(action string, fr *feedRuntime, id api.Identity, coord api.PackageCoordinate, d api.Decision) {
@@ -158,6 +214,10 @@ func errorStatus(err error) (int, string) {
 		return http.StatusServiceUnavailable, "temporarily unavailable"
 	case errors.Is(err, api.ErrImmutable):
 		return http.StatusConflict, "published release is immutable"
+	case errors.Is(err, api.ErrQuarantined):
+		return http.StatusConflict, "coordinate is quarantined"
+	case errors.Is(err, api.ErrBadRequest):
+		return http.StatusBadRequest, "bad request"
 	default:
 		return http.StatusInternalServerError, "internal error"
 	}

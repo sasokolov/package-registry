@@ -203,10 +203,71 @@ type FormatModule interface {
 	RewriteMetadata(feed Feed, upstreamBody []byte) ([]byte, error)
 }
 
+// PublishRequest is one hosted coordinate becoming visible. Modules stage
+// blob content through Blobs() and then commit through CoreServices.Publish:
+// that is the ONLY way hosted manifests are written, so the core owns
+// immutability, provenance, audit and (from Phase 7) journalling.
+type PublishRequest struct {
+	Feed  Feed
+	Coord PackageCoordinate
+	// Path is the protocol path the coordinate is served at, relative to
+	// the feed mount point (e.g. "com/example/lib/1.0/lib-1.0.jar").
+	Path string
+	// SHA256 identifies the already-staged blob (blobs/sha256/<hex>).
+	SHA256 string
+	Size   int64
+	// Checksums are additional digests to store alongside (sha1, md5, ...).
+	Checksums map[string]string
+	// Identity is the publisher; recorded in provenance and audit.
+	Identity Identity
+	// Mutable marks coordinates that may be overwritten (SNAPSHOT
+	// artifacts, feed indexes); release artifacts must leave it false so
+	// invariant 4 applies.
+	Mutable bool
+	// Metadata carries canonical Meta* keys extracted from the payload.
+	Metadata map[string]string
+}
+
+// PublishResult reports what the commit did.
+type PublishResult struct {
+	// Created is false when an identical publish was already recorded
+	// (idempotent client retry).
+	Created bool
+	SHA256  string
+}
+
 // CoreServices is the facade through which hosting modules reach core
-// functionality. It grows in later phases (state, audit, ...).
+// functionality. Modules never touch storage keys, the database or the
+// replication journal directly (invariant 2).
 type CoreServices interface {
+	// Blobs gives content-addressed staging: modules Put blobs and read
+	// their own hosted content back.
 	Blobs() BlobStore
+	// Publish commits one coordinate; returns ErrImmutable on a conflicting
+	// republish of a release.
+	Publish(ctx context.Context, req PublishRequest) (PublishResult, error)
+	// Manifests lists hosted coordinates of a feed under a path prefix —
+	// the input of Reindex.
+	Manifests(ctx context.Context, feed Feed, prefix string) ([]HostedManifest, error)
+	// PutIndex stores a generated feed index (maven-metadata.xml,
+	// dist-tags, versions) at path. Indexes are derived data: they are
+	// rebuilt locally and never replicated (invariant 15).
+	PutIndex(ctx context.Context, feed Feed, path string, body []byte) error
+	// Site is this registry site's name (provenance, X-Registry-Site).
+	Site() string
+}
+
+// HostedManifest is a published coordinate as Reindex sees it.
+type HostedManifest struct {
+	Path        string
+	Coord       PackageCoordinate
+	SHA256      string
+	Size        int64
+	Checksums   map[string]string
+	Metadata    map[string]string
+	Site        string
+	Publisher   string
+	PublishedAt time.Time
 }
 
 // Hoster is an optional FormatModule capability: hosting locally published
@@ -246,6 +307,32 @@ type IndirectTarget struct {
 // names the real artifact location. Arguments are serializable on purpose.
 type IndirectResolver interface {
 	ResolveIndirect(feed Feed, intent Intent, status int, header map[string][]string, body []byte) (IndirectTarget, error)
+}
+
+// PublishRouter is an optional Hoster capability: declare the write routes
+// explicitly instead of the default catch-all PUT/POST.
+type PublishRouter interface {
+	PublishRoutes() []Route
+}
+
+// MetadataSource is an optional FormatModule capability: it tells the core
+// which document carries an artifact's metadata (Maven: the sibling .pom)
+// and parses it into canonical Meta* keys, so policies never learn formats.
+type MetadataSource interface {
+	// MetadataIntent describes the document to fetch for coord; ok is false
+	// when the format publishes no such document.
+	MetadataIntent(feed Feed, coord PackageCoordinate) (intent Intent, ok bool)
+	// ExtractMetadata parses that document into canonical Meta* keys.
+	ExtractMetadata(body []byte) (map[string]string, error)
+}
+
+// ConditionalPutter is an optional BlobStore capability: create-only writes
+// (S3 If-None-Match:*, POSIX O_EXCL) used to close publish races at the
+// storage layer.
+type ConditionalPutter interface {
+	// PutIfAbsent writes key only when it does not exist yet; it returns
+	// ErrImmutable when the key is already present.
+	PutIfAbsent(ctx context.Context, key string, r io.Reader, opts PutOpts) error
 }
 
 // FeedSetValidator is an optional FormatModule capability: validate the
@@ -300,12 +387,30 @@ func (id Identity) IsAnonymous() bool { return id.Kind == IdentityAnonymous || i
 
 func (id Identity) String() string { return string(id.Kind) + ":" + id.Subject }
 
+// Canonical artifact metadata keys. Format modules translate their protocol
+// metadata into these keys so policies stay format-agnostic (invariant 1).
+const (
+	// MetaLicense is an SPDX identifier or the raw declared license name.
+	MetaLicense = "license"
+	// MetaPublishedAt is the upstream publication time, RFC3339.
+	MetaPublishedAt = "published_at"
+	// MetaEcosystem is the OSV ecosystem name ("Maven", "npm", "NuGet",
+	// "Packagist", ...).
+	MetaEcosystem = "ecosystem"
+)
+
 // Artifact describes a concrete artifact for policy checks.
 type Artifact struct {
 	Coord    PackageCoordinate
 	Size     int64
 	Checksum Checksum
+	// Metadata carries canonical Meta* keys when the format module can
+	// provide them; always non-nil in policy calls, possibly empty.
+	Metadata map[string]string
 }
+
+// Meta returns the canonical metadata value for key, or "".
+func (a Artifact) Meta(key string) string { return a.Metadata[key] }
 
 // Decision is a policy verdict.
 type Decision struct {

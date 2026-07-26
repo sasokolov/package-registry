@@ -75,12 +75,13 @@ feeds:
     upstream: https://repo1.maven.org/maven2
   - name: maven-hosted
     format: maven
+    hosted: true
 `,
 			want: func(t *testing.T, cfg *Config) {
 				t.Helper()
 				want := []FeedConfig{
 					{Name: "maven-central", Format: "maven", Upstream: "https://repo1.maven.org/maven2"},
-					{Name: "maven-hosted", Format: "maven"},
+					{Name: "maven-hosted", Format: "maven", Hosted: true},
 				}
 				if !reflect.DeepEqual(cfg.Feeds, want) {
 					t.Errorf("feeds = %+v, want %+v", cfg.Feeds, want)
@@ -197,6 +198,7 @@ storage:
   fs: {path: /data}
 feeds:
   - format: maven
+    upstream: https://a.example.com
 `,
 			wantErr: "feeds[0]: name is required",
 		},
@@ -209,6 +211,7 @@ storage:
 feeds:
   - name: Maven_Central
     format: maven
+    upstream: https://a.example.com
 `,
 			wantErr: "name must match",
 		},
@@ -221,8 +224,10 @@ storage:
 feeds:
   - name: central
     format: maven
+    upstream: https://a.example.com
   - name: central
     format: npm
+    upstream: https://b.example.com
 `,
 			wantErr: "duplicate feed name",
 		},
@@ -234,6 +239,7 @@ storage:
   fs: {path: /data}
 feeds:
   - name: central
+    upstream: https://a.example.com
 `,
 			wantErr: "format is required",
 		},

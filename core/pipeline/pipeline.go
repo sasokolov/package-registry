@@ -50,6 +50,7 @@ type Options struct {
 	Logger  *slog.Logger
 	Metrics *Metrics         // nil: metrics disabled
 	Now     func() time.Time // nil: time.Now
+	Site    string           // geo-site name recorded in manifests
 }
 
 // Pipeline executes intents against cache and upstream.
@@ -59,6 +60,7 @@ type Pipeline struct {
 	logger  *slog.Logger
 	metrics *Metrics
 	now     func() time.Time
+	site    string
 	sf      singleflight.Group
 }
 
@@ -70,6 +72,7 @@ func New(o Options) *Pipeline {
 		logger:  o.Logger,
 		metrics: o.Metrics,
 		now:     o.Now,
+		site:    o.Site,
 	}
 	if p.logger == nil {
 		p.logger = slog.Default()
@@ -103,6 +106,8 @@ type Result struct {
 }
 
 // manifest is the pointer from a coordinate to its content-addressed blob.
+// Fields are additive: older binaries ignore unknown ones during rolling
+// upgrades, and geo replication merges on the provenance fields.
 type manifest struct {
 	SHA256 string `json:"sha256"`
 	Size   int64  `json:"size"`
@@ -111,6 +116,11 @@ type manifest struct {
 	// from stored values instead of separate upstream requests.
 	Checksums  map[string]string `json:"checksums,omitempty"`
 	IngestedAt time.Time         `json:"ingested_at"`
+	// Provenance: "proxy" (ingested from an upstream) or "publish".
+	Origin    string            `json:"origin,omitempty"`
+	Site      string            `json:"site,omitempty"`
+	Publisher string            `json:"publisher,omitempty"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
 }
 
 // Serve executes the intent.
@@ -375,7 +385,14 @@ func (p *Pipeline) fetchAndStore(ctx context.Context, req Request, mkey string) 
 		return manifest{}, fmt.Errorf("stat blob: %w", err)
 	}
 
-	m := manifest{SHA256: digest, Size: size, Checksums: digests, IngestedAt: p.now().UTC()}
+	m := manifest{
+		SHA256:     digest,
+		Size:       size,
+		Checksums:  digests,
+		IngestedAt: p.now().UTC(),
+		Origin:     "proxy",
+		Site:       p.site,
+	}
 	raw, err := json.Marshal(m)
 	if err != nil {
 		return manifest{}, fmt.Errorf("encode manifest: %w", err)

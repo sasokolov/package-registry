@@ -40,14 +40,14 @@ func (allowAll) OnServe(context.Context, Identity, Artifact) Decision           
 func (allowAll) OnPublish(context.Context, Identity, Artifact) Decision          { return Allowed() }
 
 func TestPolicyRegistry(t *testing.T) {
-	RegisterPolicy("pol-test", func(map[string]any) (Policy, error) { return allowAll{}, nil })
+	RegisterPolicy("pol-test", func(map[string]any, PolicyServices) (Policy, error) { return allowAll{}, nil })
 	if !PolicyRegistered("pol-test") {
 		t.Fatal("registered policy not reported")
 	}
-	if _, err := NewPolicy("pol-test", nil); err != nil {
+	if _, err := NewPolicy("pol-test", nil, nil); err != nil {
 		t.Fatalf("NewPolicy: %v", err)
 	}
-	if _, err := NewPolicy("missing", nil); err == nil || !strings.Contains(err.Error(), "not registered") {
+	if _, err := NewPolicy("missing", nil, nil); err == nil || !strings.Contains(err.Error(), "not registered") {
 		t.Fatalf("NewPolicy(missing) = %v, want not-registered error", err)
 	}
 }

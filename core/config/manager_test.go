@@ -18,6 +18,7 @@ storage:
 feeds:
   - name: one
     format: echo
+    upstream: https://one.example.com
     anonymous: true
 `
 
@@ -28,9 +29,11 @@ storage:
 feeds:
   - name: one
     format: echo
+    upstream: https://one.example.com
     anonymous: true
   - name: two
     format: echo
+    upstream: https://two.example.com
     anonymous: true
 `
 

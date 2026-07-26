@@ -121,6 +121,12 @@ type FeedConfig struct {
 	Upstream string `yaml:"upstream"`
 	// Anonymous allows unauthenticated reads from this feed. Default false.
 	Anonymous bool `yaml:"anonymous"`
+	// Hosted enables locally published packages on this feed (requires the
+	// format module to implement the Hoster capability and a database).
+	Hosted bool `yaml:"hosted"`
+	// Publishers lists identity patterns allowed to publish here, e.g.
+	// "token:ci-bot", "project:group/*", "*". Empty = publishing disabled.
+	Publishers []string `yaml:"publishers"`
 	// UpstreamRPS rate-limits requests to this feed's upstream. 0 = unlimited.
 	UpstreamRPS float64 `yaml:"upstream_rps"`
 	// Policies is the ordered policy chain for this feed.
@@ -303,6 +309,12 @@ func (c *Config) Validate() error {
 		}
 		if feed.UpstreamRPS < 0 {
 			errs = append(errs, fmt.Errorf("%s: upstream_rps must not be negative", at))
+		}
+		if len(feed.Publishers) > 0 && !feed.Hosted {
+			errs = append(errs, fmt.Errorf("%s: publishers require hosted: true", at))
+		}
+		if feed.Upstream == "" && !feed.Hosted {
+			errs = append(errs, fmt.Errorf("%s: a feed needs an upstream, hosted: true, or both", at))
 		}
 		for j, pol := range feed.Policies {
 			if pol.Name == "" {

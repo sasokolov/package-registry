@@ -9,4 +9,7 @@ import (
 	_ "github.com/sasokolov/package-registry/modules/storage/fs"
 	_ "github.com/sasokolov/package-registry/modules/storage/s3"
 	_ "github.com/sasokolov/package-registry/policies/allowlist"
+	_ "github.com/sasokolov/package-registry/policies/license"
+	_ "github.com/sasokolov/package-registry/policies/osv"
+	_ "github.com/sasokolov/package-registry/policies/quarantine"
 )

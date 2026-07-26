@@ -22,4 +22,9 @@ var (
 	// ErrUnavailable: a required backend (e.g. the database) is down and no
 	// cached state allows the operation to proceed.
 	ErrUnavailable = errors.New("temporarily unavailable")
+	// ErrBadRequest: the client's request is malformed for this protocol.
+	ErrBadRequest = errors.New("bad request")
+	// ErrQuarantined: the coordinate is quarantined (policy or cross-site
+	// publish conflict) and must not be served until released.
+	ErrQuarantined = errors.New("coordinate is quarantined")
 )

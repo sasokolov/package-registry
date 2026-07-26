@@ -37,11 +37,11 @@ func (s scripted) OnPublish(context.Context, api.Identity, api.Artifact) api.Dec
 
 func register(t *testing.T, name string, p api.Policy) {
 	t.Helper()
-	api.RegisterPolicy(name, func(map[string]any) (api.Policy, error) { return p, nil })
+	api.RegisterPolicy(name, func(map[string]any, api.PolicyServices) (api.Policy, error) { return p, nil })
 }
 
 func TestEmptyChainAllows(t *testing.T) {
-	c, err := NewChain(nil)
+	c, err := NewChain(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestFirstDenyWinsAndStopsChain(t *testing.T) {
 	register(t, "t-deny", scripted{verdict: api.Denied("code-x", "denied by test"), calls: &calls, label: "deny"})
 	register(t, "t-allow-2", scripted{verdict: api.Allowed(), calls: &calls, label: "a2"})
 
-	c, err := NewChain([]config.PolicyConfig{{Name: "t-allow-1"}, {Name: "t-deny"}, {Name: "t-allow-2"}})
+	c, err := NewChain([]config.PolicyConfig{{Name: "t-allow-1"}, {Name: "t-deny"}, {Name: "t-allow-2"}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestFirstDenyWinsAndStopsChain(t *testing.T) {
 }
 
 func TestUnknownPolicyFailsChainBuild(t *testing.T) {
-	if _, err := NewChain([]config.PolicyConfig{{Name: "does-not-exist"}}); err == nil {
+	if _, err := NewChain([]config.PolicyConfig{{Name: "does-not-exist"}}, nil); err == nil {
 		t.Fatal("NewChain with unknown policy succeeded")
 	}
 }
@@ -86,7 +86,7 @@ func TestAllowlistReferencePolicy(t *testing.T) {
 		c, err := NewChain([]config.PolicyConfig{{
 			Name:    "allowlist",
 			Options: map[string]any{"allow": allow},
-		}})
+		}}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -138,7 +138,7 @@ func TestAllowlistBadOptions(t *testing.T) {
 		{"allow": []any{"[unclosed-class"}}, // malformed glob
 	}
 	for i, opts := range bad {
-		if _, err := api.NewPolicy("allowlist", opts); err == nil {
+		if _, err := api.NewPolicy("allowlist", opts, nil); err == nil {
 			t.Errorf("case %d: NewPolicy accepted bad options %v", i, opts)
 		}
 	}

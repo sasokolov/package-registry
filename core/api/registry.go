@@ -1,9 +1,12 @@
 package api
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
+	"time"
 )
 
 // Compile-time module registries (Caddy style, per CLAUDE.md): module
@@ -11,9 +14,22 @@ import (
 // set through imports in cmd/registry. The maps are effectively read-only
 // after init; the mutex only guards misuse and parallel tests.
 
+// PolicyServices is what the core offers policies: a shared verdict cache
+// (so external lookups are done once per fleet, not per replica) and a
+// logger. Policies receive it through their factory — no globals, no direct
+// database access (invariant 2).
+type PolicyServices interface {
+	// GetVerdict reads a cached verdict; ok=false when absent.
+	GetVerdict(ctx context.Context, namespace, key string) (value string, checkedAt time.Time, ok bool, err error)
+	// PutVerdict stores or refreshes a verdict.
+	PutVerdict(ctx context.Context, namespace, key, value string) error
+	// Logger for policy diagnostics.
+	Logger() *slog.Logger
+}
+
 // PolicyFactory builds a configured policy instance from its YAML options
-// (already decoded into a generic map).
-type PolicyFactory func(options map[string]any) (Policy, error)
+// (already decoded into a generic map) and the core services it may use.
+type PolicyFactory func(options map[string]any, deps PolicyServices) (Policy, error)
 
 // StorageFactory builds a blob store from its YAML options.
 type StorageFactory func(options map[string]any) (BlobStore, error)
@@ -73,15 +89,15 @@ func RegisterPolicy(name string, f PolicyFactory) {
 	policies[name] = f
 }
 
-// NewPolicy instantiates a registered policy with its options.
-func NewPolicy(name string, options map[string]any) (Policy, error) {
+// NewPolicy instantiates a registered policy with its options and deps.
+func NewPolicy(name string, options map[string]any, deps PolicyServices) (Policy, error) {
 	regMu.RLock()
 	f, ok := policies[name]
 	regMu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("policy %q is not registered (have %v)", name, policyNames())
 	}
-	p, err := f(options)
+	p, err := f(options, deps)
 	if err != nil {
 		return nil, fmt.Errorf("policy %q: %w", name, err)
 	}

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -34,14 +35,17 @@ type Options struct {
 
 // Server owns the feed router, rebuilt per config snapshot.
 type Server struct {
-	logger  *slog.Logger
-	audit   *slog.Logger
-	store   api.BlobStore
-	db      *state.DB
-	metrics *pipeline.Metrics
-	manager *config.Manager
-	pipe    *pipeline.Pipeline
-	runCtx  context.Context //nolint:containedctx // root ctx for lazy OIDC/JWKS caches, set once in New
+	logger     *slog.Logger
+	audit      *slog.Logger
+	store      api.BlobStore
+	db         *state.DB
+	metrics    *pipeline.Metrics
+	manager    *config.Manager
+	pipe       *pipeline.Pipeline
+	publisher  *pipeline.Publisher
+	quarantine *quarantineCache
+	site       string
+	runCtx     context.Context //nolint:containedctx // root ctx for lazy OIDC/JWKS caches, set once in New
 
 	rt atomic.Pointer[runtime]
 }
@@ -52,10 +56,12 @@ type runtime struct {
 }
 
 type feedRuntime struct {
-	feed     api.Feed
-	module   api.FormatModule
-	chain    *policy.Chain
-	upstream *pipeline.Upstream
+	feed       api.Feed
+	module     api.FormatModule
+	chain      *policy.Chain
+	upstream   *pipeline.Upstream
+	publishers *auth.Publishers
+	hosted     bool
 }
 
 // New builds the server and its initial runtime from the manager's current
@@ -71,12 +77,23 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		manager: o.Manager,
 		runCtx:  ctx,
 	}
+	cfg0 := o.Manager.Current()
+	s.site = cfg0.Site.Name
 	s.pipe = pipeline.New(pipeline.Options{
 		Store:   o.Store,
 		Lock:    lockFunc(o.DB, o.Logger),
 		Logger:  o.Logger,
 		Metrics: o.Metrics,
+		Site:    s.site,
 	})
+	s.publisher = pipeline.NewPublisher(pipeline.PublisherOptions{
+		Store:  o.Store,
+		DB:     o.DB,
+		Site:   s.site,
+		Logger: o.Logger,
+		Audit:  s.audit,
+	})
+	s.quarantine = newQuarantineCache(o.DB, 30*time.Second, o.Logger)
 
 	rt, err := s.buildRuntime(o.Manager.Current())
 	if err != nil {
@@ -109,10 +126,20 @@ func ValidateConfig(cfg *config.Config) error {
 			errs = append(errs, fmt.Errorf("feed %s: format %q is not registered (have %v)",
 				fc.Name, fc.Format, api.Formats()))
 		}
-		if _, err := policy.NewChain(fc.Policies); err != nil {
+		if _, err := policy.NewChain(fc.Policies, validationDeps{}); err != nil {
 			errs = append(errs, fmt.Errorf("feed %s: %w", fc.Name, err))
 		}
 		if _, err := pipeline.NewUpstream(pipeline.UpstreamOptions{Feed: fc.Name, BaseURL: fc.Upstream}); err != nil {
+			errs = append(errs, fmt.Errorf("feed %s: %w", fc.Name, err))
+		}
+		if fc.Hosted {
+			if module, ok := api.Format(fc.Format); ok {
+				if _, isHoster := module.(api.Hoster); !isHoster {
+					errs = append(errs, fmt.Errorf("feed %s: format %q cannot host packages", fc.Name, fc.Format))
+				}
+			}
+		}
+		if _, err := auth.NewPublishers(fc.Publishers); err != nil {
 			errs = append(errs, fmt.Errorf("feed %s: %w", fc.Name, err))
 		}
 		byFormat[fc.Format] = append(byFormat[fc.Format], fc.API())
@@ -154,13 +181,20 @@ func (s *Server) buildRuntime(cfg *config.Config) (*runtime, error) {
 		if !ok {
 			return nil, fmt.Errorf("feed %s: format %q is not registered", fc.Name, fc.Format)
 		}
-		chain, err := policy.NewChain(fc.Policies)
+		chain, err := policy.NewChain(fc.Policies, s.policyDeps())
 		if err != nil {
 			return nil, fmt.Errorf("feed %s: %w", fc.Name, err)
 		}
 		feed := fc.API()
 		feed.ExternalURL = strings.TrimSuffix(cfg.Site.ExternalURL, "/")
-		fr := &feedRuntime{feed: feed, module: module, chain: chain}
+		publishers, err := auth.NewPublishers(fc.Publishers)
+		if err != nil {
+			return nil, fmt.Errorf("feed %s: %w", fc.Name, err)
+		}
+		fr := &feedRuntime{
+			feed: feed, module: module, chain: chain,
+			publishers: publishers, hosted: fc.Hosted,
+		}
 		if fc.Upstream != "" {
 			fr.upstream, err = pipeline.NewUpstream(pipeline.UpstreamOptions{
 				Feed:    fc.Name,
@@ -178,6 +212,11 @@ func (s *Server) buildRuntime(cfg *config.Config) (*runtime, error) {
 		sub := chi.NewRouter()
 		for _, route := range module.Routes() {
 			sub.Method(route.Method, route.Pattern, s.feedHandler(rt, fr))
+		}
+		if hoster, ok := module.(api.Hoster); ok && fc.Hosted {
+			for _, route := range publishRoutes(module) {
+				sub.Method(route.Method, route.Pattern, s.publishHandler(rt, fr, hoster))
+			}
 		}
 		rt.router.Mount(mount, http.StripPrefix(mount, sub))
 	}
@@ -226,3 +265,39 @@ func lockFunc(db *state.DB, logger *slog.Logger) pipeline.LockFunc {
 		return err
 	}
 }
+
+// policyDeps hands policies the shared verdict cache and a logger.
+func (s *Server) policyDeps() api.PolicyServices {
+	return policyServices{db: s.db, logger: s.logger}
+}
+
+type policyServices struct {
+	db     *state.DB
+	logger *slog.Logger
+}
+
+func (p policyServices) GetVerdict(ctx context.Context, namespace, key string) (string, time.Time, bool, error) {
+	if p.db == nil {
+		return "", time.Time{}, false, nil
+	}
+	return p.db.GetVerdict(ctx, namespace, key)
+}
+
+func (p policyServices) PutVerdict(ctx context.Context, namespace, key, value string) error {
+	if p.db == nil {
+		return nil
+	}
+	return p.db.PutVerdict(ctx, namespace, key, value)
+}
+
+func (p policyServices) Logger() *slog.Logger { return p.logger }
+
+// validationDeps is the no-op services implementation used while validating
+// a config: policies must be constructible without touching a database.
+type validationDeps struct{}
+
+func (validationDeps) GetVerdict(context.Context, string, string) (string, time.Time, bool, error) {
+	return "", time.Time{}, false, nil
+}
+func (validationDeps) PutVerdict(context.Context, string, string, string) error { return nil }
+func (validationDeps) Logger() *slog.Logger                                     { return slog.Default() }

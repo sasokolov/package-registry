@@ -36,7 +36,7 @@ type Policy struct {
 }
 
 // New builds the policy from its YAML options.
-func New(options map[string]any) (api.Policy, error) {
+func New(options map[string]any, _ api.PolicyServices) (api.Policy, error) {
 	rawList, ok := options["allow"]
 	if !ok {
 		return nil, fmt.Errorf("allowlist: option %q is required", "allow")
