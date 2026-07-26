@@ -107,6 +107,14 @@
 - [ ] `make conformance-live`: наполнить цель — прогон сценариев фазы против
       реальных апстримов (Maven Central, registry.terraform.io), ручной
       запуск. Отложено из Фазы 0 (там цель — заглушка с exit 2).
+- [ ] Задел гео (см. docs/geo-replication.md): зарезервировать в YAML-схеме
+      ключи `site: {name, external_url}` и `replication: {}` (strict-парсер
+      иначе уронит поды старого образа при rolling upgrade); `site` — в root
+      slog, audit и info-метрику. Generic authenticated blob-эндпоинт
+      `/-/blobs/sha256/<hex>` (нужен terraform download уже сейчас; позже —
+      peer-fetch федерации). Задокументировать лексикографический порядок
+      `List` в контракте BlobStore; правило «meta/ и прокси-кэш —
+      сайт-локальные производные, bucket-репликация поверх них запрещена».
 
 **Acceptance:** все сценарии фазы зелёные в `make conformance`; golden-тесты
 RewriteMetadata покрывают оба формата.
@@ -132,6 +140,17 @@ RewriteMetadata покрывают оба формата.
 - [ ] Conformance: `mvn deploy` в хостовый фид от identity с правом → успех;
       без права → 403; повторный deploy той же версии → 409; скачивание
       пакета с запрещённой лицензией из fixtures → 403.
+- [ ] Задел гео: hosted-коммит только через ядро — модуль стейджит блобы
+      через `deps.Blobs()`, затем зовёт `CoreServices.Publish(feed, path,
+      coord, sha256, size)` — единственная точка записи hosted-манифестов
+      (сюда позже втыкается журнал; модули никогда не пишут `manifests/*`
+      сами). Локальный инвариант 4 = PG unique (feed, coordinate) +
+      manifest-exists → 409. Provenance в манифесте publish: origin, site,
+      published_by. `Reindex` — детерминированная чистая функция множества
+      манифестов; golden-тест «reindex дважды → байт-идентичный индекс».
+      Токены: revoke = UPDATE revoked_at (не DELETE), добавить updated_at.
+      Карантин ключуется (feed, coordinate) и проверяется в read-path
+      (TTL-кэш, деградация при падении PG).
 
 **Acceptance:** сценарии зелёные; для каждой политики есть unit-тесты Allow/
 Deny/недоступности внешней зависимости.
@@ -181,6 +200,8 @@ Deny/недоступности внешней зависимости.
       `mcr.microsoft.com/dotnet/sdk`) — успех и офлайн-повтор; `npm publish` от
       identity с правом → успех, повторный publish той же версии → 409;
       `mvn deploy` SNAPSHOT дважды → второй становится актуальным.
+- [ ] Задел гео: npm dist-tags — отдельные именованные указатели в
+      PG-состоянии (не внутри index-документа), Reindex их читает.
 
 **Acceptance:** сценарии зелёные. Отдельно зафиксировать в `docs/decisions.md`
 решение по Docker/OCI: рекомендация — Harbor рядом, свой OCI-модуль только если
@@ -207,15 +228,104 @@ Deny/недоступности внешней зависимости.
       установки и подключением GitLab CI (сниппеты `.npmrc`, `settings.xml`,
       `auth.json`, `.terraformrc`, NuGet.config через `CI_JOB_JWT`/id_token).
 - [ ] GC: команда `registry gc` — удаление блобов без ссылок из манифестов,
-      dry-run по умолчанию; advisory lock на весь прогон.
+      dry-run по умолчанию; advisory lock на весь прогон. Задел гео:
+      mark-and-sweep с минимальным возрастом блоба и грейсом ≥ журнального
+      горизонта; GC выключен во время бутстрапа/ресинка сайта.
 
 **Acceptance:** chaos- и нагрузочные сценарии зелёные; helm-чарт ставится в
 kind-кластер скриптом `deploy/helm/smoke.sh` и проходит смоук.
 
 ---
 
+## Фаза 7 — гео-репликация (мастер-мастер, журнальная федерация)
+
+Дизайн: docs/geo-replication.md (принят по явному запросу пользователя).
+Позиция фазы — после Фазы 5 (все Hoster'ы существуют, журнальный контракт
+замораживается один раз); заделы разложены по Фазам 2–6. Открытые вопросы
+из ADR решаются с пользователем до старта фазы.
+
+- [ ] Событийная модель v1 в `core/repl`: `manifest_put`, `blob_available`,
+      `token_revoke`, `quarantine_set`, `quarantine_release`,
+      `conflict_resolve`; `schema_version` в каждом событии;
+      tombstone-типы зарезервированы; неизвестный тип → park + алерт.
+      Property-тест: случайные перестановки/дубли событий → байт-идентичное
+      состояние на всех «сайтах».
+- [ ] Миграция replication: `repl_journal` (UNIQUE(origin_site, origin_seq)),
+      `repl_cursors`, peer_acks + durability watermark, `publish_conflicts`,
+      dead-letter, parked, `hlc_state` + `repl_hlc_next()/repl_hlc_recv()`,
+      site UUID. Seq выделяется внутри `repl_hlc_next()` под замком строки
+      hlc_state → порядок коммитов == порядок seq (конкурентный тест:
+      писатели молотят, читатель пагинирует — потерь ноль).
+- [ ] JournalWriter (transactional outbox) в `CoreServices.Publish`;
+      projection-outbox для S3-проекции манифестов + continuous repair +
+      метрика дивергенции проекции.
+- [ ] Applier: идемпотентный порядконезависимый merge; правило K1
+      (канон = min sha256, карантин координаты, publish_conflicts, audit,
+      метрика, алерт); token_revoke sticky по хэшу; события «из будущего»
+      (> max_clock_skew) паркуются; ошибка переноса блоба → park + advance
+      курсора (без head-of-line blocking).
+- [ ] Внутренний API `/internal/replication/v1/{journal, blobs/sha256/*,
+      manifest, snapshot, status, nudge}` на ОТДЕЛЬНОМ listener'е
+      (обязателен при enabled); mTLS (prod) / bearer из token_file (dev);
+      пиннинг (site, UUID) при handshake; origin-pinning событий
+      (mesh-only, relay в v1 нет); peer-креды в логах — 8 символов хэша.
+- [ ] Puller per (peer, origin): выборы через pg_try_advisory_lock с lease;
+      advance курсора в одной транзакции с apply; 410 за горизонтом →
+      авто snapshot-ресинк; GC журнала по min(ack peers, watermark) с
+      потолком journal_retention; приёмник nudge.
+- [ ] Блоб-перенос по digest: стриминг с проверкой sha256 всего тела,
+      Range-докачка, multi-peer fallback; режимы eager (блоб до манифеста,
+      watermark = RPO) / lazy per feed.
+- [ ] `core/config`: `site{}`, `replication{}` (peers, auth file-refs,
+      internal_listen, retention, skew, blob_fetch), per-feed
+      `publish_policy` (дефолт `forward:<home>`), `replication_mode`,
+      `peer_fallback`; `s3.*_file`-варианты кредов; валидация + hot-reload
+      набора peer'ов.
+- [ ] Publish-форвардинг: на не-home сайте локальная аутентификация +
+      реверс-прокси на home с on-behalf-of identity; home недоступен →
+      503 + Retry-After + указатель; НИКАКИХ 307 наружу. Конформанс с
+      настоящими клиентами: `mvn deploy` и `npm publish` через не-home сайт.
+- [ ] Peer-fallback в `core/pipeline` (per-feed): miss манифеста ИЛИ блоба →
+      sha-пинованный fetch у peer'ов; `api.SourcePeer` + `X-Registry-Site`;
+      negative cache с TTL.
+- [ ] CLI: `registry repl status | backfill | resync | retry-dead-letter |
+      resolve --feed --path --keep <sha256>` (журналируемое, аудируемое).
+- [ ] Бутстрап нового сайта: snapshot → авто-backfill → Reindex всех
+      hosted-фидов; до сходимости фиды живут через peer-fallback.
+- [ ] Наблюдаемость: lag per (peer, origin), durability watermark,
+      конфликты, dead-letter/parked, digest множества манифестов per feed
+      (алерт на расхождение дольше окна лага); NetworkPolicy для
+      internal listener в helm; Grafana dashboard + alert rules.
+- [ ] `conformance/geo`: цель `make conformance-geo` — два полных стека
+      (2× minio, 2× postgres, 2× registry), партиция через iptables:
+      - [ ] publish@A → install@B до сходимости (source: peer, чексумма
+            сверена) и после (cache); индекс на B пересобран Reindex'ом.
+      - [ ] Партиция → конкурентный конфликтующий publish (policy: local) →
+            heal → идентичный канон (min sha256) на обоих, координата в
+            карантине, GET → 409 + X-Registry-Conflict, конфликт в
+            publish_conflicts/audit/метриках → `repl resolve` → выдача
+            восстановлена, оба блоба целы.
+      - [ ] Партиция → чтение живо на обоих, publish на forward-фид со
+            стороны не-home → 503 с указателем; heal → курсоры догоняют,
+            digest'ы сходятся, алерты гаснут; повторный publish → 409.
+      - [ ] token revoke@A → отказ на B в пределах lag + token_cache_ttl;
+            create@A НЕ появляется на B; OIDC работает на обоих без
+            репликации.
+      - [ ] Бутстрап пустого третьего сайта → snapshot + backfill →
+            hosted-фид отдаётся; GC журнала за курсором → 410 →
+            авто-ресинк; «манифест есть/блоба нет» → peer-fallback спасает.
+- [ ] Runbook'и: разбор конфликта, долгий ресинк, вывод/возврат peer'а,
+      ротация peer-кредов, требование NTP; формула окна отзыва токена.
+
+**Acceptance:** `make conformance-geo` зелёный целиком; property-тест
+merge-конвергенции зелёный; ни один гео-сценарий не наблюдает молчаливой
+дивергенции (digest-алерты) или подмены байтов.
+
+---
+
 ## Вне плана (только по явному запросу пользователя)
 
-Web UI; поиск по пакетам сверх протокольного минимума; репликация между
-инстансами; OCI-модуль; PyPI/Cargo/Helm-модули (архитектура их допускает —
-добавляются как обычные FormatModule).
+Web UI; поиск по пакетам сверх протокольного минимума; OCI-модуль;
+PyPI/Cargo/Helm-модули (архитектура их допускает — добавляются как обычные
+FormatModule). Гео-репликация перенесена в план (Фаза 7) по запросу
+пользователя 2026-07-26.
