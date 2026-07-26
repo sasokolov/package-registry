@@ -1,0 +1,153 @@
+package terraform
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/sasokolov/package-registry/core/api"
+)
+
+func parse(t *testing.T, path string) (api.Intent, error) {
+	t.Helper()
+	return Module{}.Parse(httptest.NewRequest("GET", path, nil))
+}
+
+func TestParseVersions(t *testing.T) {
+	intent, err := parse(t, "/v1/modules/testns/mymod/generic/versions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent.Kind != api.IntentMetadata || intent.CacheTTL != versionsTTL {
+		t.Errorf("intent = %+v", intent)
+	}
+	if intent.Coord.Name != "testns/mymod/generic" || intent.Coord.Version != "" {
+		t.Errorf("coord = %+v", intent.Coord)
+	}
+	if intent.RemotePath != "v1/modules/testns/mymod/generic/versions" {
+		t.Errorf("remote path = %q", intent.RemotePath)
+	}
+	if intent.ContentType != "application/json" {
+		t.Errorf("content type = %q", intent.ContentType)
+	}
+}
+
+func TestParseDownloadIsSynthetic(t *testing.T) {
+	intent, err := parse(t, "/v1/modules/testns/mymod/generic/2.0.0/download")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent.Kind != api.IntentSynthetic {
+		t.Fatalf("kind = %s", intent.Kind)
+	}
+	if intent.Coord.Version != "2.0.0" {
+		t.Errorf("coord = %+v", intent.Coord)
+	}
+
+	resp, err := Module{}.Synthesize(api.Feed{Name: "tf"}, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != http.StatusNoContent {
+		t.Errorf("status = %d", resp.Status)
+	}
+	if resp.Header["X-Terraform-Get"] != "archive.tar.gz" {
+		t.Errorf("X-Terraform-Get = %q", resp.Header["X-Terraform-Get"])
+	}
+}
+
+func TestParseArchiveIsIndirectArtifact(t *testing.T) {
+	intent, err := parse(t, "/v1/modules/testns/mymod/generic/2.0.0/archive.tar.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent.Kind != api.IntentArtifact || !intent.Indirect {
+		t.Fatalf("intent = %+v", intent)
+	}
+	if intent.RemotePath != "v1/modules/testns/mymod/generic/2.0.0/download" {
+		t.Errorf("remote path = %q (must target the upstream download endpoint)", intent.RemotePath)
+	}
+	if intent.Coord.Name != "testns/mymod/generic" || intent.Coord.Version != "2.0.0" {
+		t.Errorf("coord = %+v", intent.Coord)
+	}
+}
+
+func TestParseRejectsGarbage(t *testing.T) {
+	for _, p := range []string{
+		"/", "/v1", "/v1/modules", "/v2/modules/a/b/c/versions",
+		"/v1/modules/a/b/versions", "/v1/modules/a/b/c/d/e/f",
+		"/v1/modules/a/../c/d/versions", "/v1/modules/a/b/c/1.0/steal",
+	} {
+		if _, err := parse(t, p); !errors.Is(err, api.ErrNotFound) {
+			t.Errorf("Parse(%q) = %v, want ErrNotFound", p, err)
+		}
+	}
+}
+
+func TestResolveIndirect(t *testing.T) {
+	m := Module{}
+	loc, err := m.ResolveIndirect(api.Feed{}, api.Intent{}, http.StatusNoContent,
+		map[string][]string{"X-Terraform-Get": {"/archives/mod-2.0.0.tar.gz"}}, nil)
+	if err != nil || loc != "/archives/mod-2.0.0.tar.gz" {
+		t.Errorf("ResolveIndirect = %q, %v", loc, err)
+	}
+
+	if _, err := m.ResolveIndirect(api.Feed{}, api.Intent{}, http.StatusNoContent, map[string][]string{}, nil); err == nil {
+		t.Error("missing header accepted")
+	}
+	if _, err := m.ResolveIndirect(api.Feed{}, api.Intent{}, http.StatusBadGateway,
+		map[string][]string{"X-Terraform-Get": {"x"}}, nil); err == nil {
+		t.Error("bad status accepted")
+	}
+}
+
+func TestServeRootDiscovery(t *testing.T) {
+	rec := httptest.NewRecorder()
+	Module{}.ServeRoot(rec, httptest.NewRequest("GET", "/.well-known/terraform.json", nil), []api.Feed{
+		{Name: "zeta", Format: "terraform"},
+		{Name: "alpha", Format: "terraform"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var doc map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["modules.v1"] != "/terraform/alpha/v1/modules/" {
+		t.Errorf("modules.v1 = %q (lexicographically first feed must win)", doc["modules.v1"])
+	}
+
+	rec = httptest.NewRecorder()
+	Module{}.ServeRoot(rec, httptest.NewRequest("GET", "/.well-known/terraform.json", nil), nil)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("no-feeds status = %d, want 404", rec.Code)
+	}
+}
+
+// Golden test: the versions document passes through byte-identical.
+func TestRewriteMetadataGolden(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "versions.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Module{}.RewriteMetadata(api.Feed{Name: "tf"}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	golden, err := os.ReadFile(filepath.Join("testdata", "versions.golden.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(golden) {
+		t.Errorf("RewriteMetadata output differs from golden")
+	}
+	if !strings.Contains(string(got), `"versions"`) {
+		t.Error("golden fixture is not a versions document")
+	}
+}
