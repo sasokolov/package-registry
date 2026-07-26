@@ -11,6 +11,7 @@ package state
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io/fs"
@@ -108,6 +109,12 @@ func (db *DB) MigrateLoop(ctx context.Context) {
 	}
 }
 
+// ErrLockUnavailable marks advisory-lock failures caused by the lock
+// backend (not by the protected function). Callers on the read path degrade
+// to running without the cross-replica lock (invariant 7) — safe because
+// ingest writes are idempotent and content-addressed.
+var ErrLockUnavailable = errors.New("advisory lock backend unavailable")
+
 // LockID maps a textual key onto the 64-bit advisory-lock keyspace.
 func LockID(key string) int64 {
 	h := fnv.New64a()
@@ -121,13 +128,13 @@ func LockID(key string) int64 {
 func (db *DB) WithLock(ctx context.Context, key string, fn func(ctx context.Context) error) error {
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
-		return fmt.Errorf("advisory lock %q: acquire conn: %w", key, err)
+		return fmt.Errorf("advisory lock %q: acquire conn: %w (%w)", key, err, ErrLockUnavailable)
 	}
 	defer conn.Release()
 
 	id := LockID(key)
 	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", id); err != nil {
-		return fmt.Errorf("advisory lock %q: %w", key, err)
+		return fmt.Errorf("advisory lock %q: %w (%w)", key, err, ErrLockUnavailable)
 	}
 	defer func() {
 		// Unlock even when ctx is already cancelled; a broken connection is

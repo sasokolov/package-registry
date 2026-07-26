@@ -58,7 +58,7 @@
 - [x] `core/policy`: движок цепочки (первый Deny побеждает; пустая цепочка =
       Allow), регистрация политик как модулей; политика `allowlist` (glob по
       координатам из YAML) как референс; тесты.
-- [ ] `core/pipeline` (read-path): cache lookup в BlobStore → miss →
+- [x] `core/pipeline` (read-path): cache lookup в BlobStore → miss →
       singleflight → advisory lock → fetch upstream (retry с джиттером,
       circuit breaker, per-upstream rate limit) → верификация чексуммы (если
       Intent её несёт) → Put в сторадж → отдача. Мутабельные метаданные: TTL
