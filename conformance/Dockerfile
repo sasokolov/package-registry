@@ -1,11 +1,12 @@
 # Multi-stage build of the registry for conformance runs.
 # Build context is the repository root: docker build -f conformance/Dockerfile .
 FROM golang:1.26-alpine AS build
+ARG GO_BUILD_TAGS=""
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -o /out/registry ./cmd/registry
+RUN CGO_ENABLED=0 go build -trimpath -tags "$GO_BUILD_TAGS" -o /out/registry ./cmd/registry
 
 # alpine, not scratch/distroless: busybox wget is used for container healthchecks.
 FROM alpine:3.22

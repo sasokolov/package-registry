@@ -67,10 +67,10 @@
       fake-BlobStore и fake-upstream (httptest): hit, miss, конкурентный miss
       (ровно один запрос к апстриму), упавший апстрим + свежий кэш, упавший
       апстрим + stale, битая чексумма.
-- [ ] `core/server`: маршрут `/{format}/{feed}/...`, резолв фида из конфига,
+- [x] `core/server`: маршрут `/{format}/{feed}/...`, резолв фида из конфига,
       middleware-цепочка auth → policy → pipeline; anonymous-доступ
       конфигурируется per-feed.
-- [ ] Prometheus-метрики: RPS по фидам, cache hit ratio, латентность апстримов,
+- [x] Prometheus-метрики: RPS по фидам, cache hit ratio, латентность апстримов,
       состояние circuit breaker'ов.
 
 **Acceptance:** conformance-сценарий «эхо-формат» (тестовый FormatModule в

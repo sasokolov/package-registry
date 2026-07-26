@@ -1,11 +1,23 @@
-# Registry config used inside the conformance compose stack.
+# Registry config used inside the conformance compose stack: blobs in MinIO,
+# state in Postgres, one anonymous echo feed proxying the fake upstream.
 server:
   listen: ":8080"
   shutdown_timeout: 10s
 
 storage:
-  type: fs
-  fs:
-    path: /data
+  type: s3
+  s3:
+    endpoint: minio:9000
+    bucket: registry
+    access_key: registry
+    secret_key: registry-secret
+    use_ssl: false
 
-feeds: []
+database:
+  dsn: postgres://registry:registry@postgres:5432/registry
+
+feeds:
+  - name: test
+    format: echo
+    upstream: http://fake-upstream
+    anonymous: true

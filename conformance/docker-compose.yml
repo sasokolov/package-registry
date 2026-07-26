@@ -5,9 +5,17 @@ services:
     build:
       context: ..
       dockerfile: conformance/Dockerfile
+      args:
+        # Conformance builds include the test-only echo format module.
+        GO_BUILD_TAGS: conformance
     volumes:
       - ./registry.yaml:/etc/registry/config.yaml:ro
       - registry-data:/data
+    depends_on:
+      minio:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/readyz"]
       interval: 2s

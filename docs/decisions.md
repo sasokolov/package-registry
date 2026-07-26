@@ -11,3 +11,10 @@
 - 2026-07-26: клиент для conformance-сценариев — сервис `client` (curlimages/curl) в compose с profile `tools`, запуск через `docker compose run`.
 - 2026-07-26: runtime-образ registry в conformance — alpine (не distroless): нужен wget для healthcheck.
 - 2026-07-26: конфиг для `make dev` лежит в `conformance/dev.yaml` (отдельной dev-директории в структуре CLAUDE.md нет).
+- 2026-07-26: OIDC/JWKS — `lestrrat-go/jwx/v2` (первый из двух вариантов CLAUDE.md): готовый auto-refresh JWKS-кэш.
+- 2026-07-26: стораджи регистрируются в реестре (`api.RegisterStorage`), типизированный конфиг конвертируется в options-map через `StorageConfig.Options()`; выбор бэкенда — по имени, без switch в сборке.
+- 2026-07-26: пустой `database.dsn` = БД отключена (никакого неявного fallback на PG*-env, чтобы не подключаться «куда-то» молча).
+- 2026-07-26: SWR реализован как синхронный refresh с fallback на stale при недоступном апстриме (не асинхронный revalidate) — покрывает инвариант 6, проще в отладке; асинхронность можно добавить позже без смены контрактов.
+- 2026-07-26: маршрутизация Bearer-кредов: префикс `reg_` → статический токен, две точки → JWT; иное → 401.
+- 2026-07-26: echo-модуль для conformance живёт в `conformance/echomodule` и линкуется в бинарь только под build-tag `conformance` (в проде его нет).
+- 2026-07-26: кросс-репличный advisory lock деградирует в lock-less ingest при недоступном Postgres (инвариант 7); безопасно из-за идемпотентных контент-адресуемых записей.
