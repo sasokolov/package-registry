@@ -13,7 +13,7 @@
 - [x] `go mod init` (спросить у пользователя module path), структура каталогов
       из CLAUDE.md, `Makefile` со всеми целями (пустые цели допустимы только
       в этой фазе).
-- [ ] `cmd/registry`: запуск HTTP-сервера, `/healthz`, `/readyz`, `/metrics`,
+- [x] `cmd/registry`: запуск HTTP-сервера, `/healthz`, `/readyz`, `/metrics`,
       slog JSON-логирование, graceful shutdown.
 - [ ] `core/config`: YAML-схема v0 (`server`, `storage`, `feeds: []`),
       загрузка + валидация + тесты на невалидные конфиги.
