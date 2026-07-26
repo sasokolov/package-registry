@@ -1,0 +1,13 @@
+server:
+  listen: ":8080"
+  shutdown_timeout: 10s
+
+storage:
+  type: fs
+  fs:
+    path: /data
+
+feeds:
+  - name: maven-central
+    format: maven
+    upstream: https://repo1.maven.org/maven2

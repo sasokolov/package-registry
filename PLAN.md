@@ -15,7 +15,7 @@
       в этой фазе).
 - [x] `cmd/registry`: запуск HTTP-сервера, `/healthz`, `/readyz`, `/metrics`,
       slog JSON-логирование, graceful shutdown.
-- [ ] `core/config`: YAML-схема v0 (`server`, `storage`, `feeds: []`),
+- [x] `core/config`: YAML-схема v0 (`server`, `storage`, `feeds: []`),
       загрузка + валидация + тесты на невалидные конфиги.
 - [ ] `conformance/`: docker compose с сервисами `minio`, `postgres`,
       `registry` (собирается из исходников multi-stage Dockerfile),
