@@ -32,9 +32,13 @@ if ! compose up -d --build --wait --wait-timeout 300; then
   exit 1
 fi
 
+echo "==> building client tool images"
+compose --profile tools build
+
+SCENARIO_DIR="${SCENARIO_DIR:-$SCRIPT_DIR/scenarios}"
 declare -a results=()
 failures=0
-for scenario in "$SCRIPT_DIR"/scenarios/*.sh; do
+for scenario in "$SCENARIO_DIR"/*.sh; do
   name="$(basename "$scenario")"
   echo "==> scenario: $name"
   if bash "$scenario"; then

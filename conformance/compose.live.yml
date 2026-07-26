@@ -1,0 +1,7 @@
+# Overlay for `make conformance-live`: the registry proxies REAL upstreams;
+# the fake upstream stays up (healthcheck) but is unused.
+services:
+  registry:
+    volumes:
+      - ./registry-live.yaml:/etc/registry/config.yaml:ro
+      - registry-data:/data

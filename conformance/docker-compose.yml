@@ -60,12 +60,48 @@ services:
       timeout: 2s
       retries: 15
 
+  # TLS gateway: terraform requires HTTPS for the registry protocol.
+  gateway:
+    image: nginx:1.28-alpine
+    volumes:
+      - ./gateway/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./gateway/cert.pem:/etc/nginx/certs/cert.pem:ro
+      - ./gateway/key.pem:/etc/nginx/certs/key.pem:ro
+    networks:
+      default:
+        aliases:
+          - registry.local
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/__health"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
   # One-off curl for scenarios; started explicitly via `docker compose run client`,
   # never by `up` (profile "tools").
   client:
     image: curlimages/curl:8.12.1
     profiles: ["tools"]
     entrypoint: ["curl"]
+
+  # Real package-manager clients (profile "tools", started per scenario).
+  maven-client:
+    build: ./clients/maven
+    profiles: ["tools"]
+    entrypoint: ["mvn"]
+    working_dir: /work
+    volumes:
+      - ./clients/maven/project:/work:ro
+      - ./clients/maven/project-live:/work-live:ro
+
+  terraform-client:
+    image: hashicorp/terraform:1.9
+    profiles: ["tools"]
+    environment:
+      SSL_CERT_FILE: /gw/ca.pem
+    volumes:
+      - ./clients/terraform/project:/src:ro
+      - ./gateway/ca.pem:/gw/ca.pem:ro
 
 volumes:
   registry-data:

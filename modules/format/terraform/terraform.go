@@ -108,20 +108,33 @@ func (Module) RewriteMetadata(_ api.Feed, body []byte) ([]byte, error) {
 }
 
 // Synthesize implements api.Synthesizer: the download endpoint answers with
-// 204 + X-Terraform-Get pointing at the registry's own archive path,
-// resolved by the client relative to the download URL.
-func (Module) Synthesize(_ api.Feed, intent api.Intent) (api.SyntheticResponse, error) {
+// 204 + X-Terraform-Get pointing at the registry's own archive path.
+// Terraform rejects bare relative locations ("cannot detect a supported
+// module source type"), so an absolute URL built from site.external_url is
+// required; without it we fall back to a relative location as a last resort.
+func (Module) Synthesize(feed api.Feed, intent api.Intent) (api.SyntheticResponse, error) {
 	if intent.Kind != api.IntentSynthetic || !strings.HasSuffix(intent.RemotePath, "/download") {
 		return api.SyntheticResponse{}, api.NotFoundf("unexpected synthetic intent %q", intent.RemotePath)
 	}
+	location := archiveFile
+	if feed.ExternalURL != "" {
+		location = feed.ExternalURL + "/terraform/" + feed.Name + "/" +
+			strings.TrimSuffix(intent.RemotePath, "download") + archiveFile
+	}
 	return api.SyntheticResponse{
 		Status: http.StatusNoContent,
-		Header: map[string]string{"X-Terraform-Get": archiveFile},
+		Header: map[string]string{"X-Terraform-Get": location},
 	}, nil
 }
 
 // ResolveIndirect implements api.IndirectResolver: extract the module
 // archive location from the upstream download response.
+//
+// Only HTTP(S) archive locations can be proxied. Public
+// registry.terraform.io modules return go-getter VCS sources
+// (git::https://github.com/...) — fetching those is a git operation, not an
+// HTTP download, and is out of scope for a pull-through cache; such modules
+// yield a clear 502.
 func (Module) ResolveIndirect(_ api.Feed, _ api.Intent, status int, header map[string][]string, _ []byte) (string, error) {
 	if status != http.StatusNoContent && status != http.StatusOK {
 		return "", fmt.Errorf("upstream download endpoint returned status %d", status)
@@ -130,7 +143,12 @@ func (Module) ResolveIndirect(_ api.Feed, _ api.Intent, status int, header map[s
 	if len(vals) == 0 || vals[0] == "" {
 		return "", errors.New("upstream download response lacks X-Terraform-Get")
 	}
-	return vals[0], nil
+	loc := vals[0]
+	if strings.Contains(loc, "::") || strings.HasPrefix(loc, "git@") {
+		return "", fmt.Errorf("module archive location %q is a VCS source, not an HTTP archive; such upstream modules cannot be proxied: %w",
+			loc, api.ErrUpstreamUnavailable)
+	}
+	return loc, nil
 }
 
 // RootRoutes implements api.RootRouter: terraform requires service

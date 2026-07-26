@@ -77,6 +77,10 @@ type Feed struct {
 	Format    string
 	Upstream  string // upstream base URL; empty for hosted-only feeds
 	Anonymous bool   // whether unauthenticated reads are allowed
+	// ExternalURL is the public base URL of this registry site (from
+	// site.external_url) for protocols that must emit absolute self-URLs
+	// (e.g. Terraform's X-Terraform-Get). Empty when not configured.
+	ExternalURL string
 }
 
 // IntentKind classifies what a request wants from the generic pipeline.

@@ -36,11 +36,10 @@ test-integration:
 conformance:
 	./conformance/run.sh
 
-# Runs conformance scenarios against real upstreams (Maven Central, npmjs, ...).
-# No live scenarios exist yet; they arrive with the first real format modules
-# (explicit task in Phase 2 of PLAN.md).
+# Conformance against real upstreams (Maven Central, registry.terraform.io).
+# Manual run: needs internet access.
 conformance-live:
-	@echo "conformance-live: no live scenarios yet (planned for Phase 2)" >&2; exit 2
+	./conformance/run-live.sh
 
 DEV_COMPOSE := docker compose -f $(COMPOSE_FILE) -f conformance/compose.dev.yml -p registry-dev
 

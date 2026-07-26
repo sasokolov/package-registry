@@ -4,7 +4,11 @@ CONFORMANCE_DIR="${CONFORMANCE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd
 COMPOSE_PROJECT="${COMPOSE_PROJECT:-registry-conformance}"
 
 compose() {
-  docker compose -f "$CONFORMANCE_DIR/docker-compose.yml" -p "$COMPOSE_PROJECT" "$@"
+  local files=(-f "$CONFORMANCE_DIR/docker-compose.yml")
+  if [[ -n "${COMPOSE_OVERLAY:-}" ]]; then
+    files+=(-f "$COMPOSE_OVERLAY")
+  fi
+  docker compose "${files[@]}" -p "$COMPOSE_PROJECT" "$@"
 }
 
 # client_curl runs curl inside the compose network via the one-off "client"

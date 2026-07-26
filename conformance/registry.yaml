@@ -1,5 +1,9 @@
 # Registry config used inside the conformance compose stack: blobs in MinIO,
-# state in Postgres, one anonymous echo feed proxying the fake upstream.
+# state in Postgres, feeds proxying the fake upstream.
+site:
+  name: conformance
+  external_url: https://registry.local
+
 server:
   listen: ":8080"
   shutdown_timeout: 10s
@@ -20,4 +24,30 @@ feeds:
   - name: test
     format: echo
     upstream: http://fake-upstream
+    anonymous: true
+
+  - name: central
+    format: maven
+    upstream: http://fake-upstream/maven
+    anonymous: true
+
+  # Allowlist policy: only com.example:liba may pass.
+  - name: guarded
+    format: maven
+    upstream: http://fake-upstream/maven
+    anonymous: true
+    policies:
+      - name: allowlist
+        config:
+          allow: ["com.example:liba"]
+
+  # Authentication required (static token / OIDC).
+  - name: private
+    format: maven
+    upstream: http://fake-upstream/maven
+    anonymous: false
+
+  - name: tf
+    format: terraform
+    upstream: http://fake-upstream/terraform-upstream
     anonymous: true

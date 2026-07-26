@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync/atomic"
 
 	"github.com/go-chi/chi/v5"
@@ -142,7 +143,9 @@ func (s *Server) buildRuntime(cfg *config.Config) (*runtime, error) {
 		if err != nil {
 			return nil, fmt.Errorf("feed %s: %w", fc.Name, err)
 		}
-		fr := &feedRuntime{feed: fc.API(), module: module, chain: chain}
+		feed := fc.API()
+		feed.ExternalURL = strings.TrimSuffix(cfg.Site.ExternalURL, "/")
+		fr := &feedRuntime{feed: feed, module: module, chain: chain}
 		if fc.Upstream != "" {
 			fr.upstream, err = pipeline.NewUpstream(pipeline.UpstreamOptions{
 				Feed:    fc.Name,
@@ -168,7 +171,9 @@ func (s *Server) buildRuntime(cfg *config.Config) (*runtime, error) {
 	// provided by modules with the RootRouter capability.
 	feedsByFormat := make(map[string][]api.Feed)
 	for _, fc := range cfg.Feeds {
-		feedsByFormat[fc.Format] = append(feedsByFormat[fc.Format], fc.API())
+		feed := fc.API()
+		feed.ExternalURL = strings.TrimSuffix(cfg.Site.ExternalURL, "/")
+		feedsByFormat[fc.Format] = append(feedsByFormat[fc.Format], feed)
 	}
 	for _, name := range api.Formats() {
 		module, _ := api.Format(name)

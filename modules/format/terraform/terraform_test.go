@@ -49,15 +49,27 @@ func TestParseDownloadIsSynthetic(t *testing.T) {
 		t.Errorf("coord = %+v", intent.Coord)
 	}
 
-	resp, err := Module{}.Synthesize(api.Feed{Name: "tf"}, intent)
+	// With site.external_url configured: absolute URL (terraform rejects
+	// bare relative locations).
+	resp, err := Module{}.Synthesize(api.Feed{Name: "tf", ExternalURL: "https://registry.local"}, intent)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resp.Status != http.StatusNoContent {
 		t.Errorf("status = %d", resp.Status)
 	}
+	wantGet := "https://registry.local/terraform/tf/v1/modules/testns/mymod/generic/2.0.0/archive.tar.gz"
+	if resp.Header["X-Terraform-Get"] != wantGet {
+		t.Errorf("X-Terraform-Get = %q, want %q", resp.Header["X-Terraform-Get"], wantGet)
+	}
+
+	// Fallback without external_url: relative location.
+	resp, err = Module{}.Synthesize(api.Feed{Name: "tf"}, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if resp.Header["X-Terraform-Get"] != "archive.tar.gz" {
-		t.Errorf("X-Terraform-Get = %q", resp.Header["X-Terraform-Get"])
+		t.Errorf("fallback X-Terraform-Get = %q", resp.Header["X-Terraform-Get"])
 	}
 }
 
@@ -99,6 +111,12 @@ func TestResolveIndirect(t *testing.T) {
 
 	if _, err := m.ResolveIndirect(api.Feed{}, api.Intent{}, http.StatusNoContent, map[string][]string{}, nil); err == nil {
 		t.Error("missing header accepted")
+	}
+	// VCS-backed modules (public registry.terraform.io) are not proxyable.
+	_, err = m.ResolveIndirect(api.Feed{}, api.Intent{}, http.StatusNoContent,
+		map[string][]string{"X-Terraform-Get": {"git::https://github.com/x/y?ref=abc"}}, nil)
+	if !errors.Is(err, api.ErrUpstreamUnavailable) {
+		t.Errorf("git:: source: err = %v, want ErrUpstreamUnavailable", err)
 	}
 	if _, err := m.ResolveIndirect(api.Feed{}, api.Intent{}, http.StatusBadGateway,
 		map[string][]string{"X-Terraform-Get": {"x"}}, nil); err == nil {

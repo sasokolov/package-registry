@@ -82,32 +82,32 @@
 
 ## Фаза 2 — Maven и Terraform, proxy
 
-- [ ] `modules/format/maven`: Parse путей `/{group}/{artifact}/{version}/{file}`
+- [x] `modules/format/maven`: Parse путей `/{group}/{artifact}/{version}/{file}`
       и `maven-metadata.xml`; чексуммы `.sha1/.sha256` — отдавать из
       сохранённых при инжесте значений, не проксировать отдельными запросами;
       `maven-metadata.xml` — мутабельный (SWR), артефакты релизных версий —
       иммутабельные. SNAPSHOT-версии: вынести отдельной задачей в Фазу 5,
       в этой фазе SNAPSHOT-запросы → 404 с понятным телом.
-- [ ] `modules/format/terraform`: service discovery (`/.well-known/terraform.json`),
+- [x] `modules/format/terraform`: service discovery (`/.well-known/terraform.json`),
       протокол Module Registry v1 (`versions`, `download` с `X-Terraform-Get`);
       download указывает на blob-эндпоинт registry, не на апстрим.
-- [ ] Fixtures fake-upstream: минимальный Maven-репозиторий (2 библиотеки с
+- [x] Fixtures fake-upstream: минимальный Maven-репозиторий (2 библиотеки с
       настоящими jar/pom/чексуммами) и Terraform-registry (1 модуль, 2 версии).
-- [ ] Conformance-сценарии (клиенты — официальные docker-образы
+- [x] Conformance-сценарии (клиенты — официальные docker-образы
       `maven:3-eclipse-temurin-21`, `hashicorp/terraform`):
-      - [ ] `mvn dependency:resolve` референс-проекта через registry
+      - [x] `mvn dependency:resolve` референс-проекта через registry
             (`settings.xml` с mirror) — успех, все артефакты в S3(MinIO).
-      - [ ] Повторный resolve при выключенном fake-upstream — успех из кэша.
-      - [ ] `terraform init` референс-модуля через registry — успех.
-      - [ ] Запрос запрещённой allowlist-политикой координаты → 403, аудит-лог
+      - [x] Повторный resolve при выключенном fake-upstream — успех из кэша.
+      - [x] `terraform init` референс-модуля через registry — успех.
+      - [x] Запрос запрещённой allowlist-политикой координаты → 403, аудит-лог
             содержит запись с Identity и координатой.
-      - [ ] Скачивание с анонимом при `anonymous: false` → 401; с валидным
+      - [x] Скачивание с анонимом при `anonymous: false` → 401; с валидным
             статическим токеном → 200.
 
-- [ ] `make conformance-live`: наполнить цель — прогон сценариев фазы против
+- [x] `make conformance-live`: наполнить цель — прогон сценариев фазы против
       реальных апстримов (Maven Central, registry.terraform.io), ручной
       запуск. Отложено из Фазы 0 (там цель — заглушка с exit 2).
-- [ ] Задел гео (см. docs/geo-replication.md): зарезервировать в YAML-схеме
+- [x] Задел гео (см. docs/geo-replication.md): зарезервировать в YAML-схеме
       ключи `site: {name, external_url}` и `replication: {}` (strict-парсер
       иначе уронит поды старого образа при rolling upgrade); `site` — в root
       slog, audit и info-метрику. Generic authenticated blob-эндпоинт

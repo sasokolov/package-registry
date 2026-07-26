@@ -1,0 +1,32 @@
+# Registry config for live conformance: real upstreams, same feed names as
+# the hermetic run so client projects and settings are reused.
+site:
+  name: live
+  external_url: https://registry.local
+
+server:
+  listen: ":8080"
+  shutdown_timeout: 10s
+
+storage:
+  type: s3
+  s3:
+    endpoint: minio:9000
+    bucket: registry
+    access_key: registry
+    secret_key: registry-secret
+    use_ssl: false
+
+database:
+  dsn: postgres://registry:registry@postgres:5432/registry
+
+feeds:
+  - name: central
+    format: maven
+    upstream: https://repo1.maven.org/maven2
+    anonymous: true
+
+  - name: tf
+    format: terraform
+    upstream: https://registry.terraform.io
+    anonymous: true
