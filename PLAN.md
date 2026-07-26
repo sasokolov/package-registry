@@ -40,7 +40,7 @@
 - [ ] `core/config`: hot-reload (SIGHUP + периодическая перечитка), атомарная
       подмена снапшота конфига; невалидный новый конфиг отклоняется с логом,
       процесс продолжает работать со старым (инвариант 8). Отложено из Фазы 0.
-- [ ] `core/api`: все интерфейсы и типы из CLAUDE.md (`BlobStore`, `Presigner`,
+- [x] `core/api`: все интерфейсы и типы из CLAUDE.md (`BlobStore`, `Presigner`,
       `FormatModule`, `Hoster`, `Policy`, `Intent`, `PackageCoordinate`,
       `Identity`, `Decision`, sentinel-ошибки). Пакет без внешних зависимостей.
 - [ ] `modules/storage/fs`: реализация BlobStore поверх директории; атомарная
