@@ -259,6 +259,9 @@ var knownEndpoints = []struct{ marker, local string }{
 }
 
 func rewriteEndpoint(raw, base string) (string, bool) {
+	// Markers are matched anywhere in the path, so an upstream served under
+	// a sub-path (http://host/nuget-upstream/v3-flatcontainer/...) maps
+	// correctly without extra configuration.
 	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
 		return raw, false
 	}

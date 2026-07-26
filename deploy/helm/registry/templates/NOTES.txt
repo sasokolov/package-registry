@@ -1,0 +1,18 @@
+{{ include "registry.fullname" . }} is installed.
+
+Endpoints (through the Service on port {{ .Values.service.port }}):
+  /healthz  /readyz  /metrics
+  /{format}/{feed}/...   e.g. /maven/maven-central/, /npm/npmjs/
+
+Next steps:
+  1. Create a static token:
+       kubectl exec deploy/{{ include "registry.fullname" . }} -- \
+         registry token create -name ci-bot -config /tmp/config.yaml
+  2. Point your clients at the registry — see deploy/helm/README.md for
+     ready-made GitLab CI snippets (.npmrc, settings.xml, auth.json,
+     .terraformrc, NuGet.config).
+{{- if not .Values.site.externalURL }}
+
+NOTE: site.externalURL is unset. Composer feeds require it, and npm/NuGet
+metadata will carry root-relative URLs.
+{{- end }}

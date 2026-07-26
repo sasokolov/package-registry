@@ -474,6 +474,12 @@ func (p *Pipeline) metadataChecksum(ctx context.Context, req Request) api.Checks
 	if !ok {
 		return api.Checksum{}
 	}
+	if metaIntent.RemotePath == req.Intent.RemotePath {
+		// The metadata document IS this artifact (Maven asks for the .pom of
+		// a .pom). Re-entering Serve would deadlock on the singleflight key
+		// this ingest already holds, and there is nothing to learn anyway.
+		return api.Checksum{}
+	}
 	metaReq := req
 	metaReq.Intent = metaIntent
 	res, err := p.Serve(ctx, metaReq)

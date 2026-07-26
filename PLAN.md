@@ -217,23 +217,23 @@ Deny/недоступности внешней зависимости.
 
 ## Фаза 6 — HA-hardening и деплой
 
-- [ ] Presigned redirects: если сторадж — `Presigner` и формат помечен
+- [x] Presigned redirects: если сторадж — `Presigner` и формат помечен
       redirect-safe (maven, npm tarball, terraform, nuget flat container) —
       отдавать 302 на presigned URL; конфиг-флаг per-feed; conformance-сценарий
       `npm ci` через redirect-режим.
-- [ ] Chaos-сценарии в conformance (отдельная цель `make conformance-chaos`):
-      - [ ] kill -9 одной из двух реплик registry посреди `npm ci` → установка
+- [x] Chaos-сценарии в conformance (отдельная цель `make conformance-chaos`):
+      - [x] kill -9 одной из двух реплик registry посреди `npm ci` → установка
             завершается успешно (retry клиента/балансировщика).
-      - [ ] Остановка Postgres → read-path с токеном из кэша работает,
+      - [x] Остановка Postgres → read-path с токеном из кэша работает,
             publish отдаёт 503 с внятным телом.
-      - [ ] Остановка fake-upstream → stale-метаданные, билды проходят.
-- [ ] Нагрузочный тест k6: профиль «CI-шторм» (200 конкурентных `npm ci`-подобных
+      - [x] Остановка fake-upstream → stale-метаданные, билды проходят.
+- [x] Нагрузочный тест k6: профиль «CI-шторм» (200 конкурентных `npm ci`-подобных
       последовательностей), зафиксировать baseline p99 в `docs/perf.md`.
-- [ ] `deploy/helm`: chart с Deployment (2+ реплики), HPA, PDB,
+- [x] `deploy/helm`: chart с Deployment (2+ реплики), HPA, PDB,
       ServiceMonitor, values для S3/Postgres/issuer'ов; README с примером
       установки и подключением GitLab CI (сниппеты `.npmrc`, `settings.xml`,
       `auth.json`, `.terraformrc`, NuGet.config через `CI_JOB_JWT`/id_token).
-- [ ] GC: команда `registry gc` — удаление блобов без ссылок из манифестов,
+- [x] GC: команда `registry gc` — удаление блобов без ссылок из манифестов,
       dry-run по умолчанию; advisory lock на весь прогон. Задел гео:
       mark-and-sweep с минимальным возрастом блоба и грейсом ≥ журнального
       горизонта; GC выключен во время бутстрапа/ресинка сайта.

@@ -1,0 +1,123 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "registry.fullname" . }}
+  labels:
+    {{- include "registry.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "registry.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "registry.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: registry
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # The config references credentials as ${VAR}; envsubst keeps
+          # secrets out of the ConfigMap (invariants 8 and 12).
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              sed -e "s|\${REGISTRY_S3_ACCESS_KEY}|${REGISTRY_S3_ACCESS_KEY:-}|g" \
+                  -e "s|\${REGISTRY_S3_SECRET_KEY}|${REGISTRY_S3_SECRET_KEY:-}|g" \
+                  -e "s|\${REGISTRY_DATABASE_DSN}|${REGISTRY_DATABASE_DSN:-}|g" \
+                  /etc/registry/config.yaml > /tmp/config.yaml
+              exec /usr/local/bin/registry -config /tmp/config.yaml
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            {{- if eq .Values.storage.type "s3" }}
+            - name: REGISTRY_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.s3.existingSecret }}
+                  key: access_key
+            - name: REGISTRY_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.s3.existingSecret }}
+                  key: secret_key
+            {{- end }}
+            {{- with .Values.database.existingSecret }}
+            - name: REGISTRY_DATABASE_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $.Values.database.secretKey }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          # Graceful shutdown: /readyz fails first, in-flight downloads drain.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/registry
+              readOnly: true
+            {{- if and (eq .Values.storage.type "fs") .Values.storage.fs.persistence.enabled }}
+            - name: data
+              mountPath: {{ .Values.storage.fs.path }}
+            {{- end }}
+      terminationGracePeriodSeconds: 60
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "registry.fullname" . }}
+        {{- if and (eq .Values.storage.type "fs") .Values.storage.fs.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "registry.fullname" . }}-data
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"crypto/sha1" //nolint:gosec // legacy checksum in tests
 	"crypto/sha256"
 	"encoding/hex"
@@ -345,5 +346,47 @@ func TestManifestDigestLegacyRehash(t *testing.T) {
 	}
 	if got != sha1hex(content) {
 		t.Errorf("rehash sha1 = %q, want %q", got, sha1hex(content))
+	}
+}
+
+// selfMetadataModule points every artifact's metadata at the artifact
+// itself — the shape Maven has for .pom files.
+type selfMetadataModule struct{ echoModule }
+
+func (selfMetadataModule) MetadataIntent(_ api.Feed, coord api.PackageCoordinate) (api.Intent, bool) {
+	return api.Intent{
+		Kind:       api.IntentArtifact,
+		Coord:      coord,
+		RemotePath: coord.Name,
+	}, true
+}
+
+func (selfMetadataModule) ExtractMetadata(api.PackageCoordinate, []byte) (map[string]string, error) {
+	return map[string]string{}, nil
+}
+
+func TestSelfReferentialMetadataDoesNotDeadlock(t *testing.T) {
+	h := newHarness(t)
+	h.set("lib/self.pom", "<project/>")
+	up := h.upstream(0)
+
+	req := h.request(artifactIntent("lib/self.pom"), up)
+	req.Module = selfMetadataModule{}
+
+	done := make(chan error, 1)
+	go func() {
+		res, err := h.pipe.Serve(context.WithoutCancel(t.Context()), req)
+		if err == nil {
+			_ = res.Body.Close()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve deadlocked on a self-referential metadata intent")
 	}
 }

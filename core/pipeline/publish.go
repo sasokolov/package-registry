@@ -105,6 +105,9 @@ func (p *Publisher) Publish(ctx context.Context, req api.PublishRequest) (api.Pu
 			"identity", req.Identity.String(), "site", p.site)
 		return api.PublishResult{}, fmt.Errorf("%s already published: %w", req.Coord, api.ErrImmutable)
 	}
+	if errors.Is(err, state.ErrUnavailable) {
+		return api.PublishResult{}, fmt.Errorf("publishing is unavailable while the database is down: %w", api.ErrUnavailable)
+	}
 	if err != nil {
 		return api.PublishResult{}, err
 	}
@@ -153,6 +156,9 @@ func (p *Publisher) Manifests(ctx context.Context, feed api.Feed, prefix string)
 		return nil, fmt.Errorf("listing hosted manifests requires a database: %w", api.ErrUnavailable)
 	}
 	rows, err := p.db.ListHosted(ctx, feed.Name, prefix)
+	if errors.Is(err, state.ErrUnavailable) {
+		return nil, fmt.Errorf("hosted manifests are unavailable while the database is down: %w", api.ErrUnavailable)
+	}
 	if err != nil {
 		return nil, err
 	}

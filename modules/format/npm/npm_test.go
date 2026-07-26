@@ -257,3 +257,35 @@ func TestMetadataIntent(t *testing.T) {
 		t.Error("version-less coordinate got a metadata intent")
 	}
 }
+
+func TestRewriteMetadataStripsUpstreamPathPrefix(t *testing.T) {
+	// An upstream served under a sub-path repeats that prefix in its
+	// tarball URLs; the registry must not double it.
+	raw := []byte(`{
+	  "name": "left-pad",
+	  "versions": {"1.3.0": {"dist": {
+	    "tarball": "http://fake-upstream/npm/left-pad/-/left-pad-1.3.0.tgz"}}}
+	}`)
+	feed := api.Feed{
+		Name: "npmjs", Format: "npm",
+		Upstream:    "http://fake-upstream/npm",
+		ExternalURL: "https://registry.local",
+	}
+	got, err := Module{}.RewriteMetadata(feed, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "https://registry.local/npm/npmjs/left-pad/-/left-pad-1.3.0.tgz"
+	if !strings.Contains(string(got), want) {
+		t.Errorf("tarball not rewritten to %q:\n%s", want, got)
+	}
+
+	// The rewritten path must parse back into the same upstream path.
+	back, err := parse(t, "/left-pad/-/left-pad-1.3.0.tgz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.RemotePath != "left-pad/-/left-pad-1.3.0.tgz" {
+		t.Errorf("round-trip path = %q", back.RemotePath)
+	}
+}

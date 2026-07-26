@@ -119,6 +119,11 @@ services:
     volumes:
       - ./clients/dotnet/project:/src:ro
 
+  k6:
+    image: grafana/k6:0.55.0
+    profiles: ["tools"]
+    entrypoint: ["k6"]
+
   terraform-client:
     image: hashicorp/terraform:1.9
     profiles: ["tools"]

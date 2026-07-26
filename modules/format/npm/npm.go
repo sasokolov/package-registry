@@ -157,6 +157,7 @@ func (Module) RewriteMetadata(feed api.Feed, body []byte) ([]byte, error) {
 		return body, nil
 	}
 	base := feedBase(feed)
+	upstreamPrefix := upstreamPathPrefix(feed)
 	for _, raw := range versions {
 		version, ok := raw.(map[string]any)
 		if !ok {
@@ -170,7 +171,7 @@ func (Module) RewriteMetadata(feed api.Feed, body []byte) ([]byte, error) {
 		if !ok || tarball == "" {
 			continue
 		}
-		rewritten, err := rewriteTarballURL(base, tarball)
+		rewritten, err := rewriteTarballURL(base, upstreamPrefix, tarball)
 		if err != nil {
 			return nil, err
 		}
@@ -194,9 +195,29 @@ func feedBase(feed api.Feed) string {
 	return prefix
 }
 
+// upstreamPathPrefix is the path component of the feed's upstream, e.g.
+// "npm/" for http://host/npm. Registries served under a sub-path repeat it
+// in their tarball URLs, and it must not end up in the registry path.
+func upstreamPathPrefix(feed api.Feed) string {
+	if feed.Upstream == "" {
+		return ""
+	}
+	u, err := url.Parse(feed.Upstream)
+	if err != nil {
+		return ""
+	}
+	p := strings.Trim(u.EscapedPath(), "/")
+	if p == "" {
+		return ""
+	}
+	return p + "/"
+}
+
 // rewriteTarballURL maps an upstream tarball URL onto this registry,
-// preserving the package/tarball path so Parse can map it back.
-func rewriteTarballURL(base, tarball string) (string, error) {
+// preserving the package/tarball path so Parse can map it back. The
+// upstream's own path prefix is stripped: the registry mounts the feed at
+// its own prefix already.
+func rewriteTarballURL(base, upstreamPrefix, tarball string) (string, error) {
 	u, err := url.Parse(tarball)
 	if err != nil {
 		return "", fmt.Errorf("parse tarball url %q: %w", tarball, err)
@@ -204,6 +225,9 @@ func rewriteTarballURL(base, tarball string) (string, error) {
 	path := strings.TrimPrefix(u.EscapedPath(), "/")
 	if path == "" {
 		return "", fmt.Errorf("tarball url %q has no path", tarball)
+	}
+	if upstreamPrefix != "" {
+		path = strings.TrimPrefix(path, upstreamPrefix)
 	}
 	return base + "/" + path, nil
 }

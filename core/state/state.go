@@ -16,7 +16,10 @@ import (
 	"hash/fnv"
 	"io/fs"
 	"log/slog"
+	"net"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -107,6 +110,31 @@ func (db *DB) MigrateLoop(ctx context.Context) {
 			backoff *= 2
 		}
 	}
+}
+
+// ErrUnavailable marks failures caused by the database being unreachable
+// (as opposed to a rejected statement). Callers translate it into a 503 with
+// a readable body instead of a generic 500 (invariant 7).
+var ErrUnavailable = errors.New("database unavailable")
+
+// classify wraps connection-level failures with ErrUnavailable so callers
+// can distinguish "the database is down" from "the database said no".
+func classify(err error) error {
+	if err == nil {
+		return nil
+	}
+	var connErr *pgconn.ConnectError
+	if errors.As(err, &connErr) {
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	return err
 }
 
 // ErrLockUnavailable marks advisory-lock failures caused by the lock

@@ -1,0 +1,56 @@
+{{/* The registry config is declarative and hot-reloaded (invariant 8): a
+     checksum annotation on the Deployment is deliberately NOT used, so a
+     feed change does not restart pods — the kubelet updates the mounted
+     ConfigMap and the process re-reads it. */}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "registry.fullname" . }}
+  labels:
+    {{- include "registry.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    site:
+      name: {{ .Values.site.name | quote }}
+      {{- with .Values.site.externalURL }}
+      external_url: {{ . | quote }}
+      {{- end }}
+
+    server:
+      listen: ":8080"
+      shutdown_timeout: 30s
+      reload_interval: 30s
+
+    storage:
+      type: {{ .Values.storage.type | quote }}
+      {{- if eq .Values.storage.type "s3" }}
+      s3:
+        endpoint: {{ .Values.storage.s3.endpoint | quote }}
+        bucket: {{ .Values.storage.s3.bucket | quote }}
+        {{- with .Values.storage.s3.region }}
+        region: {{ . | quote }}
+        {{- end }}
+        use_ssl: {{ .Values.storage.s3.useSSL }}
+        access_key: ${REGISTRY_S3_ACCESS_KEY}
+        secret_key: ${REGISTRY_S3_SECRET_KEY}
+      {{- else }}
+      fs:
+        path: {{ .Values.storage.fs.path | quote }}
+      {{- end }}
+
+    database:
+      dsn: ${REGISTRY_DATABASE_DSN}
+
+    auth:
+      token_cache_ttl: {{ .Values.auth.tokenCacheTTL | quote }}
+      {{- with .Values.auth.oidcIssuers }}
+      oidc_issuers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+    feeds:
+      {{- toYaml .Values.feeds | nindent 6 }}
+
+    {{- with .Values.extraConfig }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}

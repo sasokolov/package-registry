@@ -65,7 +65,7 @@ func (db *DB) InsertHosted(ctx context.Context, r HostedRow) (created bool, err 
 		if errors.As(err, &pgErr) {
 			return false, fmt.Errorf("insert hosted manifest: %s: %w", pgErr.Message, err)
 		}
-		return false, fmt.Errorf("insert hosted manifest: %w", err)
+		return false, classify(fmt.Errorf("insert hosted manifest: %w", err))
 	}
 
 	// The row exists: decide between idempotent retry, mutable update and
@@ -76,7 +76,7 @@ func (db *DB) InsertHosted(ctx context.Context, r HostedRow) (created bool, err 
 		"SELECT sha256, mutable FROM hosted_manifests WHERE feed=$1 AND path=$2",
 		r.Feed, r.Path).Scan(&existingSHA, &existingMutable)
 	if err != nil {
-		return false, fmt.Errorf("read existing manifest: %w", err)
+		return false, classify(fmt.Errorf("read existing manifest: %w", err))
 	}
 	if existingSHA == r.SHA256 {
 		return false, nil // identical content: idempotent
@@ -113,7 +113,7 @@ func (db *DB) ListHosted(ctx context.Context, feed, prefix string) ([]HostedRow,
 		 WHERE feed = $1 AND path LIKE $2 || '%'
 		 ORDER BY path`, feed, prefix)
 	if err != nil {
-		return nil, fmt.Errorf("list hosted manifests: %w", err)
+		return nil, classify(fmt.Errorf("list hosted manifests: %w", err))
 	}
 	defer rows.Close()
 
@@ -157,7 +157,7 @@ func (db *DB) Quarantine(ctx context.Context, feed, coordinate, reason, detail s
 		DO UPDATE SET reason = EXCLUDED.reason, detail = EXCLUDED.detail, released_at = NULL`,
 		feed, coordinate, reason, detail)
 	if err != nil {
-		return fmt.Errorf("quarantine %s %s: %w", feed, coordinate, err)
+		return classify(fmt.Errorf("quarantine %s %s: %w", feed, coordinate, err))
 	}
 	return nil
 }
@@ -186,7 +186,7 @@ func (db *DB) ActiveQuarantine(ctx context.Context, feed, coordinate string) (Qu
 		return QuarantineEntry{}, false, nil
 	}
 	if err != nil {
-		return QuarantineEntry{}, false, fmt.Errorf("read quarantine: %w", err)
+		return QuarantineEntry{}, false, classify(fmt.Errorf("read quarantine: %w", err))
 	}
 	return e, true, nil
 }

@@ -114,3 +114,12 @@ feeds:
     hosted: true
     anonymous: true
     publishers: ["token:ci-*"]
+
+  # Redirect mode: cached tarballs are answered with a 302 to a pre-signed
+  # MinIO URL instead of being streamed through the registry.
+  - name: npm-redirect
+    format: npm
+    upstream: http://fake-upstream/npm
+    anonymous: true
+    redirect: true
+    redirect_ttl: 5m

@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log/slog"
 	"os"
@@ -22,9 +23,10 @@ type Manager struct {
 	logger   *slog.Logger
 	validate func(*Config) error
 
-	mu   sync.Mutex // serializes reloads and subscription
-	subs []func(*Config)
-	cur  atomic.Pointer[Config]
+	mu       sync.Mutex // serializes reloads and subscription
+	subs     []func(*Config)
+	lastHash [32]byte // content hash of the active snapshot
+	cur      atomic.Pointer[Config]
 }
 
 // NewManager loads the initial config from path (failing hard on error —
@@ -36,6 +38,9 @@ func NewManager(path string, logger *slog.Logger, validate func(*Config) error) 
 	cfg, err := Load(path)
 	if err != nil {
 		return nil, err
+	}
+	if raw, err := os.ReadFile(path); err == nil {
+		m.lastHash = sha256.Sum256(raw)
 	}
 	if validate != nil {
 		if err := validate(cfg); err != nil {
@@ -64,6 +69,12 @@ func (m *Manager) Reload() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	raw, readErr := os.ReadFile(m.path)
+	if readErr == nil && sha256.Sum256(raw) == m.lastHash {
+		// Unchanged file: nothing to swap, and no log line every interval.
+		return nil
+	}
+
 	cfg, err := Load(m.path)
 	if err == nil && m.validate != nil {
 		if verr := m.validate(cfg); verr != nil {
@@ -78,6 +89,9 @@ func (m *Manager) Reload() error {
 	old := m.cur.Load()
 	m.warnImmutableChanges(old, cfg)
 	m.cur.Store(cfg)
+	if readErr == nil {
+		m.lastHash = sha256.Sum256(raw)
+	}
 	m.logger.Info("config reloaded", "path", m.path, "feeds", len(cfg.Feeds))
 	for _, fn := range m.subs {
 		fn(cfg)
