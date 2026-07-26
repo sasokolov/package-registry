@@ -99,8 +99,12 @@ groups:
             and the site log.
 
       - alert: RegistryFeedDigestDivergence
+        # Every site reports the same number for a feed it agrees about, so
+        # spread across sites is the divergence signal. (Grouping by value
+        # is not expressible in PromQL; max != min is.)
         expr: |
-          count by (feed) (count by (feed, __value__) (registry_repl_feed_digest)) > 1
+          max by (feed) (registry_repl_feed_digest)
+            != min by (feed) (registry_repl_feed_digest)
         for: 30m
         labels: {severity: critical}
         annotations:

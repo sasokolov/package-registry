@@ -46,9 +46,21 @@ if ! wait_for 90 bootstrapped; then
   exit 1
 fi
 
-echo "--> the artifact is still served at us-1 after the resync"
+echo "--> the artifact is still served from us-1's OWN storage after the resync"
+# Checking the bootstrap log line alone would pass even if the snapshot
+# arrived empty: the assertion has to be about the data.
 if ! wait_for 60 replicated us homed "$PATH_JAR" "$CONTENT"; then
   echo "us-1 lost the artifact across the resync" >&2
+  read -r status source <<<"$(fetch us homed "$PATH_JAR")"
+  echo "  status=$status source=$source" >&2
+  exit 1
+fi
+
+echo "--> the snapshot carried real content (not an empty manifest set)"
+snapshot_rows="$(compose exec -T postgres-us psql -U registry -d registry -tA \
+  -c "SELECT count(*) FROM hosted_manifests WHERE feed='homed'" 2>/dev/null | tr -d '[:space:]')"
+if [[ "${snapshot_rows:-0}" -lt 1 ]]; then
+  echo "us-1 has no hosted rows after the resync: the snapshot was empty" >&2
   exit 1
 fi
 

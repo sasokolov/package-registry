@@ -85,10 +85,19 @@ fi
 compose exec -T registry-eu registry repl resolve \
   -feed shared -path "$PATH_JAR" -keep "$other" -config /etc/registry/config.yaml >/dev/null
 
+# The kept digest belongs to exactly one of the two publishes; work out
+# which content that is, so the assertion is "the operator's choice is
+# served", not merely "both sites agree".
+if [[ "$other" == "$(printf '%s' 'content from eu' | sha256sum | cut -d' ' -f1)" ]]; then
+  want="content from eu"
+else
+  want="content from us"
+fi
+
 resolved_everywhere() { # <eu|us>
   local out
   out="$(body "$1" shared "$PATH_JAR" 2>/dev/null)" || return 1
-  [[ "$out" == "content from eu" || "$out" == "content from us" ]]
+  [[ "$out" == "$want" ]]
 }
 for site in eu us; do
   if ! wait_for 90 resolved_everywhere "$site"; then
@@ -98,11 +107,19 @@ for site in eu us; do
   fi
 done
 
-echo "--> both sites serve identical bytes after the resolution"
+echo "--> both sites serve exactly the bytes the operator kept"
 b_eu="$(body eu shared "$PATH_JAR")"
 b_us="$(body us shared "$PATH_JAR")"
-if [[ "$b_eu" != "$b_us" ]]; then
-  echo "sites diverged after resolution: eu=$b_eu us=$b_us" >&2
+if [[ "$b_eu" != "$want" || "$b_us" != "$want" ]]; then
+  echo "the operator's choice is not what is served: want=$want eu=$b_eu us=$b_us" >&2
+  exit 1
+fi
+
+echo "--> the served checksum matches the kept digest"
+served_sha="$(compose run --rm -T npm-client sh -c \
+  "wget -qO- http://registry-us:8080/maven/shared/$PATH_JAR | sha256sum | cut -d' ' -f1" 2>/dev/null | tr -d '\r')"
+if [[ "$served_sha" != "$other" ]]; then
+  echo "served bytes hash to $served_sha, but the kept digest is $other" >&2
   exit 1
 fi
 

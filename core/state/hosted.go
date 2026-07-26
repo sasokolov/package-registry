@@ -136,6 +136,49 @@ func nonNilMap(m map[string]string) map[string]string {
 	return m
 }
 
+// ActiveQuarantinesTx lists every coordinate currently blocked, for a
+// bootstrap snapshot.
+func ActiveQuarantinesTx(ctx context.Context, tx pgx.Tx) ([]QuarantineEntry, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT feed, coordinate, reason, detail, created_at
+		  FROM quarantine WHERE released_at IS NULL
+		 ORDER BY feed, coordinate, reason`)
+	if err != nil {
+		return nil, fmt.Errorf("list active quarantines: %w", err)
+	}
+	defer rows.Close()
+	var out []QuarantineEntry
+	for rows.Next() {
+		var e QuarantineEntry
+		if err := rows.Scan(&e.Feed, &e.Coordinate, &e.Reason, &e.Detail, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// RevokedTokenHashesTx lists revoked token hashes for a bootstrap snapshot.
+// Only hashes travel — a secret never leaves the site that issued it
+// (invariant 12).
+func RevokedTokenHashesTx(ctx context.Context, tx pgx.Tx) ([]string, error) {
+	rows, err := tx.Query(ctx,
+		"SELECT hash FROM tokens WHERE revoked_at IS NOT NULL ORDER BY hash")
+	if err != nil {
+		return nil, fmt.Errorf("list revoked tokens: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
 // ListHosted returns published coordinates ordered by path (a deterministic
 // Reindex input). An empty feed means every feed — snapshot, projection
 // repair and backfill all need the whole set.

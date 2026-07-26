@@ -363,6 +363,26 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Active quarantines and revocations travel with the snapshot: without
+	// them a bootstrapped site would serve coordinates that answer 409
+	// everywhere else, and honour tokens every other site has revoked
+	// (invariant 14 works only if revocations reach new sites too).
+	quarantines, err := state.ActiveQuarantinesTx(ctx, tx)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	for _, q := range quarantines {
+		snap.Quarantine = append(snap.Quarantine, QuarantineSet{
+			Feed: q.Feed, Coordinate: q.Coordinate, Reason: q.Reason, Detail: q.Detail,
+		})
+	}
+	snap.Revoked, err = state.RevokedTokenHashesTx(ctx, tx)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+
 	origins, err := state.KnownOriginsTx(ctx, tx)
 	if err != nil {
 		s.fail(w, err)

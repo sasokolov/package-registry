@@ -48,10 +48,6 @@ type Client struct {
 	http   *http.Client
 	authz  func(*http.Request)
 	logger *slog.Logger
-
-	// pinnedUUID is learned at the first handshake; a peer that changes its
-	// UUID is a different site wearing the same name and is refused.
-	pinnedUUID string
 }
 
 // NewClient builds a peer client.
@@ -126,13 +122,11 @@ func (c *Client) Status(ctx context.Context) (StatusResponse, error) {
 		return StatusResponse{}, fmt.Errorf(
 			"peer %s identifies as site %q: refusing to replicate a misconfigured peer", c.peer.Name, out.Site)
 	}
-	if c.pinnedUUID == "" {
-		c.pinnedUUID = out.UUID
-	} else if out.UUID != c.pinnedUUID {
-		return StatusResponse{}, fmt.Errorf(
-			"peer %s changed its site UUID (%s -> %s): a different site is using this name; run `registry repl trust-reset` if this is intentional",
-			c.peer.Name, short(c.pinnedUUID), short(out.UUID))
+	if len(out.UUID) == 0 {
+		return StatusResponse{}, fmt.Errorf("peer %s reported no site UUID", c.peer.Name)
 	}
+	// The pin lives in the database, not in this process: see
+	// DB.PinPeerIdentity. The manager applies it right after the handshake.
 	return out, nil
 }
 

@@ -61,7 +61,18 @@ ALTER TABLE repl_parked
     ADD COLUMN hlc_logical    BIGINT NOT NULL DEFAULT 0,
     ADD COLUMN schema_version INT    NOT NULL DEFAULT 1;
 
+-- Peer identities are pinned durably: a per-process memory of "the UUID I
+-- saw first" means every replica and every restart re-decides who a peer
+-- is, which is exactly the in-memory correctness state invariant 3 bans.
+CREATE TABLE repl_peer_identity (
+    peer       TEXT PRIMARY KEY,
+    site_uuid  UUID NOT NULL,
+    first_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- +goose Down
+DROP TABLE repl_peer_identity;
 ALTER TABLE repl_parked
     DROP COLUMN schema_version, DROP COLUMN hlc_logical, DROP COLUMN hlc_wall;
 DROP TABLE conflict_resolutions;

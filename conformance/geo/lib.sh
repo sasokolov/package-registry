@@ -53,8 +53,20 @@ wait_for() { # <seconds> <command...>
   return 1
 }
 
-# replicated succeeds when a site serves the expected content locally.
-replicated() { # <eu|us> <feed> <path> <expected>
+# replicated succeeds only when a site serves the expected content from its
+# OWN storage. Peer fallback would serve the same bytes without anything
+# having replicated, so a convergence assertion must check the source too.
+replicated() { # <eu|us|ap> <feed> <path> <expected>
+  local got source
+  got="$(body "$1" "$2" "$3" 2>/dev/null || true)"
+  [[ "$got" == "$4" ]] || return 1
+  read -r _ source <<<"$(fetch "$1" "$2" "$3")"
+  [[ "$source" == "cache" || "$source" == "local" ]]
+}
+
+# served succeeds when a site returns the expected content by any route,
+# including peer fallback.
+served() { # <eu|us|ap> <feed> <path> <expected>
   local got
   got="$(body "$1" "$2" "$3" 2>/dev/null || true)"
   [[ "$got" == "$4" ]]

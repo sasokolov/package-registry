@@ -457,6 +457,28 @@ func (db *DB) TryLease(ctx context.Context, key string, fn func(ctx context.Cont
 	return true, fn(ctx)
 }
 
+// PinPeerIdentity records a peer's site UUID the first time it is seen and
+// refuses any later change: a peer whose UUID changed is a different site
+// wearing a familiar name. The pin is durable, so every replica and every
+// restart makes the same decision.
+func (db *DB) PinPeerIdentity(ctx context.Context, peer, uuid string) error {
+	var stored string
+	err := db.pool.QueryRow(ctx, `
+		INSERT INTO repl_peer_identity (peer, site_uuid) VALUES ($1, $2)
+		ON CONFLICT (peer) DO UPDATE SET last_seen = now()
+		RETURNING site_uuid::text`, peer, uuid).Scan(&stored)
+	if err != nil {
+		return classify(fmt.Errorf("pin peer identity: %w", err))
+	}
+	if stored != uuid {
+		return fmt.Errorf(
+			"peer %s now identifies as site UUID %s but was pinned to %s: a different site is using this name; "+
+				"delete its row from repl_peer_identity if the change is intentional",
+			peer, uuid, stored)
+	}
+	return nil
+}
+
 // RecordPeerAck notes how far a peer has consumed our journal. It is the
 // watermark journal pruning is allowed to drop below, and it only ever
 // moves forward.

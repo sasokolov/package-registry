@@ -202,6 +202,15 @@ func (m *Manager) pollPeer(ctx context.Context, c *Client) {
 		_ = m.db.RecordCursorError(ctx, c.Name(), "*", err.Error())
 		return
 	}
+	// Identity is pinned durably, so a peer cannot be re-identified by
+	// restarting this process or by talking to a different replica.
+	if err := m.db.PinPeerIdentity(ctx, c.Name(), status.UUID); err != nil {
+		m.metrics.pollFailure(c.Name())
+		m.logger.Error("refusing to replicate from a peer whose identity changed",
+			"peer", c.Name(), "error", err)
+		_ = m.db.RecordCursorError(ctx, c.Name(), "*", err.Error())
+		return
+	}
 
 	// A reachable peer is recorded even when there is nothing to apply, so
 	// an idle healthy stream is distinguishable from an unreachable one.
@@ -342,6 +351,12 @@ func (m *Manager) bootstrap(ctx context.Context, c *Client, touched map[string]b
 	m.logger.Info("bootstrapping from peer snapshot",
 		"peer", c.Name(), "manifests", len(snap.Manifests))
 
+	// Quarantines and revocations first: a coordinate must never become
+	// visible here before the block that applies to it does.
+	if err := m.applySnapshotRestrictions(ctx, c.Name(), snap); err != nil {
+		return err
+	}
+
 	var imported, deferred int
 	for _, p := range snap.Manifests {
 		entry := state.JournalEntry{
@@ -426,6 +441,47 @@ func (m *Manager) pruneJournal(ctx context.Context, peer string) {
 		m.logger.Info("journal pruned",
 			"site", m.site, "below_seq", watermark+1, "entries", n, "acked_by", peer)
 	}
+}
+
+// applySnapshotRestrictions imports the peer's active quarantines and
+// revoked token hashes. Both only ever remove access, so importing them
+// wholesale is safe and is what invariant 14 requires of a new site.
+func (m *Manager) applySnapshotRestrictions(ctx context.Context, peer string, snap SnapshotResponse) error {
+	tx, err := m.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	for _, q := range snap.Quarantine {
+		if q.Feed == "" || q.Coordinate == "" || q.Reason == "" {
+			continue
+		}
+		// A snapshot carries no per-decision timestamp, so it is stamped
+		// at zero: it establishes state on a fresh site and never
+		// overrides a decision this site already has.
+		if err := quarantineTx(ctx, tx, q.Feed, q.Coordinate, q.Reason, q.Detail, state.HLC{}); err != nil {
+			return err
+		}
+	}
+	for _, hash := range snap.Revoked {
+		if len(hash) != 64 {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE tokens SET revoked_at = COALESCE(revoked_at, now()), updated_at = now()
+			 WHERE hash = $1`, hash); err != nil {
+			return fmt.Errorf("apply revocation from snapshot: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if len(snap.Quarantine) > 0 || len(snap.Revoked) > 0 {
+		m.logger.Info("snapshot restrictions applied",
+			"peer", peer, "quarantines", len(snap.Quarantine), "revocations", len(snap.Revoked))
+	}
+	return nil
 }
 
 // updateLag publishes the per-stream lag gauges.

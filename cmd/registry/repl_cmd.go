@@ -73,7 +73,7 @@ func replCmd(args []string, out io.Writer) error {
 	case "peers":
 		return replPeers(ctx, db, cfg, out)
 	case "resync":
-		return replResync(ctx, db, *peer, out)
+		return replResync(ctx, db, cfg, *peer, out)
 	case "backfill":
 		return replBackfill(ctx, db, cfg, *peer, *dryRun, out)
 	default:
@@ -301,32 +301,42 @@ func replPeers(ctx context.Context, db *state.DB, cfg *config.Config, out io.Wri
 // replResync rewinds a peer's cursors so the next poll re-reads the whole
 // retained journal. Apply is idempotent, so this is safe to run at any
 // time; it is the fix for "this site missed something".
-func replResync(ctx context.Context, db *state.DB, peer string, out io.Writer) error {
+func replResync(ctx context.Context, db *state.DB, cfg *config.Config, peer string, out io.Writer) error {
 	if peer == "" {
 		return errors.New("resync needs -peer <name>")
 	}
-	cursors, err := db.ListCursors(ctx)
+	var reset int
+	// Take the poll lease so a cycle that is already running cannot write a
+	// higher cursor straight back over the reset.
+	ran, err := db.TryLease(ctx, "repl-poll:"+cfg.Site.Name+":"+peer, func(ctx context.Context) error {
+		cursors, err := db.ListCursors(ctx)
+		if err != nil {
+			return err
+		}
+		for _, c := range cursors {
+			if c.Peer != peer {
+				continue
+			}
+			tx, err := db.Begin(ctx)
+			if err != nil {
+				return err
+			}
+			if err := state.SetCursorTx(ctx, tx, state.Cursor{Peer: c.Peer, Origin: c.Origin}); err != nil {
+				_ = tx.Rollback(ctx)
+				return err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return err
+			}
+			reset++
+		}
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	var reset int
-	for _, c := range cursors {
-		if c.Peer != peer {
-			continue
-		}
-		tx, err := db.Begin(ctx)
-		if err != nil {
-			return err
-		}
-		err = state.SetCursorTx(ctx, tx, state.Cursor{Peer: c.Peer, Origin: c.Origin})
-		if err != nil {
-			_ = tx.Rollback(ctx)
-			return err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return err
-		}
-		reset++
+	if !ran {
+		return fmt.Errorf("a poll cycle for peer %q is running; try again in a moment", peer)
 	}
 	if reset == 0 {
 		return fmt.Errorf("no cursors found for peer %q", peer)
@@ -345,6 +355,11 @@ func replBackfill(ctx context.Context, db *state.DB, cfg *config.Config,
 	if err != nil {
 		return err
 	}
+	if init, ok := store.(api.Initializer); ok {
+		if err := init.Init(ctx); err != nil {
+			return fmt.Errorf("initialize storage: %w", err)
+		}
+	}
 	rows, err := db.ListHosted(ctx, "", "")
 	if err != nil {
 		return err
@@ -352,8 +367,17 @@ func replBackfill(ctx context.Context, db *state.DB, cfg *config.Config,
 
 	var missing []state.HostedRow
 	for _, r := range rows {
-		if _, err := store.Stat(ctx, "blobs/sha256/"+r.SHA256); err != nil {
+		_, err := store.Stat(ctx, "blobs/sha256/"+r.SHA256)
+		switch {
+		case err == nil:
+			// present
+		case errors.Is(err, api.ErrNotFound):
 			missing = append(missing, r)
+		default:
+			// A storage error is not an absence: reporting it as "missing"
+			// would send us fetching blobs we already have, and hide a
+			// broken backend behind a busy-looking backfill.
+			return fmt.Errorf("check blob %s: %w", truncate(r.SHA256, 12), err)
 		}
 	}
 	if len(missing) == 0 {
