@@ -161,6 +161,12 @@ type Intent struct {
 	// upstream response to RemotePath via the IndirectResolver capability
 	// (e.g. Terraform's X-Terraform-Get).
 	Indirect bool
+	// RemoteURL, when set, is the absolute location of the artifact, used
+	// instead of joining RemotePath onto the feed's upstream (Composer
+	// dists live on arbitrary hosts). It originates from upstream metadata,
+	// so the pipeline applies the same SSRF guard as to indirect locations.
+	// RemotePath still keys the cache.
+	RemoteURL string
 	// ContentType, when set, is used for the response Content-Type.
 	ContentType string
 }
@@ -322,8 +328,9 @@ type MetadataSource interface {
 	// MetadataIntent describes the document to fetch for coord; ok is false
 	// when the format publishes no such document.
 	MetadataIntent(feed Feed, coord PackageCoordinate) (intent Intent, ok bool)
-	// ExtractMetadata parses that document into canonical Meta* keys.
-	ExtractMetadata(body []byte) (map[string]string, error)
+	// ExtractMetadata parses that document into canonical Meta* keys for
+	// the given coordinate (the document may describe many versions).
+	ExtractMetadata(coord PackageCoordinate, body []byte) (map[string]string, error)
 }
 
 // ConditionalPutter is an optional BlobStore capability: create-only writes
@@ -397,6 +404,10 @@ const (
 	// MetaEcosystem is the OSV ecosystem name ("Maven", "npm", "NuGet",
 	// "Packagist", ...).
 	MetaEcosystem = "ecosystem"
+	// MetaChecksum is the expected artifact digest published by the format's
+	// metadata document, as "<algo>:<hex>" (npm's dist.integrity/shasum).
+	// The pipeline verifies ingests against it (invariant 5).
+	MetaChecksum = "checksum"
 )
 
 // Artifact describes a concrete artifact for policy checks.

@@ -1,0 +1,27 @@
+{
+  "packages": {
+    "acme/lib-a": [
+      {
+        "name": "acme/lib-a",
+        "version": "1.0.0",
+        "version_normalized": "1.0.0.0",
+        "license": [
+          "MIT"
+        ],
+        "time": "2024-05-05T00:00:00+00:00",
+        "type": "library",
+        "autoload": {
+          "files": [
+            "src/a.php"
+          ]
+        },
+        "dist": {
+          "type": "zip",
+          "url": "http://fake-upstream/composer-upstream/dists/acme/lib-a-f5bcc6039df4.zip",
+          "reference": "f5bcc6039df4",
+          "shasum": "f5bcc6039df4bb138605ebe1ad0aa21a80d9c1e8"
+        }
+      }
+    ]
+  }
+}

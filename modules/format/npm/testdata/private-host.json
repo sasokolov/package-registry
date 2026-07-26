@@ -1,0 +1,20 @@
+{
+  "name": "private-host",
+  "dist-tags": {
+    "latest": "3.1.4"
+  },
+  "versions": {
+    "3.1.4": {
+      "name": "private-host",
+      "version": "3.1.4",
+      "license": "MIT",
+      "dist": {
+        "tarball": "https://npm.internal.example.com:8443/artifacts/npm/private-host/-/private-host-3.1.4.tgz",
+        "integrity": "sha512-nZ8dmdai6EiNDDMCafChXR9WvUswnIQP9nj8ajLxXiz276925NVHHnr5+IoSAUp65vkfouCPxiJJOSClVSkMkw=="
+      }
+    }
+  },
+  "time": {
+    "3.1.4": "2024-09-09T09:09:09.000Z"
+  }
+}

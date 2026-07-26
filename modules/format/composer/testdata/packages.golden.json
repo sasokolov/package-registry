@@ -1,0 +1,6 @@
+{
+  "metadata-url": "https://registry.local/composer/packagist/p2/%package%.json",
+  "mirrors": [],
+  "notify-batch": "https://packagist.org/downloads/",
+  "packages": {}
+}

@@ -1,9 +1,12 @@
 # Registry config used inside the conformance compose stack: blobs in MinIO,
 # state in Postgres, feeds proxying the fake upstream.
-# No site.external_url on purpose: terraform must work off the "./"-relative
-# X-Terraform-Get form, which needs no per-site configuration.
 site:
   name: conformance
+  # Composer resolves dist URLs literally, so hosted-URL rewriting needs an
+  # absolute base. Clients reach the registry directly on this address; the
+  # TLS gateway in front of it exists only because terraform demands HTTPS
+  # for service discovery.
+  external_url: http://registry:8080
 
 server:
   listen: ":8080"
@@ -82,3 +85,13 @@ feeds:
         config:
           min_age: 876000h
           on_unknown: deny
+
+  - name: npmjs
+    format: npm
+    upstream: http://fake-upstream/npm
+    anonymous: true
+
+  - name: packagist
+    format: composer
+    upstream: http://fake-upstream/composer-upstream
+    anonymous: true

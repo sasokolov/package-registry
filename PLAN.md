@@ -165,25 +165,25 @@ Deny/недоступности внешней зависимости.
 
 ## Фаза 4 — npm и Composer, proxy
 
-- [ ] `modules/format/npm`: package root (`/{pkg}`, `/@{scope}%2f{pkg}`) —
+- [x] `modules/format/npm`: package root (`/{pkg}`, `/@{scope}%2f{pkg}`) —
       RewriteMetadata переписывает `dist.tarball` на registry, сохраняет
       `dist.integrity/shasum` для верификации; tarball — иммутабельный блоб;
       abbreviated metadata (`Accept: application/vnd.npm.install-v1+json`) —
       поддержать; `dist-tags` — мутабельные (SWR). Auth: `Bearer` из `.npmrc`.
-- [ ] `modules/format/composer`: Composer v2 (`/p2/{vendor}/{pkg}.json`,
+- [x] `modules/format/composer`: Composer v2 (`/p2/{vendor}/{pkg}.json`,
       включая `~dev`), переписывание `dist.url`, `metadata-url` в корневом
       `packages.json`.
-- [ ] Fixtures: мини-срез npm (3 пакета, один scoped, с настоящими tarball и
+- [x] Fixtures: мини-срез npm (3 пакета, один scoped, с настоящими tarball и
       integrity) и Packagist-совместимый (2 пакета).
-- [ ] Conformance (образы `node:22`, `composer:2`):
-      - [ ] `npm ci` референс-проекта (lockfile с integrity) через registry —
+- [x] Conformance (образы `node:22`, `composer:2`):
+      - [x] `npm ci` референс-проекта (lockfile с integrity) через registry —
             успех; повторно без fake-upstream — успех из кэша.
-      - [ ] `npm ci` при подмененном tarball в fixtures (битая чексумма) —
+      - [x] `npm ci` при подмененном tarball в fixtures (битая чексумма) —
             registry отдаёт ошибку, артефакт не закэширован.
-      - [ ] `composer install` референс-проекта — успех; повторно офлайн от
+      - [x] `composer install` референс-проекта — успех; повторно офлайн от
             апстрима — успех.
-      - [ ] Scoped-пакет ставится корректно.
-- [ ] Golden-тесты RewriteMetadata: минимум 6 реальных package root'ов npm
+      - [x] Scoped-пакет ставится корректно.
+- [x] Golden-тесты RewriteMetadata: минимум 6 реальных package root'ов npm
       разной степени уродства (старые пакеты с нестандартными полями).
 
 **Acceptance:** сценарии зелёные; cache hit ratio по повторному `npm ci`

@@ -142,7 +142,9 @@ func ValidateConfig(cfg *config.Config) error {
 		if _, err := auth.NewPublishers(fc.Publishers); err != nil {
 			errs = append(errs, fmt.Errorf("feed %s: %w", fc.Name, err))
 		}
-		byFormat[fc.Format] = append(byFormat[fc.Format], fc.API())
+		feed := fc.API()
+		feed.ExternalURL = strings.TrimSuffix(cfg.Site.ExternalURL, "/")
+		byFormat[fc.Format] = append(byFormat[fc.Format], feed)
 	}
 	for format, feeds := range byFormat {
 		module, ok := api.Format(format)

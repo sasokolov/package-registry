@@ -1,0 +1,15 @@
+{
+  "name": "conformance/app",
+  "description": "Reference project installed through the registry",
+  "require": {
+    "acme/lib-a": "1.0.0",
+    "acme/lib-b": "2.0.0"
+  },
+  "repositories": [
+    {"type": "composer", "url": "http://registry:8080/composer/packagist"},
+    {"packagist.org": false}
+  ],
+  "config": {
+    "secure-http": false
+  }
+}

@@ -323,6 +323,11 @@ func (p *Pipeline) fetchAndStore(ctx context.Context, req Request, mkey string) 
 		}
 		expected = c // may stay zero: the protocol has no checksum here
 	}
+	if expected.IsZero() {
+		// Formats that publish the digest inside their metadata document
+		// (npm's dist.integrity) expose it through MetadataSource.
+		expected = p.metadataChecksum(ctx, req)
+	}
 
 	resp, indirectChecksum, err := p.openArtifactStream(ctx, req)
 	if err != nil {
@@ -409,6 +414,11 @@ func (p *Pipeline) fetchAndStore(ctx context.Context, req Request, mkey string) 
 // protocol indirection (Intent.Indirect) via the module's IndirectResolver.
 // It returns the checksum the indirection published, if any.
 func (p *Pipeline) openArtifactStream(ctx context.Context, req Request) (*http.Response, api.Checksum, error) {
+	if req.Intent.RemoteURL != "" {
+		// Absolute location from upstream metadata: SSRF-guarded fetch.
+		resp, err := req.Upstream.FetchURL(ctx, req.Intent.RemoteURL)
+		return resp, api.Checksum{}, err
+	}
 	resp, err := req.Upstream.Fetch(ctx, req.Intent.RemotePath)
 	if err != nil {
 		return nil, api.Checksum{}, err
@@ -445,6 +455,46 @@ func (p *Pipeline) openArtifactStream(ctx context.Context, req Request) (*http.R
 		return nil, api.Checksum{}, err
 	}
 	return stream, indirect.Checksum, nil
+}
+
+// metadataChecksum asks the module for the digest published in the format's
+// metadata document (npm dist.integrity/shasum). Unavailable metadata means
+// no expected checksum, exactly like a missing Maven .sha1.
+func (p *Pipeline) metadataChecksum(ctx context.Context, req Request) api.Checksum {
+	source, ok := req.Module.(api.MetadataSource)
+	if !ok || req.Upstream == nil {
+		return api.Checksum{}
+	}
+	metaIntent, ok := source.MetadataIntent(req.Feed, req.Intent.Coord)
+	if !ok {
+		return api.Checksum{}
+	}
+	metaReq := req
+	metaReq.Intent = metaIntent
+	res, err := p.Serve(ctx, metaReq)
+	if err != nil {
+		p.logger.Warn("metadata for checksum verification unavailable, ingesting unverified",
+			"feed", req.Feed.Name, "coord", req.Intent.Coord.String(), "error", err)
+		return api.Checksum{}
+	}
+	defer func() { _ = res.Body.Close() }()
+	body, err := readAllCapped(res.Body, metadataSizeCap)
+	if err != nil {
+		return api.Checksum{}
+	}
+	meta, err := source.ExtractMetadata(req.Intent.Coord, body)
+	if err != nil {
+		return api.Checksum{}
+	}
+	raw := meta[api.MetaChecksum]
+	if raw == "" {
+		return api.Checksum{}
+	}
+	algo, hexDigest, ok := strings.Cut(raw, ":")
+	if !ok {
+		return api.Checksum{}
+	}
+	return api.Checksum{Algo: strings.ToLower(algo), Hex: strings.ToLower(hexDigest)}
 }
 
 // fetchRemoteChecksum obtains the expected digest from the protocol's

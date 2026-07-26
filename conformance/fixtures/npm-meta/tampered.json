@@ -1,0 +1,21 @@
+{
+  "name": "tampered",
+  "dist-tags": {
+    "latest": "1.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "tampered",
+      "version": "1.0.0",
+      "license": "MIT",
+      "dist": {
+        "tarball": "http://fake-upstream/npm/tampered/-/tampered-1.0.0.tgz",
+        "integrity": "sha512-HZMfWGG5YJbLAWRKBz5e+6001GMAAb3UYJB+b8U3unKugCryIFFVGy3+6OnZPYKRpFPYCdUnIwlCUJqdNrfFGg==",
+        "shasum": "f9d0953a7de450154b86b83c3cccbda05b08419a"
+      }
+    }
+  },
+  "time": {
+    "1.0.0": "2024-01-01T00:00:00.000Z"
+  }
+}

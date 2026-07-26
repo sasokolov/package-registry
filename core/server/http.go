@@ -137,7 +137,7 @@ func (s *Server) artifactMetadata(ctx context.Context, fr *feedRuntime, intent a
 	if err != nil {
 		return map[string]string{}
 	}
-	meta, err := source.ExtractMetadata(body)
+	meta, err := source.ExtractMetadata(intent.Coord, body)
 	if err != nil {
 		s.logger.Debug("artifact metadata unparsable",
 			"feed", fr.feed.Name, "coord", intent.Coord.String(), "error", err)

@@ -1,0 +1,31 @@
+{
+  "name": "messy",
+  "dist-tags": {
+    "latest": "1.0.0",
+    "next": "2.0.0-beta.1"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "messy",
+      "version": "1.0.0",
+      "license": null,
+      "description": "юникод и emoji 🎉",
+      "deprecated": "use messy2 instead",
+      "dist": {
+        "tarball": "https://registry.npmjs.org/messy/-/messy-1.0.0.tgz",
+        "integrity": "sha512-9rpoCrvoxEEEWhq50NpJNjKqJ0cLjnls4hEYRYZlfPWTnbz5sxzTfbgD7diE02ttYmkzw6wSGJjgojbdbLUWOQ==",
+        "npm-signature": "-----BEGIN PGP-----"
+      }
+    },
+    "2.0.0-beta.1": {
+      "name": "messy",
+      "version": "2.0.0-beta.1",
+      "dist": {
+        "tarball": "https://registry.npmjs.org/messy/-/messy-2.0.0-beta.1.tgz",
+        "integrity": "sha512-Ue6fgOoxcSVA+6FbaYg2+32chNLs7PW3e4d/xgDDmKomFWOI92hTyYhEiKekA5X9Gbx5d+gWF83CkPD1aE0WEA=="
+      }
+    }
+  },
+  "bugs": null,
+  "homepage": ""
+}

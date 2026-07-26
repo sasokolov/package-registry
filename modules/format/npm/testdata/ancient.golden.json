@@ -1,0 +1,32 @@
+{
+  "dist-tags": {
+    "latest": "0.0.3"
+  },
+  "name": "ancient",
+  "time": {
+    "0.0.3": "2011-05-05T05:05:05.000Z"
+  },
+  "users": {
+    "someone": true
+  },
+  "versions": {
+    "0.0.3": {
+      "_id": "ancient@0.0.3",
+      "_npmVersion": "1.0.0",
+      "directories": {},
+      "dist": {
+        "shasum": "9c92ad25076f8390dbbab8f8c939912f36c06bb1",
+        "tarball": "https://registry.local/npm/npmjs/ancient/-/ancient-0.0.3.tgz"
+      },
+      "engines": {
+        "node": "*"
+      },
+      "license": {
+        "type": "BSD",
+        "url": "http://example.com/bsd"
+      },
+      "name": "ancient",
+      "version": "0.0.3"
+    }
+  }
+}

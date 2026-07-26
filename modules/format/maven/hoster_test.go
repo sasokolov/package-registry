@@ -297,7 +297,7 @@ func TestMetadataSource(t *testing.T) {
 		t.Error("version-less coordinate got a metadata intent")
 	}
 
-	meta, err := m.ExtractMetadata([]byte(pomBody))
+	meta, err := m.ExtractMetadata(api.PackageCoordinate{}, []byte(pomBody))
 	if err != nil {
 		t.Fatal(err)
 	}

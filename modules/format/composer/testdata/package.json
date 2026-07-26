@@ -1,0 +1,45 @@
+{
+  "packages": {
+    "vendor/pkg": [
+      {
+        "name": "vendor/pkg",
+        "version": "1.0.0",
+        "version_normalized": "1.0.0.0",
+        "license": [
+          "MIT"
+        ],
+        "time": "2024-01-15T10:00:00+00:00",
+        "require": {
+          "php": ">=8.1"
+        },
+        "source": {
+          "type": "git",
+          "url": "https://github.com/vendor/pkg.git",
+          "reference": "abc123"
+        },
+        "dist": {
+          "type": "zip",
+          "url": "https://api.github.com/repos/vendor/pkg/zipball/abc123",
+          "reference": "abc123",
+          "shasum": "1dfe23f5413605adae6ccf4ef924bb0ed7f5ccda"
+        }
+      },
+      {
+        "name": "vendor/pkg",
+        "version": "2.0.0",
+        "version_normalized": "2.0.0.0",
+        "license": [
+          "MIT"
+        ],
+        "time": "2025-02-20T12:30:00+00:00",
+        "dist": {
+          "type": "zip",
+          "url": "https://api.github.com/repos/vendor/pkg/zipball/def456",
+          "reference": "def456",
+          "shasum": "2263eff0f3a95e6ce670befdd76b1e60e46607eb"
+        }
+      }
+    ]
+  },
+  "minified": "composer/2.0"
+}

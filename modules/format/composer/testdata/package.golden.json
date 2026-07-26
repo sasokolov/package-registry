@@ -1,0 +1,45 @@
+{
+  "minified": "composer/2.0",
+  "packages": {
+    "vendor/pkg": [
+      {
+        "dist": {
+          "reference": "abc123",
+          "shasum": "1dfe23f5413605adae6ccf4ef924bb0ed7f5ccda",
+          "type": "zip",
+          "url": "https://registry.local/composer/packagist/dists/aHR0cHM6Ly9hcGkuZ2l0aHViLmNvbS9yZXBvcy92ZW5kb3IvcGtnL3ppcGJhbGwvYWJjMTIz/abc123.zip"
+        },
+        "license": [
+          "MIT"
+        ],
+        "name": "vendor/pkg",
+        "require": {
+          "php": "\u003e=8.1"
+        },
+        "source": {
+          "reference": "abc123",
+          "type": "git",
+          "url": "https://github.com/vendor/pkg.git"
+        },
+        "time": "2024-01-15T10:00:00+00:00",
+        "version": "1.0.0",
+        "version_normalized": "1.0.0.0"
+      },
+      {
+        "dist": {
+          "reference": "def456",
+          "shasum": "2263eff0f3a95e6ce670befdd76b1e60e46607eb",
+          "type": "zip",
+          "url": "https://registry.local/composer/packagist/dists/aHR0cHM6Ly9hcGkuZ2l0aHViLmNvbS9yZXBvcy92ZW5kb3IvcGtnL3ppcGJhbGwvZGVmNDU2/def456.zip"
+        },
+        "license": [
+          "MIT"
+        ],
+        "name": "vendor/pkg",
+        "time": "2025-02-20T12:30:00+00:00",
+        "version": "2.0.0",
+        "version_normalized": "2.0.0.0"
+      }
+    ]
+  }
+}

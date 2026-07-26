@@ -366,8 +366,9 @@ func (Module) MetadataIntent(_ api.Feed, coord api.PackageCoordinate) (api.Inten
 	}, true
 }
 
-// ExtractMetadata parses a .pom into canonical keys.
-func (Module) ExtractMetadata(body []byte) (map[string]string, error) {
+// ExtractMetadata parses a .pom into canonical keys. A pom describes one
+// coordinate, so the coordinate argument is not needed here.
+func (Module) ExtractMetadata(_ api.PackageCoordinate, body []byte) (map[string]string, error) {
 	return parsePOM(body)
 }
 

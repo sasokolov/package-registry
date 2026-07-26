@@ -1,0 +1,22 @@
+{
+  "name": "@scope/util",
+  "dist-tags": {
+    "latest": "2.1.0"
+  },
+  "versions": {
+    "2.1.0": {
+      "name": "@scope/util",
+      "version": "2.1.0",
+      "license": "MIT",
+      "main": "index.js",
+      "dist": {
+        "tarball": "http://fake-upstream/npm/@scope/util/-/util-2.1.0.tgz",
+        "integrity": "sha512-ZVubxBKZx7H+tOgKiMcjZ6qARifrvakK6GC9AvjV80KPcj4ueL4ElFL9Cm/xL26dQSjkD1X2bRI525Xy78tODA==",
+        "shasum": "c45e8a1964cb34df49fb973c4b5c189563ba096c"
+      }
+    }
+  },
+  "time": {
+    "2.1.0": "2024-01-01T00:00:00.000Z"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "is-odd",
+  "dist-tags": {
+    "latest": "3.0.1"
+  },
+  "versions": {
+    "3.0.1": {
+      "name": "is-odd",
+      "version": "3.0.1",
+      "license": "MIT",
+      "main": "index.js",
+      "dist": {
+        "tarball": "http://fake-upstream/npm/is-odd/-/is-odd-3.0.1.tgz",
+        "integrity": "sha512-5SWsCE1nKE8YlfkJw/2ZDUPN4KiHvWaCmtoT0QfMgwAnCjrB66kLLR3zJEZc+20Q+sGXuTEizNwS9ZAisKdRQQ==",
+        "shasum": "ba8fec4c1917b5693c60ac46481a446b4affd92d"
+      }
+    }
+  },
+  "time": {
+    "3.0.1": "2024-01-01T00:00:00.000Z"
+  }
+}

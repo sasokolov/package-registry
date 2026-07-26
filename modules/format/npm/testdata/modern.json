@@ -1,0 +1,56 @@
+{
+  "name": "modern-pkg",
+  "dist-tags": {
+    "latest": "2.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "modern-pkg",
+      "version": "1.0.0",
+      "license": "MIT",
+      "dist": {
+        "tarball": "https://registry.npmjs.org/modern-pkg/-/modern-pkg-1.0.0.tgz",
+        "integrity": "sha512-IkQTtVKV7ClGuQBfvHrCd8u8LMPngeR+0PPDjlXfIAR0CHNcKdY0zHAqV5GYBaboA/GTp4M6DkSduGq5QDi1PQ==",
+        "shasum": "2c08a064bac355dbe42f8c3553c06c1ae9d28314"
+      }
+    },
+    "2.0.0": {
+      "name": "modern-pkg",
+      "version": "2.0.0",
+      "license": "MIT",
+      "dependencies": {
+        "left-pad": "^1.0.0"
+      },
+      "dist": {
+        "tarball": "https://registry.npmjs.org/modern-pkg/-/modern-pkg-2.0.0.tgz",
+        "integrity": "sha512-lmA0mVojJ9SktYHOezOBnVbdKUFcNmE+iIXhjhJAycqxYzDSWi4YaoSb6shNztPmjKgFkIQ0Kgdn5yMkobuwrA==",
+        "shasum": "e2c7dbdb8900cb176566c0f4eeea0840801f9799",
+        "fileCount": 12,
+        "unpackedSize": 3456,
+        "signatures": [
+          {
+            "keyid": "SHA256:abc",
+            "sig": "MEUCIQ"
+          }
+        ]
+      }
+    }
+  },
+  "time": {
+    "created": "2020-01-01T00:00:00.000Z",
+    "1.0.0": "2020-01-01T00:00:00.000Z",
+    "2.0.0": "2021-06-01T12:00:00.000Z"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/x/modern-pkg.git"
+  },
+  "_rev": "12-abcdef",
+  "readme": "# modern",
+  "maintainers": [
+    {
+      "name": "a",
+      "email": "a@example.com"
+    }
+  ]
+}

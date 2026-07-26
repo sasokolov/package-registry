@@ -1,0 +1,35 @@
+{
+  "name": "dual-licensed",
+  "dist-tags": {
+    "latest": "1.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "dual-licensed",
+      "version": "1.0.0",
+      "licenses": [
+        {
+          "type": "MIT"
+        },
+        {
+          "type": "GPL-2.0"
+        }
+      ],
+      "license": [
+        {
+          "type": "MIT"
+        },
+        {
+          "type": "GPL-2.0"
+        }
+      ],
+      "dist": {
+        "tarball": "https://registry.npmjs.org/dual-licensed/-/dual-licensed-1.0.0.tgz",
+        "shasum": "618693d4c2afb4e3ef2e619ba31282512d1bc813"
+      }
+    }
+  },
+  "time": {
+    "1.0.0": "2013-07-07T07:07:07.000Z"
+  }
+}

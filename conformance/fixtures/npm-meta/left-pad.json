@@ -1,0 +1,22 @@
+{
+  "name": "left-pad",
+  "dist-tags": {
+    "latest": "1.3.0"
+  },
+  "versions": {
+    "1.3.0": {
+      "name": "left-pad",
+      "version": "1.3.0",
+      "license": "MIT",
+      "main": "index.js",
+      "dist": {
+        "tarball": "http://fake-upstream/npm/left-pad/-/left-pad-1.3.0.tgz",
+        "integrity": "sha512-JhzEhsMqJbHXGYti/cNYlyyH0ZNtEKxZOizitAmoxxfpZzPEeFj46ftd0+p4n9SP3SQpE2QmSVQV/4JARR55zg==",
+        "shasum": "431c971a628b3073b0739dce45a3e8b75a018ab5"
+      }
+    }
+  },
+  "time": {
+    "1.3.0": "2024-01-01T00:00:00.000Z"
+  }
+}

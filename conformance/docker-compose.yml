@@ -95,6 +95,20 @@ services:
       - ./clients/maven/project-live:/work-live:ro
       - ./clients/maven/project-deploy:/work-deploy:ro
 
+  npm-client:
+    image: node:22-alpine
+    profiles: ["tools"]
+    working_dir: /work
+    volumes:
+      - ./clients/npm/project:/src:ro
+
+  composer-client:
+    image: composer:2
+    profiles: ["tools"]
+    working_dir: /work
+    volumes:
+      - ./clients/composer/project:/src:ro
+
   terraform-client:
     image: hashicorp/terraform:1.9
     profiles: ["tools"]

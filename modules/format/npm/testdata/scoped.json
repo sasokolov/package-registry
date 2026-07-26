@@ -1,0 +1,21 @@
+{
+  "name": "@scope/pkg",
+  "dist-tags": {
+    "latest": "1.2.3"
+  },
+  "versions": {
+    "1.2.3": {
+      "name": "@scope/pkg",
+      "version": "1.2.3",
+      "license": "Apache-2.0",
+      "dist": {
+        "tarball": "https://registry.npmjs.org/@scope/pkg/-/pkg-1.2.3.tgz",
+        "integrity": "sha512-RFd8Xwr7VWou8XIvKf5ax5oGjOnB4hBd/CuEnQA2NeBXvXDhTomt6tVAihd2a8FeFyzSuSB+Gk51ZOa7u7dW4w==",
+        "shasum": "6543f14e1af1780b3287690c48954014bb2aed72"
+      }
+    }
+  },
+  "time": {
+    "1.2.3": "2022-03-03T03:03:03.000Z"
+  }
+}
