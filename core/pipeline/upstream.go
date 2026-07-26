@@ -99,11 +99,42 @@ func (u *Upstream) buildURL(remotePath string) string {
 // errors only), jittered backoff, rate limiting and the circuit breaker.
 // The caller owns the returned body.
 func (u *Upstream) Fetch(ctx context.Context, remotePath string) (*http.Response, error) {
+	return u.fetchTarget(ctx, u.buildURL(remotePath))
+}
+
+// FetchURL is Fetch for an absolute URL — indirect artifact locations may
+// live on another host (e.g. Terraform's X-Terraform-Get). The feed's
+// retry/breaker/rate-limit discipline still applies.
+func (u *Upstream) FetchURL(ctx context.Context, absURL string) (*http.Response, error) {
+	parsed, err := url.Parse(absURL)
+	if err != nil || !parsed.IsAbs() {
+		return nil, fmt.Errorf("upstream %s: invalid absolute URL %q: %w", u.feed, absURL, err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, fmt.Errorf("upstream %s: unsupported scheme in %q", u.feed, absURL)
+	}
+	return u.fetchTarget(ctx, absURL)
+}
+
+// ResolveReference resolves loc (absolute, or relative to the upstream
+// document at remotePath) into an absolute URL.
+func (u *Upstream) ResolveReference(remotePath, loc string) (string, error) {
+	ref, err := url.Parse(loc)
+	if err != nil {
+		return "", fmt.Errorf("upstream %s: invalid location %q: %w", u.feed, loc, err)
+	}
+	base, err := url.Parse(u.buildURL(remotePath))
+	if err != nil {
+		return "", fmt.Errorf("upstream %s: resolve base: %w", u.feed, err)
+	}
+	return base.ResolveReference(ref).String(), nil
+}
+
+func (u *Upstream) fetchTarget(ctx context.Context, target string) (*http.Response, error) {
 	if !u.breaker.Allow() {
 		u.count("breaker_open")
 		return nil, fmt.Errorf("upstream %s: circuit breaker open: %w", u.feed, api.ErrUpstreamUnavailable)
 	}
-	target := u.buildURL(remotePath)
 
 	var lastErr error
 	for attempt := 0; attempt < u.retries; attempt++ {
@@ -143,7 +174,7 @@ func (u *Upstream) Fetch(ctx context.Context, remotePath string) (*http.Response
 			u.count("error")
 			lastErr = err
 			u.logger.Warn("upstream attempt failed",
-				"feed", u.feed, "path", remotePath, "attempt", attempt+1, "error", err)
+				"feed", u.feed, "url", target, "attempt", attempt+1, "error", err)
 			if !u.breaker.Allow() {
 				return nil, fmt.Errorf("upstream %s: circuit breaker opened after failures: %w", u.feed, api.ErrUpstreamUnavailable)
 			}

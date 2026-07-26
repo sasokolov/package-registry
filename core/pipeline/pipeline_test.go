@@ -132,13 +132,14 @@ type harness struct {
 	fail     atomic.Bool // upstream returns 500 when set
 	delay    time.Duration
 	content  map[string]string
+	custom   map[string]http.HandlerFunc
 	mu       sync.Mutex
 	now      time.Time
 	nowMu    sync.Mutex
 }
 
 func newHarness(t *testing.T) *harness {
-	h := &harness{t: t, content: map[string]string{}, now: time.Unix(1_700_000_000, 0)}
+	h := &harness{t: t, content: map[string]string{}, custom: map[string]http.HandlerFunc{}, now: time.Unix(1_700_000_000, 0)}
 	h.store = newMemStore(h.clock)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -150,9 +151,15 @@ func newHarness(t *testing.T) *harness {
 			http.Error(w, "boom", http.StatusInternalServerError)
 			return
 		}
+		p := strings.TrimPrefix(r.URL.Path, "/")
 		h.mu.Lock()
-		body, ok := h.content[strings.TrimPrefix(r.URL.Path, "/")]
+		custom := h.custom[p]
+		body, ok := h.content[p]
 		h.mu.Unlock()
+		if custom != nil {
+			custom(w, r)
+			return
+		}
 		if !ok {
 			http.NotFound(w, r)
 			return

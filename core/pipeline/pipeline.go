@@ -17,6 +17,7 @@ import (
 	"crypto/md5"  //nolint:gosec // legacy upstream checksums, not used for security
 	"crypto/sha1" //nolint:gosec // legacy upstream checksums, not used for security
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -24,6 +25,7 @@ import (
 	"hash"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path"
 	"strings"
@@ -102,9 +104,13 @@ type Result struct {
 
 // manifest is the pointer from a coordinate to its content-addressed blob.
 type manifest struct {
-	SHA256     string    `json:"sha256"`
-	Size       int64     `json:"size"`
-	IngestedAt time.Time `json:"ingested_at"`
+	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size"`
+	// Checksums holds all digests computed at ingest (sha1/md5/sha256/
+	// sha512) so protocols with sidecar checksum files (Maven) are served
+	// from stored values instead of separate upstream requests.
+	Checksums  map[string]string `json:"checksums,omitempty"`
+	IngestedAt time.Time         `json:"ingested_at"`
 }
 
 // Serve executes the intent.
@@ -170,7 +176,7 @@ func (p *Pipeline) serveArtifact(ctx context.Context, req Request) (*Result, err
 	mkey := manifestKey(req.Feed, req.Intent)
 
 	if m, err := p.loadManifest(ctx, mkey); err == nil {
-		return p.openBlob(ctx, m, api.SourceCache)
+		return p.artifactResult(ctx, req, m, api.SourceCache)
 	} else if !errors.Is(err, api.ErrNotFound) {
 		return nil, err
 	}
@@ -190,7 +196,54 @@ func (p *Pipeline) serveArtifact(ctx context.Context, req Request) (*Result, err
 	if err != nil {
 		return nil, err
 	}
-	return p.openBlob(ctx, v.(manifest), api.SourceUpstream)
+	return p.artifactResult(ctx, req, v.(manifest), api.SourceUpstream)
+}
+
+// artifactResult serves either the blob itself or, for WantChecksum
+// intents, its stored digest as a small text body.
+func (p *Pipeline) artifactResult(ctx context.Context, req Request, m manifest, source api.Source) (*Result, error) {
+	algo := req.Intent.WantChecksum
+	if algo == "" {
+		return p.openBlob(ctx, m, source)
+	}
+	digest, err := p.manifestDigest(ctx, m, algo)
+	if err != nil {
+		return nil, err
+	}
+	return textResult(digest, source, m.IngestedAt), nil
+}
+
+func textResult(text string, source api.Source, mod time.Time) *Result {
+	return &Result{
+		Body:    io.NopCloser(strings.NewReader(text)),
+		Size:    int64(len(text)),
+		ModTime: mod,
+		Source:  source,
+	}
+}
+
+// manifestDigest returns the stored digest for algo, re-hashing the blob
+// for manifests written before Checksums existed.
+func (p *Pipeline) manifestDigest(ctx context.Context, m manifest, algo string) (string, error) {
+	if algo == "sha256" && m.SHA256 != "" {
+		return m.SHA256, nil
+	}
+	if d := m.Checksums[algo]; d != "" {
+		return d, nil
+	}
+	h := hasherFor(algo)
+	if h == nil {
+		return "", api.NotFoundf("unsupported checksum algorithm %q", algo)
+	}
+	rc, _, err := p.store.Get(ctx, blobKey(m.SHA256))
+	if err != nil {
+		return "", fmt.Errorf("rehash blob %s: %w", m.SHA256, err)
+	}
+	defer func() { _ = rc.Close() }()
+	if _, err := io.Copy(h, rc); err != nil {
+		return "", fmt.Errorf("rehash blob %s: %w", m.SHA256, err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func (p *Pipeline) loadManifest(ctx context.Context, key string) (manifest, error) {
@@ -252,14 +305,25 @@ func (p *Pipeline) ingestArtifact(ctx context.Context, req Request, mkey string)
 }
 
 func (p *Pipeline) fetchAndStore(ctx context.Context, req Request, mkey string) (manifest, error) {
-	resp, err := req.Upstream.Fetch(ctx, req.Intent.RemotePath)
+	expected := req.Intent.Checksum
+	if expected.IsZero() && !req.Intent.RemoteChecksum.IsZero() {
+		c, err := p.fetchRemoteChecksum(ctx, req)
+		if err != nil {
+			return manifest{}, err
+		}
+		expected = c // may stay zero: the protocol has no checksum here
+	}
+
+	resp, err := p.openArtifactStream(ctx, req)
 	if err != nil {
 		return manifest{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	// Spool to a temp file while hashing so the checksum is verified before
-	// anything becomes visible in the store (invariant 5).
+	// anything becomes visible in the store (invariant 5). All digests are
+	// computed up front: Maven sidecar checksum files are later served from
+	// the manifest instead of being proxied.
 	tmp, err := os.CreateTemp("", "registry-ingest-*")
 	if err != nil {
 		return manifest{}, fmt.Errorf("ingest spool: %w", err)
@@ -269,24 +333,33 @@ func (p *Pipeline) fetchAndStore(ctx context.Context, req Request, mkey string) 
 		_ = os.Remove(tmp.Name())
 	}()
 
-	sha := sha256.New()
-	writers := []io.Writer{tmp, sha}
-	extra := extraHasher(req.Intent.Checksum.Algo)
-	if extra != nil {
-		writers = append(writers, extra)
+	hashers := map[string]hash.Hash{
+		"sha1":   sha1.New(), //nolint:gosec // legacy protocol checksum, not security
+		"md5":    md5.New(),  //nolint:gosec // legacy protocol checksum, not security
+		"sha256": sha256.New(),
+		"sha512": sha512.New(),
+	}
+	writers := make([]io.Writer, 0, len(hashers)+1)
+	writers = append(writers, tmp)
+	for _, h := range hashers {
+		writers = append(writers, h)
 	}
 	size, err := io.Copy(io.MultiWriter(writers...), resp.Body)
 	if err != nil {
 		return manifest{}, fmt.Errorf("ingest %s: download: %w", req.Intent.Coord, err)
 	}
 
-	digest := hex.EncodeToString(sha.Sum(nil))
-	if err := verifyChecksum(req.Intent.Checksum, digest, extra); err != nil {
+	digests := make(map[string]string, len(hashers))
+	for algo, h := range hashers {
+		digests[algo] = hex.EncodeToString(h.Sum(nil))
+	}
+	if err := verifyChecksum(expected, digests); err != nil {
 		p.logger.Error("checksum mismatch, artifact rejected",
 			"feed", req.Feed.Name, "coord", req.Intent.Coord.String(), "error", err)
 		return manifest{}, err
 	}
 
+	digest := digests["sha256"]
 	bkey := blobKey(digest)
 	if _, err := p.store.Stat(ctx, bkey); errors.Is(err, api.ErrNotFound) {
 		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
@@ -299,7 +372,7 @@ func (p *Pipeline) fetchAndStore(ctx context.Context, req Request, mkey string) 
 		return manifest{}, fmt.Errorf("stat blob: %w", err)
 	}
 
-	m := manifest{SHA256: digest, Size: size, IngestedAt: p.now().UTC()}
+	m := manifest{SHA256: digest, Size: size, Checksums: digests, IngestedAt: p.now().UTC()}
 	raw, err := json.Marshal(m)
 	if err != nil {
 		return manifest{}, fmt.Errorf("encode manifest: %w", err)
@@ -312,27 +385,110 @@ func (p *Pipeline) fetchAndStore(ctx context.Context, req Request, mkey string) 
 	return m, nil
 }
 
-func extraHasher(algo string) hash.Hash {
+// openArtifactStream fetches the artifact body, resolving one level of
+// protocol indirection (Intent.Indirect) via the module's IndirectResolver.
+func (p *Pipeline) openArtifactStream(ctx context.Context, req Request) (*http.Response, error) {
+	resp, err := req.Upstream.Fetch(ctx, req.Intent.RemotePath)
+	if err != nil {
+		return nil, err
+	}
+	if !req.Intent.Indirect {
+		return resp, nil
+	}
+
+	resolver, ok := req.Module.(api.IndirectResolver)
+	if !ok {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("intent for %s is indirect but module %q lacks IndirectResolver",
+			req.Intent.Coord, req.Module.Name())
+	}
+	body, err := readAllCapped(resp.Body, 1<<20)
+	_ = resp.Body.Close()
+	if err != nil {
+		return nil, fmt.Errorf("read indirection response: %w", err)
+	}
+	loc, err := resolver.ResolveIndirect(req.Feed, req.Intent, resp.StatusCode, resp.Header, body)
+	if err != nil {
+		return nil, fmt.Errorf("resolve indirect location for %s: %w", req.Intent.Coord, err)
+	}
+	target, err := req.Upstream.ResolveReference(req.Intent.RemotePath, loc)
+	if err != nil {
+		return nil, err
+	}
+	p.logger.Debug("following indirect artifact location",
+		"feed", req.Feed.Name, "coord", req.Intent.Coord.String(), "target", target)
+	return req.Upstream.FetchURL(ctx, target)
+}
+
+// fetchRemoteChecksum obtains the expected digest from the protocol's
+// checksum document. A clean upstream 404 means "no checksum published":
+// ingest proceeds unverified. Any other failure aborts the ingest — a flaky
+// upstream must not silently disable verification.
+func (p *Pipeline) fetchRemoteChecksum(ctx context.Context, req Request) (api.Checksum, error) {
+	src := req.Intent.RemoteChecksum
+	body, err := req.Upstream.FetchAll(ctx, src.Path)
+	if errors.Is(err, api.ErrNotFound) {
+		p.logger.Warn("upstream publishes no checksum document, ingesting unverified",
+			"feed", req.Feed.Name, "coord", req.Intent.Coord.String(), "path", src.Path)
+		return api.Checksum{}, nil
+	}
+	if err != nil {
+		return api.Checksum{}, fmt.Errorf("fetch checksum document %s: %w", src.Path, err)
+	}
+	hexDigest, err := parseChecksumBody(src.Algo, body)
+	if err != nil {
+		return api.Checksum{}, fmt.Errorf("checksum document %s: %v: %w", src.Path, err, api.ErrChecksumMismatch)
+	}
+	return api.Checksum{Algo: src.Algo, Hex: hexDigest}, nil
+}
+
+var checksumHexLen = map[string]int{"md5": 32, "sha1": 40, "sha256": 64, "sha512": 128}
+
+// parseChecksumBody extracts the hex digest from a checksum document
+// ("<hex>" or "<hex>  <filename>", any case).
+func parseChecksumBody(algo string, body []byte) (string, error) {
+	fields := strings.Fields(string(body))
+	if len(fields) == 0 {
+		return "", errors.New("empty checksum document")
+	}
+	digest := strings.ToLower(fields[0])
+	want, ok := checksumHexLen[algo]
+	if !ok {
+		return "", fmt.Errorf("unsupported checksum algorithm %q", algo)
+	}
+	if len(digest) != want {
+		return "", fmt.Errorf("digest %q has length %d, want %d for %s", digest, len(digest), want, algo)
+	}
+	for _, r := range digest {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return "", fmt.Errorf("digest %q is not hex", digest)
+		}
+	}
+	return digest, nil
+}
+
+func hasherFor(algo string) hash.Hash {
 	switch algo {
 	case "sha1":
-		return sha1.New() //nolint:gosec // upstream-provided legacy checksum
+		return sha1.New() //nolint:gosec // legacy protocol checksum, not security
 	case "md5":
-		return md5.New() //nolint:gosec // upstream-provided legacy checksum
+		return md5.New() //nolint:gosec // legacy protocol checksum, not security
+	case "sha256":
+		return sha256.New()
+	case "sha512":
+		return sha512.New()
 	default:
 		return nil
 	}
 }
 
-func verifyChecksum(want api.Checksum, sha256hex string, extra hash.Hash) error {
+func verifyChecksum(want api.Checksum, digests map[string]string) error {
 	if want.IsZero() {
 		return nil
 	}
-	got := sha256hex
-	if want.Algo != "sha256" {
-		if extra == nil {
-			return fmt.Errorf("unsupported checksum algo %q: %w", want.Algo, api.ErrChecksumMismatch)
-		}
-		got = hex.EncodeToString(extra.Sum(nil))
+	got, ok := digests[strings.ToLower(want.Algo)]
+	if !ok {
+		return fmt.Errorf("unsupported checksum algo %q: %w", want.Algo, api.ErrChecksumMismatch)
 	}
 	if !strings.EqualFold(got, want.Hex) {
 		return fmt.Errorf("%s digest %s does not match expected %s: %w",
@@ -345,6 +501,24 @@ func verifyChecksum(want api.Checksum, sha256hex string, extra hash.Hash) error 
 // Mutable metadata (TTL + stale-while-revalidate)
 
 func (p *Pipeline) serveMetadata(ctx context.Context, req Request) (*Result, error) {
+	res, err := p.serveMetadataBody(ctx, req)
+	if err != nil || req.Intent.WantChecksum == "" {
+		return res, err
+	}
+	// Sidecar checksum of mutable metadata: hash the bytes WE serve (they
+	// may be rewritten), never proxy the upstream checksum document.
+	defer func() { _ = res.Body.Close() }()
+	h := hasherFor(req.Intent.WantChecksum)
+	if h == nil {
+		return nil, api.NotFoundf("unsupported checksum algorithm %q", req.Intent.WantChecksum)
+	}
+	if _, err := io.Copy(h, res.Body); err != nil {
+		return nil, fmt.Errorf("hash metadata: %w", err)
+	}
+	return textResult(hex.EncodeToString(h.Sum(nil)), res.Source, res.ModTime), nil
+}
+
+func (p *Pipeline) serveMetadataBody(ctx context.Context, req Request) (*Result, error) {
 	key := metaKey(req.Feed, req.Intent)
 
 	info, statErr := p.store.Stat(ctx, key)

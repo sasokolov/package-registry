@@ -87,6 +87,10 @@ const (
 	// IntentMetadata is mutable metadata: cached with a TTL and served
 	// stale-while-revalidate when the upstream is unavailable.
 	IntentMetadata IntentKind = "metadata"
+	// IntentSynthetic is answered by the registry itself from protocol
+	// knowledge alone (no cache, no upstream) via the Synthesizer
+	// capability; e.g. Terraform's 204 + X-Terraform-Get indirection.
+	IntentSynthetic IntentKind = "synthetic"
 )
 
 // PackageCoordinate canonically identifies a package (or its metadata) inside
@@ -115,6 +119,18 @@ func (c Checksum) IsZero() bool { return c.Algo == "" && c.Hex == "" }
 
 func (c Checksum) String() string { return c.Algo + ":" + c.Hex }
 
+// ChecksumSource tells the pipeline where the protocol publishes the
+// expected checksum of an artifact (e.g. Maven's sibling .sha1 files).
+type ChecksumSource struct {
+	Algo string
+	// Path is the upstream request path of the checksum document, relative
+	// to the feed's upstream base URL.
+	Path string
+}
+
+// IsZero reports whether no checksum source is set.
+func (c ChecksumSource) IsZero() bool { return c.Algo == "" && c.Path == "" }
+
 // Intent is the canonical, format-agnostic meaning of a request; the generic
 // pipeline operates exclusively on intents.
 type Intent struct {
@@ -127,6 +143,21 @@ type Intent struct {
 	RemotePath string
 	// Checksum, when set, must match the fetched content (invariant 5).
 	Checksum Checksum
+	// RemoteChecksum, when set, tells the pipeline to fetch the expected
+	// checksum from this upstream document before ingesting the artifact.
+	// A clean upstream 404 for the checksum document means the protocol
+	// does not provide one for this artifact (ingest proceeds unverified).
+	RemoteChecksum ChecksumSource
+	// WantChecksum, when non-empty ("sha1", "md5", "sha256", "sha512"),
+	// asks for the stored hex digest of the content at RemotePath as a
+	// text response instead of the content itself (Maven sidecar files).
+	WantChecksum string
+	// Indirect marks artifacts whose real location is obtained from the
+	// upstream response to RemotePath via the IndirectResolver capability
+	// (e.g. Terraform's X-Terraform-Get).
+	Indirect bool
+	// ContentType, when set, is used for the response Content-Type.
+	ContentType string
 }
 
 // Source labels where a response body came from; every response carries it
@@ -178,6 +209,38 @@ type CoreServices interface {
 type Hoster interface {
 	HandlePublish(ctx context.Context, feed Feed, r *http.Request, deps CoreServices) error
 	Reindex(ctx context.Context, feed Feed, deps CoreServices) error
+}
+
+// SyntheticResponse is a protocol-level response produced by a module
+// without touching cache or upstream. Serializable by design.
+type SyntheticResponse struct {
+	Status int
+	Header map[string]string
+	Body   []byte
+}
+
+// Synthesizer is an optional FormatModule capability: it answers intents of
+// kind IntentSynthetic (e.g. Terraform's download indirection). The server
+// labels such responses X-Registry-Source: local.
+type Synthesizer interface {
+	Synthesize(feed Feed, intent Intent) (SyntheticResponse, error)
+}
+
+// IndirectResolver is an optional FormatModule capability for protocols
+// where the upstream response to Intent.RemotePath is an indirection that
+// names the real artifact location (absolute URL or relative to the
+// indirection document). Arguments are serializable on purpose.
+type IndirectResolver interface {
+	ResolveIndirect(feed Feed, intent Intent, status int, header map[string][]string, body []byte) (string, error)
+}
+
+// RootRouter is an optional FormatModule capability for protocol endpoints
+// that must live at the server root, outside any feed mount (e.g.
+// /.well-known/terraform.json). ServeRoot receives the feeds of this
+// module's format from the current config snapshot.
+type RootRouter interface {
+	RootRoutes() []Route
+	ServeRoot(w http.ResponseWriter, r *http.Request, feeds []Feed)
 }
 
 // ---------------------------------------------------------------------------
