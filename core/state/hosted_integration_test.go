@@ -15,6 +15,10 @@ import (
 func TestListHostedAcrossAllFeeds(t *testing.T) {
 	db := openDB(t)
 	ctx := t.Context()
+	// openDB does not migrate; this test needs the current schema.
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
 	stamp := time.Now().UnixNano()
 	feedA := fmt.Sprintf("feed-a-%d", stamp)
 	feedB := fmt.Sprintf("feed-b-%d", stamp)
