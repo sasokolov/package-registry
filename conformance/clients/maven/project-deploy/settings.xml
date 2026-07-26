@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
+  <servers>
+    <server>
+      <id>registry-deploy</id>
+      <username>ci</username>
+      <password>${env.REGISTRY_TOKEN}</password>
+    </server>
+  </servers>
+  <mirrors>
+    <mirror>
+      <id>maven-default-http-blocker</id>
+      <mirrorOf>disabled-by-conformance</mirrorOf>
+      <url>http://0.0.0.0/</url>
+    </mirror>
+    <mirror>
+      <!-- Dependencies (plugins) resolve through the proxy feed; the
+           deployment target is excluded so it keeps its own credentials. -->
+      <id>registry</id>
+      <mirrorOf>*,!registry-deploy</mirrorOf>
+      <url>http://registry:8080/maven/central</url>
+    </mirror>
+  </mirrors>
+</settings>

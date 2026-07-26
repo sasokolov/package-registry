@@ -1,8 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- Warms the whole jar lifecycle (resources, compiler, surefire, jar,
+     install, deploy) into the image's local repository, so conformance
+     scenarios never fetch plugins at run time. -->
 <project xmlns="http://maven.apache.org/POM/4.0.0">
   <modelVersion>4.0.0</modelVersion>
   <groupId>com.example</groupId>
   <artifactId>warmup</artifactId>
   <version>1.0.0</version>
-  <packaging>pom</packaging>
+  <packaging>jar</packaging>
+  <properties>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+  <distributionManagement>
+    <repository>
+      <id>warmup-local</id>
+      <url>file:///tmp/warmup-repo</url>
+    </repository>
+  </distributionManagement>
 </project>

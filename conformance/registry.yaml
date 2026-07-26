@@ -52,3 +52,33 @@ feeds:
     format: terraform
     upstream: http://fake-upstream/terraform-upstream
     anonymous: true
+
+  # Hosted maven feed: publishing is allowed for the CI token identity only.
+  - name: hosted
+    format: maven
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+
+  # Hosted feed guarded by the license policy (deny GPL).
+  - name: licensed
+    format: maven
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+    policies:
+      - name: license
+        config:
+          deny: ["GPL-3.0", "AGPL-*"]
+
+  # Proxy feed that quarantines releases younger than 100 years: every
+  # fixture is "too fresh", which makes the age gate observable.
+  - name: fresh
+    format: maven
+    upstream: http://fake-upstream/maven
+    anonymous: true
+    policies:
+      - name: quarantine
+        config:
+          min_age: 876000h
+          on_unknown: deny

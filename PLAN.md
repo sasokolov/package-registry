@@ -129,24 +129,24 @@ RewriteMetadata покрывают оба формата.
 
 ## Фаза 3 — hosting (Maven, Terraform) + политики v1
 
-- [ ] Maven `Hoster`: PUT артефактов, immutability (повторный PUT той же
+- [x] Maven `Hoster`: PUT артефактов, immutability (повторный PUT той же
       релизной координаты → 409), пересборка `maven-metadata.xml` хостового
       фида при publish.
-- [ ] Terraform `Hoster`: загрузка модуля (API: PUT архива + версия),
+- [x] Terraform `Hoster`: загрузка модуля (API: PUT архива + версия),
       генерация ответов `versions`/`download` из хранимого.
-- [ ] Publish-права: политика/permission `publish` per-feed per-identity;
+- [x] Publish-права: политика/permission `publish` per-feed per-identity;
       OIDC-identity GitLab (claim `project_path`) как субъект прав.
-- [ ] `policies/osv`: батч-запросы к OSV.dev API, кэш вердиктов в Postgres
+- [x] `policies/osv`: батч-запросы к OSV.dev API, кэш вердиктов в Postgres
       c TTL, режим `enforce|warn`, fail-open конфигурируемо (по умолчанию
       warn+fail-open, чтобы не ронять билды при недоступном OSV).
-- [ ] `policies/license`: извлечение лицензии из метаданных (pom `<licenses>`,
+- [x] `policies/license`: извлечение лицензии из метаданных (pom `<licenses>`,
       npm `license` — задел на Фазу 4), deny-список SPDX-идентификаторов.
-- [ ] `policies/quarantine`: версия младше N часов (из метаданных апстрима) →
+- [x] `policies/quarantine`: версия младше N часов (из метаданных апстрима) →
       Deny с отдельным кодом причины.
-- [ ] Conformance: `mvn deploy` в хостовый фид от identity с правом → успех;
+- [x] Conformance: `mvn deploy` в хостовый фид от identity с правом → успех;
       без права → 403; повторный deploy той же версии → 409; скачивание
       пакета с запрещённой лицензией из fixtures → 403.
-- [ ] Задел гео: hosted-коммит только через ядро — модуль стейджит блобы
+- [x] Задел гео: hosted-коммит только через ядро — модуль стейджит блобы
       через `deps.Blobs()`, затем зовёт `CoreServices.Publish(feed, path,
       coord, sha256, size)` — единственная точка записи hosted-манифестов
       (сюда позже втыкается журнал; модули никогда не пишут `manifests/*`

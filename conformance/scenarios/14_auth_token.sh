@@ -22,8 +22,7 @@ if [[ -z "$www" ]]; then
 fi
 
 echo "--> creating a static token via the CLI"
-secret="$(compose exec -T registry registry token create \
-  -name "conformance-$(date +%s)" -config /etc/registry/config.yaml 2>/dev/null | tail -1)"
+secret="$(registry_token "conformance-$(date +%s)")"
 if [[ "$secret" != reg_* ]]; then
   echo "token create did not return a secret (got: ${secret:0:8}...)" >&2
   exit 1

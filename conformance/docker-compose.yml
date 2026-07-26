@@ -93,6 +93,7 @@ services:
     volumes:
       - ./clients/maven/project:/work:ro
       - ./clients/maven/project-live:/work-live:ro
+      - ./clients/maven/project-deploy:/work-deploy:ro
 
   terraform-client:
     image: hashicorp/terraform:1.9

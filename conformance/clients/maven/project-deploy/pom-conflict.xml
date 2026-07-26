@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Same coordinate, different bytes: must be refused with 409. -->
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>deployed</artifactId>
+  <version>1.0.0</version>
+  <packaging>jar</packaging>
+  <properties>
+    <!-- Reproducible build: without a fixed output timestamp maven-archiver
+         stamps every jar differently, so an identical re-deploy would look
+         like new content to the registry. -->
+    <project.build.outputTimestamp>2026-01-01T00:00:00Z</project.build.outputTimestamp>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+  <licenses>
+    <license>
+      <name>Apache-2.0</name>
+    </license>
+  </licenses>
+  <distributionManagement>
+    <repository>
+      <id>registry-deploy</id>
+      <url>${deploy.url}</url>
+    </repository>
+  </distributionManagement>
+</project>
