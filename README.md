@@ -44,8 +44,9 @@ Docker — no mocks of the protocols being implemented.
 
 ```bash
 make conformance        # 21 scenarios: mvn, npm, dotnet, composer, terraform
-make conformance-chaos  #  3 scenarios: replica kill, PostgreSQL down, upstream down
-make conformance-geo    #  8 scenarios: replication, conflicts, partition, bootstrap
+make conformance-chaos  #  4 scenarios: replica kill, PostgreSQL, upstream and S3 outages
+make conformance-geo    # 12 scenarios: replication, conflicts, partition, bootstrap,
+                        #     site loss, quarantine, mutable coordinates, parked events
 make conformance-live   #     the same protocols against real upstreams (manual)
 make load-test          #     k6 "CI storm"; writes docs/perf.md
 make test-integration   #     tests that need real PostgreSQL and MinIO
@@ -62,10 +63,13 @@ make test-integration   #     tests that need real PostgreSQL and MinIO
 CLI beyond serving:
 
 ```bash
+registry config check                  # parse and validate without starting
 registry token create -name ci-bot     # secret printed once, hash stored
 registry token revoke -name ci-bot     # propagates to every site
 registry gc                            # dry run; -delete to collect
 registry repl status | peers | conflicts | resolve | resync | backfill
+registry repl quarantine | release     # take a package down mesh-wide
+registry repl retry-parked | trust-reset
 ```
 
 ## Geo replication
