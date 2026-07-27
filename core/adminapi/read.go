@@ -18,14 +18,14 @@ import (
 // SiteStatus is the overview response.
 type SiteStatus struct {
 	Site          string `json:"site"`
-	ConfigVersion string `json:"config_version"`
-	ConfigSource  string `json:"config_source"`
+	ConfigVersion string `json:"config_version,omitempty"`
+	ConfigSource  string `json:"config_source,omitempty"`
 	Feeds         int    `json:"feeds"`
-	Database      string `json:"database"`
+	Database      string `json:"database,omitempty"`
 	Replication   struct {
 		Enabled  bool   `json:"enabled"`
 		Peers    int    `json:"peers"`
-		Topology string `json:"topology"`
+		Topology string `json:"topology,omitempty"`
 	} `json:"replication"`
 }
 
@@ -41,19 +41,38 @@ type FeedSummary struct {
 	PublishPolicy   string   `json:"publish_policy,omitempty"`
 	ReplicationMode string   `json:"replication_mode,omitempty"`
 	PeerFallback    bool     `json:"peer_fallback,omitempty"`
-	Packages        int      `json:"packages"`
+	// Packages is absent rather than zero when the caller may not be told:
+	// "none" and "not your business" are different answers.
+	Packages *int `json:"packages,omitempty"`
 }
 
 // handleStatus answers the overview.
+//
+// An anonymous caller gets the site name and how many feeds are open to it,
+// and nothing else. The rest — which document this site is running, where it
+// is kept, whether the database is up, who its peers are — is operational
+// detail about the deployment, and a stranger downloading a public package
+// has no business reading it.
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	cfg := s.manager.Current()
-	out := SiteStatus{
-		Site:          cfg.Site.Name,
-		ConfigVersion: s.manager.Version(),
-		ConfigSource:  s.manager.Source().Describe(),
-		Feeds:         len(cfg.Feeds),
-		Database:      "disabled",
+	// The site name is on every response as X-Registry-Source's companion
+	// header anyway, so hiding it here would only be theatre.
+	out := SiteStatus{Site: cfg.Site.Name}
+
+	if s.identity(r).IsAnonymous() {
+		for _, f := range cfg.Feeds {
+			if f.Anonymous {
+				out.Feeds++
+			}
+		}
+		writeJSON(w, http.StatusOK, out)
+		return
 	}
+
+	out.ConfigVersion = s.manager.Version()
+	out.ConfigSource = s.manager.Source().Describe()
+	out.Feeds = len(cfg.Feeds)
+	out.Database = "disabled"
 	if s.db != nil {
 		out.Database = "up"
 		if err := s.db.Ping(r.Context()); err != nil {
@@ -77,16 +96,22 @@ type WhoAmI struct {
 	Admin       bool     `json:"admin"`
 	Stale       bool     `json:"stale,omitempty"`
 	CanPublish  []string `json:"can_publish,omitempty"`
+	// AuthError is set when the caller offered a credential that was not
+	// accepted. Without it a rejected token is indistinguishable from no
+	// token at all, and a client has no way to tell "I am browsing
+	// anonymously" from "what I pasted is wrong".
+	AuthError string `json:"auth_error,omitempty"`
 }
 
 func (s *Server) handleWhoAmI(w http.ResponseWriter, r *http.Request) {
-	id := s.identity(r)
+	id, refusal := s.identityOrRefusal(r)
 	out := WhoAmI{
 		Kind:        string(id.Kind),
 		Subject:     id.Subject,
 		ProjectPath: id.ProjectPath,
 		Admin:       s.isAdmin(id),
 		Stale:       id.Stale,
+		AuthError:   refusal,
 	}
 	if s.deps.CanPublish != nil {
 		out.CanPublish = s.deps.CanPublish(id)
@@ -104,25 +129,46 @@ func (s *Server) handleFeeds(w http.ResponseWriter, r *http.Request) {
 }
 
 // feedSummaries builds the list from configuration and stored counts.
+//
+// What an anonymous caller sees is only the feeds it may actually read, and
+// only the facts it could work out by using them: the name, the format and
+// whether they are hosted. Where a feed proxies from, who may publish to it,
+// which policies guard it and how much it holds are configuration, and
+// listing them for strangers would hand out a map of the deployment —
+// including the existence of feeds they cannot open.
 func (s *Server) feedSummaries(r *http.Request) []FeedSummary {
 	cfg := s.manager.Current()
+	anonymous := s.identity(r).IsAnonymous()
+
 	counts := map[string]int{}
-	if s.db != nil {
+	if s.db != nil && !anonymous {
 		if rows, err := s.db.ListHosted(r.Context(), "", ""); err == nil {
 			for _, row := range rows {
 				counts[row.Feed]++
 			}
 		}
 	}
+
 	out := make([]FeedSummary, 0, len(cfg.Feeds))
 	for _, f := range cfg.Feeds {
+		if anonymous {
+			if !f.Anonymous {
+				continue
+			}
+			out = append(out, FeedSummary{
+				Name: f.Name, Format: f.Format,
+				Hosted: f.Hosted, Anonymous: true,
+			})
+			continue
+		}
 		summary := FeedSummary{
 			Name: f.Name, Format: f.Format, Upstream: f.Upstream,
 			Hosted: f.Hosted, Anonymous: f.Anonymous,
 			Publishers: f.Publishers, PublishPolicy: f.PublishPolicy,
 			ReplicationMode: f.ReplicationMode, PeerFallback: f.PeerFallback,
-			Packages: counts[f.Name],
 		}
+		count := counts[f.Name]
+		summary.Packages = &count
 		for _, p := range f.Policies {
 			summary.Policies = append(summary.Policies, p.Name)
 		}

@@ -3,8 +3,8 @@ import { useResource } from "../api/hooks";
 import type { FeedSummary } from "../api/types";
 import { Badge, ErrorNotice, Empty, Loading } from "../components/common";
 
-export function Feeds() {
-  const feeds = useResource<{ feeds: FeedSummary[] | null }>("/feeds");
+export function Feeds({ anonymous }: { anonymous: boolean }) {
+  const feeds = useResource<{ feeds: FeedSummary[] | null }>("/feeds", [anonymous]);
 
   if (feeds.loading && !feeds.data) return <Loading what="feeds" />;
 
@@ -14,6 +14,12 @@ export function Feeds() {
       <header>
         <h2>Feeds</h2>
         <p>Every configured feed, what it proxies and what it hosts.</p>
+        {anonymous ? (
+          <p className="muted" style={{ fontSize: 12 }}>
+            Signed out: this lists only the feeds open to everyone, without their
+            configuration.
+          </p>
+        ) : null}
       </header>
       <ErrorNotice error={feeds.error} />
       {rows.length === 0 ? (
@@ -61,7 +67,13 @@ export function Feeds() {
                       <Badge kind="warn">authenticated</Badge>
                     )}
                   </td>
-                  <td>{feed.hosted ? feed.packages : <span className="muted">—</span>}</td>
+                  <td>
+                    {feed.hosted && feed.packages !== undefined ? (
+                      feed.packages
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

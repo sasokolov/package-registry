@@ -40,6 +40,9 @@ export const tokenStore = {
     return sessionStorage.getItem(TOKEN_KEY) ?? localStorage.getItem(TOKEN_KEY) ?? "";
   },
   set(token: string, remember: boolean): void {
+    // A browser can refuse to store — private modes, partitioned storage, a
+    // full quota. Failing loudly here is the difference between "the console
+    // told me why" and "the button does nothing".
     sessionStorage.setItem(TOKEN_KEY, token);
     if (remember) {
       localStorage.setItem(TOKEN_KEY, token);
@@ -59,6 +62,12 @@ export interface RequestOptions {
   /** Sent as If-Match, for endpoints with optimistic concurrency. */
   ifMatch?: string;
   signal?: AbortSignal;
+  /**
+   * Use this credential instead of the stored one. Signing in needs it: a
+   * token has to be checked before it is kept, or a bad paste is stored and
+   * the console then says "not signed in" with no idea why.
+   */
+  token?: string;
 }
 
 export interface Envelope<T> {
@@ -70,7 +79,7 @@ const API_BASE = "/api/v1";
 
 async function call<T>(path: string, options: RequestOptions = {}): Promise<Envelope<T>> {
   const headers: Record<string, string> = { Accept: "application/json" };
-  const token = tokenStore.get();
+  const token = options.token ?? tokenStore.get();
   if (token) headers.Authorization = `Bearer ${token}`;
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
   if (options.ifMatch) headers["If-Match"] = `"${options.ifMatch}"`;
@@ -104,6 +113,8 @@ async function call<T>(path: string, options: RequestOptions = {}): Promise<Enve
 
 export const api = {
   get: <T,>(path: string, signal?: AbortSignal) => call<T>(path, { signal }),
+  /** getAs is get with an explicit credential, used to verify one. */
+  getAs: <T,>(path: string, token: string) => call<T>(path, { token }),
   post: <T,>(path: string, body: unknown) => call<T>(path, { method: "POST", body }),
   put: <T,>(path: string, body: unknown, ifMatch?: string) =>
     call<T>(path, { method: "PUT", body, ifMatch }),

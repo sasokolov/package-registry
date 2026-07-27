@@ -173,3 +173,5 @@ label > span { display: block; font-size: 12px; color: var(--text-dim); margin-b
   border-radius: 6px;
   font-size: 12px;
 }
+
+.sidebar .refused { color: var(--bad); font-weight: 500; }

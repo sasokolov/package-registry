@@ -1,13 +1,16 @@
 // The shapes the registry API returns. Kept in one file so a change to the
 // Go side has exactly one place to land on the console side.
 
+// Fields the registry withholds from an anonymous caller are optional here,
+// because "you may not know this" is a real answer and the console has to
+// render it without pretending it got a zero.
 export interface SiteStatus {
   site: string;
-  config_version: string;
-  config_source: string;
+  config_version?: string;
+  config_source?: string;
   feeds: number;
-  database: "up" | "unavailable" | "disabled";
-  replication: { enabled: boolean; peers: number; topology: string };
+  database?: "up" | "unavailable" | "disabled";
+  replication: { enabled: boolean; peers: number; topology?: string };
 }
 
 export interface WhoAmI {
@@ -17,6 +20,8 @@ export interface WhoAmI {
   admin: boolean;
   stale?: boolean;
   can_publish?: string[];
+  /** Set when a credential was offered and the registry refused it. */
+  auth_error?: string;
 }
 
 export interface FeedSummary {
@@ -30,7 +35,7 @@ export interface FeedSummary {
   publish_policy?: string;
   replication_mode?: string;
   peer_fallback?: boolean;
-  packages: number;
+  packages?: number;
 }
 
 export interface PackageEntry {

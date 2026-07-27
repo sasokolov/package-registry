@@ -104,14 +104,31 @@ func (s *Server) projector() repl.ProjectionWriter { return s.deps.Projection }
 
 // identity resolves the caller.
 func (s *Server) identity(r *http.Request) api.Identity {
+	id, _ := s.identityOrRefusal(r)
+	return id
+}
+
+// identityOrRefusal resolves the caller and, when a credential was offered
+// and refused, says so.
+//
+// The distinction matters more than it looks. Reporting a rejected token as
+// plain anonymity means a client that pasted a truncated credential is told
+// nothing at all — it simply keeps browsing as a stranger and wonders why
+// nothing it does is allowed. "You offered something and it was not
+// accepted" is a different fact from "you offered nothing", and only the
+// caller can act on it.
+func (s *Server) identityOrRefusal(r *http.Request) (api.Identity, string) {
 	if s.deps.Identify == nil {
-		return api.Anonymous()
+		return api.Anonymous(), ""
 	}
 	id, err := s.deps.Identify(r)
-	if err != nil {
-		return api.Anonymous()
+	if err == nil {
+		return id, ""
 	}
-	return id
+	if r.Header.Get("Authorization") == "" {
+		return api.Anonymous(), ""
+	}
+	return api.Anonymous(), err.Error()
 }
 
 // isAdmin reports whether an identity may change the configuration. The
@@ -132,6 +149,25 @@ func (s *Server) isAdmin(id api.Identity) bool {
 		return false
 	}
 	return admins.Allowed(id)
+}
+
+// requireIdentity answers the request itself when the caller is a stranger.
+//
+// It guards the operational read surface — replication, conflicts,
+// quarantine. None of it is a secret from the people who run the registry,
+// but all of it describes the deployment rather than the packages, and a
+// client that only downloads public artifacts never needs to see it.
+func (s *Server) requireIdentity(w http.ResponseWriter, r *http.Request) bool {
+	id, refusal := s.identityOrRefusal(r)
+	if !id.IsAnonymous() {
+		return true
+	}
+	if refusal != "" {
+		s.writeError(w, http.StatusUnauthorized, "the credential you offered was not accepted: "+refusal)
+		return false
+	}
+	s.writeError(w, http.StatusUnauthorized, "this endpoint needs an identity")
+	return false
 }
 
 // requireAdmin answers the request itself when the caller may not write.

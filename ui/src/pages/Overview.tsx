@@ -3,10 +3,18 @@ import { usePolledResource } from "../api/hooks";
 import type { ConflictEntry, ReplicationStatus, SiteStatus } from "../api/types";
 import { Badge, Card, ErrorNotice, Loading } from "../components/common";
 
-export function Overview() {
-  const status = usePolledResource<SiteStatus>("/status", 10_000);
-  const replication = usePolledResource<ReplicationStatus>("/replication", 10_000);
-  const conflicts = usePolledResource<{ conflicts: ConflictEntry[] | null }>("/conflicts", 15_000);
+export function Overview({ anonymous }: { anonymous: boolean }) {
+  const status = usePolledResource<SiteStatus>("/status", 10_000, [anonymous]);
+  // The operational endpoints need an identity. Asking for them anyway would
+  // fill the page with 401s that say nothing an anonymous visitor can act on.
+  const replication = usePolledResource<ReplicationStatus>(
+    anonymous ? undefined : "/replication",
+    10_000,
+  );
+  const conflicts = usePolledResource<{ conflicts: ConflictEntry[] | null }>(
+    anonymous ? undefined : "/conflicts",
+    15_000,
+  );
 
   if (status.loading && !status.data) return <Loading what="status" />;
 
@@ -24,13 +32,22 @@ export function Overview() {
 
       <ErrorNotice error={status.error} />
 
+      {anonymous ? (
+        <div className="notice">
+          Signed out. This shows the site name and the feeds open to everyone; how the site is
+          configured and how it is doing are for identified callers. Sign in to see the rest.
+        </div>
+      ) : null}
+
       {site ? (
         <div className="cards">
           <Card label="Site" value={site.site} hint={site.config_source} />
           <Card
-            label="Feeds"
+            label={anonymous ? "Open feeds" : "Feeds"}
             value={<Link to="/ui/feeds">{site.feeds}</Link>}
           />
+          {anonymous ? null : (
+            <>
           <Card
             label="Database"
             value={
@@ -77,6 +94,8 @@ export function Overview() {
             }
             hint={(repl?.parked ?? 0) > 0 ? "retried every poll cycle" : undefined}
           />
+            </>
+          )}
         </div>
       ) : null}
 
@@ -88,9 +107,11 @@ export function Overview() {
         </div>
       ) : null}
 
-      <div className="muted" style={{ fontSize: 12 }}>
-        Configuration version <code>{site?.config_version.slice(0, 12)}</code>
-      </div>
+      {site?.config_version ? (
+        <div className="muted" style={{ fontSize: 12 }}>
+          Configuration version <code>{site.config_version.slice(0, 12)}</code>
+        </div>
+      ) : null}
     </div>
   );
 }

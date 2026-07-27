@@ -20,9 +20,15 @@ export function Layout({ status, who, onSignOut }: Props) {
         <nav>
           <NavLink to="/ui/" end>Overview</NavLink>
           <NavLink to="/ui/feeds">Feeds</NavLink>
-          <NavLink to="/ui/replication">Replication</NavLink>
-          <NavLink to="/ui/conflicts">Conflicts</NavLink>
-          <NavLink to="/ui/quarantine">Quarantine</NavLink>
+          {/* Operational views need an identity, so a signed-out visitor is
+              not offered a link that can only answer 401. */}
+          {signedIn ? (
+            <>
+              <NavLink to="/ui/replication">Replication</NavLink>
+              <NavLink to="/ui/conflicts">Conflicts</NavLink>
+              <NavLink to="/ui/quarantine">Quarantine</NavLink>
+            </>
+          ) : null}
           {who?.admin ? <NavLink to="/ui/tokens">Tokens</NavLink> : null}
           {who?.admin ? <NavLink to="/ui/config">Configuration</NavLink> : null}
         </nav>
@@ -51,7 +57,18 @@ export function Layout({ status, who, onSignOut }: Props) {
             </>
           ) : (
             <>
-              <div>not signed in</div>
+              {who?.auth_error ? (
+                <div className="refused" title={who.auth_error}>
+                  credential refused
+                </div>
+              ) : (
+                <div>browsing anonymously</div>
+              )}
+              <div style={{ marginTop: 2 }}>
+                {who?.auth_error
+                  ? "The registry did not accept the stored credential."
+                  : "Open feeds only. Sign in to see the rest."}
+              </div>
               <NavLink className="signin" to="/ui/signin">
                 Sign in
               </NavLink>

@@ -45,7 +45,8 @@ while read -r replica; do
   [[ -n "$replica" ]] || continue
   if ! wait_for_chaos 90 serves_on "$replica"; then
     echo "replica ${replica:0:12} never picked up the configuration change" >&2
-    docker exec "$replica" wget -q -O - "http://127.0.0.1:8080/api/v1/status" >&2 || true
+    docker exec "$replica" wget -q -O - --header="Authorization: Bearer $admin" \
+      "http://127.0.0.1:8080/api/v1/status" >&2 || true
     exit 1
   fi
   echo "    ${replica:0:12} serves it"
@@ -55,7 +56,8 @@ echo "--> and the version is the same everywhere (one document, not two)"
 versions=""
 while read -r replica; do
   [[ -n "$replica" ]] || continue
-  v="$(docker exec "$replica" wget -q -O - "http://127.0.0.1:8080/api/v1/status" 2>/dev/null |
+  v="$(docker exec "$replica" wget -q -O - --header="Authorization: Bearer $admin" \
+    "http://127.0.0.1:8080/api/v1/status" 2>/dev/null |
     grep -o '"config_version":"[^"]*"' | cut -d'"' -f4)"
   versions="$versions $v"
 done <<<"$replicas"

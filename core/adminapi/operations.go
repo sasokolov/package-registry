@@ -154,6 +154,9 @@ type QuarantineEntry struct {
 }
 
 func (s *Server) handleListQuarantine(w http.ResponseWriter, r *http.Request) {
+	if !s.requireIdentity(w, r) {
+		return
+	}
 	if s.db == nil {
 		s.writeError(w, http.StatusServiceUnavailable, "quarantine needs a database")
 		return
@@ -291,6 +294,9 @@ type ConflictEntry struct {
 }
 
 func (s *Server) handleListConflicts(w http.ResponseWriter, r *http.Request) {
+	if !s.requireIdentity(w, r) {
+		return
+	}
 	if s.db == nil {
 		s.writeError(w, http.StatusServiceUnavailable, "conflicts need a database")
 		return
@@ -399,6 +405,9 @@ type PeerIdentity struct {
 }
 
 func (s *Server) handleReplication(w http.ResponseWriter, r *http.Request) {
+	if !s.requireIdentity(w, r) {
+		return
+	}
 	cfg := s.manager.Current()
 	out := ReplicationStatus{
 		Enabled: cfg.Replication.Enabled,

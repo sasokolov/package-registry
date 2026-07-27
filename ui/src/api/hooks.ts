@@ -52,12 +52,22 @@ export function useResource<T>(path: string | undefined, deps: unknown[] = []): 
   return { data, etag, error, loading, reload };
 }
 
-/** Polls a resource on an interval — used for the live status views. */
-export function usePolledResource<T>(path: string, intervalMs: number): Resource<T> {
-  const resource = useResource<T>(path);
+/**
+ * Polls a resource on an interval — used for the live status views. A
+ * undefined path means "there is nothing to ask for", which is how a screen
+ * skips an endpoint the current identity may not read.
+ */
+export function usePolledResource<T>(
+  path: string | undefined,
+  intervalMs: number,
+  deps: unknown[] = [],
+): Resource<T> {
+  const resource = useResource<T>(path, deps);
+  const { reload } = resource;
   useEffect(() => {
-    const timer = setInterval(resource.reload, intervalMs);
+    if (!path) return;
+    const timer = setInterval(reload, intervalMs);
     return () => clearInterval(timer);
-  }, [resource.reload, intervalMs]);
+  }, [path, reload, intervalMs]);
   return resource;
 }

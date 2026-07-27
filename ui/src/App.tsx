@@ -21,13 +21,16 @@ export function App() {
 
   const who = useResource<WhoAmI>("/whoami", [session]);
   const status = useResource<SiteStatus>("/status", [session]);
+  // Until whoami answers, assume nothing: rendering as anonymous and then
+  // correcting is better than asking for endpoints that will refuse.
+  const anonymous = !who.data || who.data.kind === "anonymous";
 
   return (
     <BrowserRouter>
       <Routes>
         <Route element={<Layout status={status.data} who={who.data} onSignOut={refresh} />}>
-          <Route path="/ui/" element={<Overview />} />
-          <Route path="/ui/feeds" element={<Feeds />} />
+          <Route path="/ui/" element={<Overview anonymous={anonymous} />} />
+          <Route path="/ui/feeds" element={<Feeds anonymous={anonymous} />} />
           <Route path="/ui/feeds/:feed" element={<FeedDetail />} />
           <Route path="/ui/replication" element={<Replication />} />
           <Route path="/ui/conflicts" element={<Conflicts who={who.data} />} />
