@@ -81,6 +81,15 @@ type DatabaseConfig struct {
 	DSN string `yaml:"dsn"`
 }
 
+// StaleIdentityWindowOrDefault is how long a verified identity survives a
+// token-backend outage. A negative value disables the fallback.
+func (a AuthConfig) StaleIdentityWindowOrDefault() time.Duration {
+	if a.StaleIdentityWindow != 0 {
+		return a.StaleIdentityWindow.Std()
+	}
+	return 6 * time.Hour
+}
+
 // RevocationSweepOrDefault is the eviction interval for revoked tokens.
 func (a AuthConfig) RevocationSweepOrDefault() time.Duration {
 	if a.RevocationSweep > 0 {
@@ -95,6 +104,12 @@ type AuthConfig struct {
 	// cache. It bounds how long a revoked credential can still work, both
 	// when revoked here and when the revocation arrives from a geo peer.
 	RevocationSweep Duration `yaml:"revocation_sweep"`
+	// StaleIdentityWindow is how long an already-verified identity may keep
+	// working while the token backend is unreachable. It trades revocation
+	// latency for read availability during a database outage (invariant 7);
+	// 0 disables the fallback, so an outage past TokenCacheTTL degrades
+	// loudly instead. Default 6h.
+	StaleIdentityWindow Duration `yaml:"stale_identity_window"`
 	// TokenCacheTTL bounds the in-memory cache of verified static tokens;
 	// within the TTL reads keep working while PostgreSQL is down
 	// (invariant 7). Default 5m.

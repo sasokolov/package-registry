@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -28,7 +29,7 @@ import (
 func replCmd(args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return errors.New(
-			"usage: registry repl status|peers|conflicts|resolve|retry-parked|resync|backfill [-config <path>]")
+			"usage: registry repl status|peers|conflicts|resolve|retry-parked|resync|backfill|trust-reset [-config <path>]")
 	}
 	sub := args[0]
 	flags := flag.NewFlagSet("registry repl "+sub, flag.ContinueOnError)
@@ -76,6 +77,8 @@ func replCmd(args []string, out io.Writer) error {
 		return replResync(ctx, db, cfg, *peer, out)
 	case "backfill":
 		return replBackfill(ctx, db, cfg, *peer, *dryRun, out)
+	case "trust-reset":
+		return replTrustReset(ctx, db, *peer, out)
 	default:
 		return fmt.Errorf("unknown repl subcommand %q", sub)
 	}
@@ -117,6 +120,34 @@ func replStatus(ctx context.Context, db *state.DB, cfg *config.Config, out io.Wr
 	}
 	if err := w.Flush(); err != nil {
 		return err
+	}
+
+	identities, err := db.ListPeerIdentities(ctx)
+	if err != nil {
+		return err
+	}
+	if len(identities) > 0 {
+		w2 := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+		_, _ = fmt.Fprintln(w2, "\nPEER\tPINNED IDENTITY\tFIRST SEEN\tLAST SEEN")
+		for _, id := range identities {
+			_, _ = fmt.Fprintf(w2, "%s\t%s\t%s\t%s ago\n", id.Peer, id.UUID,
+				id.FirstSeen.Format(time.RFC3339),
+				time.Since(id.LastSeen).Truncate(time.Second))
+		}
+		if err := w2.Flush(); err != nil {
+			return err
+		}
+	}
+	// A peer whose identity stopped matching is the one failure an operator
+	// must not have to dig out of a log.
+	for _, c := range cursors {
+		if strings.Contains(c.LastError, "pinned to") {
+			_, _ = fmt.Fprintf(out,
+				"\nPEER IDENTITY MISMATCH: %s — %s\n"+
+					"  resolve with: registry repl trust-reset -peer %s (only if this really is the same site)\n",
+				c.Peer, c.LastError, c.Peer)
+			break
+		}
 	}
 
 	parked, err := db.CountParked(ctx)
@@ -441,5 +472,27 @@ func replBackfill(ctx context.Context, db *state.DB, cfg *config.Config,
 	if failed > 0 {
 		return fmt.Errorf("%d blob(s) could not be fetched from any peer", failed)
 	}
+	return nil
+}
+
+// replTrustReset drops a peer's pinned identity. It exists so recovering a
+// site that lost its database is an explicit operator decision rather than
+// hand-edited SQL — and so that it stays a decision, not an automatic
+// re-pin (invariant 14: nothing but a human widens trust).
+func replTrustReset(ctx context.Context, db *state.DB, peer string, out io.Writer) error {
+	if peer == "" {
+		return errors.New("trust-reset needs -peer <name>")
+	}
+	old, err := db.ForgetPeerIdentity(ctx, peer)
+	if err != nil {
+		return err
+	}
+	// Cursors for that peer carry the refusal; clear it so the next poll
+	// starts from a clean state.
+	if err := db.RecordCursorError(ctx, peer, "*", ""); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(out,
+		"forgot the pinned identity %s for peer %s; the next handshake re-pins it\n", old, peer)
 	return nil
 }

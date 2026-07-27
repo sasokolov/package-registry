@@ -479,6 +479,50 @@ func (db *DB) PinPeerIdentity(ctx context.Context, peer, uuid string) error {
 	return nil
 }
 
+// PeerIdentity is a pinned peer.
+type PeerIdentity struct {
+	Peer      string
+	UUID      string
+	FirstSeen time.Time
+	LastSeen  time.Time
+}
+
+// ListPeerIdentities returns the pins, so an operator can see who this site
+// believes each peer to be.
+func (db *DB) ListPeerIdentities(ctx context.Context) ([]PeerIdentity, error) {
+	rows, err := db.pool.Query(ctx,
+		"SELECT peer, site_uuid::text, first_seen, last_seen FROM repl_peer_identity ORDER BY peer")
+	if err != nil {
+		return nil, classify(fmt.Errorf("list peer identities: %w", err))
+	}
+	defer rows.Close()
+	var out []PeerIdentity
+	for rows.Next() {
+		var p PeerIdentity
+		if err := rows.Scan(&p.Peer, &p.UUID, &p.FirstSeen, &p.LastSeen); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// ForgetPeerIdentity drops a pin so the next handshake re-pins the peer. It
+// is the deliberate operator action behind `registry repl trust-reset`: a
+// peer whose UUID changed is a different site until a human says otherwise.
+func (db *DB) ForgetPeerIdentity(ctx context.Context, peer string) (string, error) {
+	var uuid string
+	err := db.pool.QueryRow(ctx,
+		"DELETE FROM repl_peer_identity WHERE peer = $1 RETURNING site_uuid::text", peer).Scan(&uuid)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("peer %q has no pinned identity", peer)
+	}
+	if err != nil {
+		return "", classify(fmt.Errorf("forget peer identity: %w", err))
+	}
+	return uuid, nil
+}
+
 // RecordPeerAck notes how far a peer has consumed our journal. It is the
 // watermark journal pruning is allowed to drop below, and it only ever
 // moves forward.

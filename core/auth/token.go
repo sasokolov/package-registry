@@ -95,6 +95,22 @@ func NewTokenVerifier(lookup LookupFunc, ttl time.Duration) *TokenVerifier {
 	}
 }
 
+// SetStaleWindow bounds how long an already-verified identity may be reused
+// while the backend is unreachable. A non-positive window disables the
+// fallback: an outage past the cache TTL then degrades loudly.
+func (v *TokenVerifier) SetStaleWindow(d time.Duration) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.staleFor = d
+}
+
+// staleWindow reads the configured window.
+func (v *TokenVerifier) staleWindow() time.Duration {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.staleFor
+}
+
 // defaultStaleWindow is how long a verified identity may be reused while
 // the token backend is unreachable (invariant 7: a database outage degrades
 // the read path, it does not stop it).
@@ -134,7 +150,7 @@ func (v *TokenVerifier) Authenticate(ctx context.Context, secret string) (api.Id
 		// outage into an authentication outage (invariant 7). Revocation
 		// is unaffected: the sweeper evicts revoked hashes, and a database
 		// that is down cannot have accepted new revocations either.
-		if ok && v.now().Before(e.staleUntil) {
+		if ok && v.staleWindow() > 0 && v.now().Before(e.staleUntil) {
 			return api.Identity{Kind: api.IdentityToken, Subject: e.name, Stale: true}, nil
 		}
 		return api.Identity{}, fmt.Errorf("token backend unavailable (hash %s…): %w", hash[:8], api.ErrUnavailable)

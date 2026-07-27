@@ -260,6 +260,7 @@ func (s *Server) buildRuntime(cfg *config.Config) (*runtime, error) {
 	if s.db != nil {
 		tokens := auth.NewTokens(s.db)
 		verifier = auth.NewTokenVerifier(tokens.Lookup, cfg.Auth.TokenCacheTTL.Std())
+		verifier.SetStaleWindow(cfg.Auth.StaleIdentityWindowOrDefault())
 		// A revoked token must stop working within seconds, not within the
 		// cache TTL — whether it was revoked here or at another geo site.
 		go verifier.WatchRevocations(runtimeCtx, tokens,
