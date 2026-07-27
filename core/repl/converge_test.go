@@ -183,6 +183,8 @@ func (m *modelState) applyOne(e state.JournalEntry, localSite string) {
 			}
 			m.resolved[key] = p.KeepSHA
 			m.resolvedHLC[key] = e.HLC
+			// The decision creates the coordinate if this site has not seen
+			// it yet (a bootstrapping site learns decisions first).
 			m.manifests[key] = p.KeepSHA
 			m.coordOf[key] = p.Feed + "/" + p.Coord
 			// The block is derived, so resolving one path only lifts it

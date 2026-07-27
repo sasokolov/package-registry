@@ -182,3 +182,100 @@ func TestQuarantineReasonsAreIndependent(t *testing.T) {
 		t.Errorf("coordinate still quarantined after releasing every reason (err=%v)", err)
 	}
 }
+
+// TryLease is what stops the N stateless replicas of a site from all
+// pulling the same peer stream. Nothing exercised it: the geo stack runs
+// one registry per site and the chaos stack has no replication.
+func TestTryLeaseAdmitsExactlyOneHolder(t *testing.T) {
+	dsn := os.Getenv("PG_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PG_TEST_DSN not set; run via make test-integration")
+	}
+	ctx := t.Context()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	db, err := Open(ctx, dsn, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	key := fmt.Sprintf("lease-test-%d", time.Now().UnixNano())
+
+	// One holder is inside the critical section; a second attempt must be
+	// turned away rather than queued, so a slow poll never stacks up.
+	inside := make(chan struct{})
+	release := make(chan struct{})
+	held := make(chan error, 1)
+	go func() {
+		_, err := db.TryLease(ctx, key, func(context.Context) error {
+			close(inside)
+			<-release
+			return nil
+		})
+		held <- err
+	}()
+
+	<-inside
+	ran, err := db.TryLease(ctx, key, func(context.Context) error {
+		t.Error("a second holder entered the critical section")
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("second TryLease: %v", err)
+	}
+	if ran {
+		t.Error("TryLease admitted a second holder")
+	}
+
+	close(release)
+	if err := <-held; err != nil {
+		t.Fatalf("first TryLease: %v", err)
+	}
+
+	// Once released, the next caller gets in.
+	ran, err = db.TryLease(ctx, key, func(context.Context) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ran {
+		t.Error("the lease was not released")
+	}
+}
+
+// The lease must not be lent the pool connection the protected function
+// needs: with a small pool that is a deadlock, not a slowdown.
+func TestLeaseDoesNotStarveTheProtectedFunction(t *testing.T) {
+	dsn := os.Getenv("PG_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PG_TEST_DSN not set; run via make test-integration")
+	}
+	ctx := t.Context()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	// A pool of one: if the lease borrowed from it, the function below
+	// could never acquire a connection and this would hang.
+	db, err := Open(ctx, dsn+"?pool_max_conns=1", logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := db.TryLease(ctx, fmt.Sprintf("starve-%d", time.Now().UnixNano()),
+			func(ctx context.Context) error {
+				var one int
+				return db.Pool().QueryRow(ctx, "SELECT 1").Scan(&one)
+			})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("protected function failed: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the lease starved the function it protects (pool exhaustion)")
+	}
+}

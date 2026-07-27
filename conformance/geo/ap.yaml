@@ -67,3 +67,14 @@ feeds:
     publish_policy: forward:eu-1
     replication_mode: lazy
     peer_fallback: true
+
+  # Active-active npm feed: dist-tags are MUTABLE coordinates, and they are
+  # what the hybrid logical clock exists to order.
+  - name: shared-npm
+    format: npm
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+    publish_policy: local
+    replication_mode: lazy
+    peer_fallback: true

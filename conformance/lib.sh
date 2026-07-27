@@ -23,3 +23,17 @@ registry_token() {
   compose exec -T registry registry token create -name "$name" \
     -config /etc/registry/config.yaml 2>/dev/null | tail -1
 }
+
+# wait_for_chaos retries a command until it succeeds or the deadline passes.
+# Chaos scenarios inject failures and then wait for recovery, which is not
+# instantaneous.
+wait_for_chaos() { # <seconds> <command...>
+  local deadline=$((SECONDS + $1)); shift
+  while (( SECONDS < deadline )); do
+    if "$@"; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}

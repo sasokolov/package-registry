@@ -375,11 +375,19 @@ func applyResolutionTx(ctx context.Context, tx pgxTx, feed, path, coord string,
 	if err != nil {
 		return fmt.Errorf("encode resolved metadata: %w", err)
 	}
+	// Upsert, not update: a site bootstrapping from a snapshot learns the
+	// resolution BEFORE the coordinate itself, and an update against a row
+	// that does not exist yet would silently drop the package.
 	if _, err := tx.Exec(ctx, `
-		UPDATE hosted_manifests
-		   SET sha256=$3, size=$4, checksums=$5, metadata=$6, site=$7, updated_at=now()
-		 WHERE feed=$1 AND path=$2`,
-		feed, path, r.KeepSHA, r.Size, checksums, metadata, decidedBy); err != nil {
+		INSERT INTO hosted_manifests
+			(feed, path, coordinate, sha256, size, checksums, metadata, mutable,
+			 origin, site, published_by)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,false,'replication',$8,'conflict-resolution')
+		ON CONFLICT ON CONSTRAINT hosted_manifests_feed_path_key
+		DO UPDATE SET sha256=EXCLUDED.sha256, size=EXCLUDED.size,
+		              checksums=EXCLUDED.checksums, metadata=EXCLUDED.metadata,
+		              site=EXCLUDED.site, updated_at=now()`,
+		feed, path, coord, r.KeepSHA, r.Size, checksums, metadata, decidedBy); err != nil {
 		return fmt.Errorf("apply conflict resolution: %w", err)
 	}
 	// Close this PATH's conflicts, then recompute the coordinate's block:
