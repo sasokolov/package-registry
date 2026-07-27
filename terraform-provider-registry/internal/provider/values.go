@@ -79,6 +79,13 @@ func jsonOrPrior(v map[string]any, prior types.String) (types.String, error) {
 		if prior.IsNull() {
 			return types.StringNull(), nil
 		}
+		// The registry omits an empty options object. An operator who
+		// wrote jsonencode({}) meant it, and rewriting it every refresh
+		// would be a change that never settles.
+		var empty map[string]any
+		if err := json.Unmarshal([]byte(prior.ValueString()), &empty); err == nil && len(empty) == 0 {
+			return prior, nil
+		}
 		return types.StringValue(""), nil
 	}
 	if !prior.IsNull() && sameJSON(prior.ValueString(), v) {
@@ -110,9 +117,16 @@ func sameJSON(raw string, v map[string]any) bool {
 }
 
 // stringsOrPrior is stringOrPrior for lists of strings.
+//
+// The empty case needs care: converting a nil slice yields a *null* list, so
+// an operator who wrote `publishers = []` would see it flip to null on every
+// refresh and never settle.
 func stringsOrPrior(ctx context.Context, v []string, prior types.List) (types.List, diag.Diagnostics) {
-	if len(v) == 0 && prior.IsNull() {
-		return types.ListNull(types.StringType), nil
+	if len(v) == 0 {
+		if prior.IsNull() {
+			return types.ListNull(types.StringType), nil
+		}
+		return types.ListValueFrom(ctx, types.StringType, []string{})
 	}
 	return types.ListValueFrom(ctx, types.StringType, v)
 }

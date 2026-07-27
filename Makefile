@@ -56,7 +56,7 @@ conformance-geo:
 # Terraform provider: its own Go module, so it builds and lints separately.
 terraform-build: $(GOLANGCI_LINT)
 	cd terraform-provider-registry && go build ./... && go vet ./... && \
-		$(GOLANGCI_LINT) run && go test ./internal/client/...
+		$(GOLANGCI_LINT) run && go test ./internal/...
 
 # Acceptance tests for the Terraform provider against a real registry in
 # Docker: apply from nothing, re-plan empty, edit through the API and see the

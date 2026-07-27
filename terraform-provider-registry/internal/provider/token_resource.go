@@ -98,8 +98,16 @@ func (r *tokenResource) Create(ctx context.Context, req resource.CreateRequest, 
 		plan.HashPrefix = types.StringValue(found.HashPrefix)
 		plan.CreatedAt = types.StringValue(found.CreatedAt)
 	} else {
-		plan.HashPrefix = types.StringValue("")
-		plan.CreatedAt = types.StringValue("")
+		// The token was issued — the secret above is real — but the listing
+		// that describes it could not be read. Say so instead of inventing
+		// values that the next refresh would silently correct.
+		plan.HashPrefix = types.StringNull()
+		plan.CreatedAt = types.StringNull()
+		resp.Diagnostics.AddWarning(
+			"Issued token "+name+", but could not read it back",
+			"The secret in state is valid. hash_prefix and created_at will be filled in "+
+				"by the next refresh.",
+		)
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
