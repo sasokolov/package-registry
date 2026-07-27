@@ -393,23 +393,37 @@ merge-конвергенции зелёный; ни один гео-сценар
 
 ## Фаза 10 — Terraform-провайдер
 
-- [ ] `terraform-provider-registry/` — отдельный Go-модуль,
+- [x] `terraform-provider-registry/` — отдельный Go-модуль,
       terraform-plugin-framework, версионирование независимое.
-- [ ] Ресурсы: `registry_feed` (включая upstream-коннектор, политики,
+- [x] Ресурсы: `registry_feed` (включая upstream-коннектор, политики,
       publishers, redirect, publish_policy, replication_mode,
       peer_fallback), `registry_admin_binding`, `registry_oidc_issuer`,
-      `registry_replication_peer`, `registry_token` (secret — write-only
-      output), `registry_quarantine`.
-- [ ] Data sources: `registry_site`, `registry_feed`, `registry_feeds`,
+      `registry_replication_peer`, `registry_token` (secret отдаётся один
+      раз и попадает в state — задокументировано, импорт невозможен по той
+      же причине), `registry_quarantine`.
+- [x] Data sources: `registry_site`, `registry_feed`, `registry_feeds`,
       `registry_replication_status`.
-- [ ] Импорт существующей конфигурации, drift detection, plan-time
-      валидация схемы фида на стороне провайдера.
-- [ ] Acceptance-тесты против настоящего registry в Docker
-      (`make terraform-test`), примеры и сгенерированная документация.
+- [x] Импорт существующей конфигурации, drift detection, plan-time
+      валидация схемы фида на стороне провайдера (строгое подмножество:
+      имена, enum'ы, длительности, JSON политик; всё, что зависит от
+      остального документа, решает реестр).
+- [x] Acceptance-тесты против настоящего registry в Docker
+      (`make terraform-test`), примеры и сгенерированная документация
+      (`make terraform-docs`).
+
+Для этого в admin API добавлены пер-ресурсные эндпоинты OIDC-issuer'ов и
+одиночных admin-биндингов, а типы конфигурации получили JSON-теги и
+человекочитаемую сериализацию `Duration` — без этого запись фида через API
+молча теряла бы `publish_policy`, `replication_mode` и остальные поля со
+snake_case-именами.
 
 **Acceptance:** `terraform apply` разворачивает набор фидов, коннекторов и
 прав с нуля; повторный `plan` пуст; ручная правка через API детектируется
-как drift.
+как drift. Проверяется дважды: acceptance-тестами (провайдер в процессе) и
+`conformance/terraform/e2e.sh` — настоящий terraform CLI против настоящего
+бинаря провайдера, apply → пустой plan → правка через API → drift → apply →
+destroy, с проверкой, что фиды реально отдавали пакеты и выпущенный токен
+реально публиковал.
 
 ---
 

@@ -177,6 +177,242 @@ func (s *Server) handlePutAdmins(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"version": version})
 }
 
+// handleGetAdminBinding reports whether one administrator pattern is
+// present. The pattern is a query parameter, not a path segment: patterns
+// contain ":" and "/" (project:group/*), and encoding those into a path is
+// how a router starts disagreeing with an operator about what they typed.
+func (s *Server) handleGetAdminBinding(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	pattern := r.URL.Query().Get("pattern")
+	if pattern == "" {
+		s.writeError(w, http.StatusBadRequest, "pattern is required")
+		return
+	}
+	for _, p := range s.manager.Current().Admins {
+		if p == pattern {
+			w.Header().Set("ETag", `"`+s.manager.Version()+`"`)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"version": s.manager.Version(), "pattern": pattern,
+			})
+			return
+		}
+	}
+	s.writeError(w, http.StatusNotFound, "no administrator pattern "+pattern)
+}
+
+// handlePutAdminBinding adds one administrator pattern, leaving the rest of
+// the list alone. It exists so a tool that owns one binding does not have to
+// read, merge and rewrite a list it does not own.
+func (s *Server) handlePutAdminBinding(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	pattern := r.URL.Query().Get("pattern")
+	if pattern == "" {
+		s.writeError(w, http.StatusBadRequest, "pattern is required")
+		return
+	}
+
+	var created bool
+	version, err := s.mutateDocument(r.Context(), trimETag(r.Header.Get("If-Match")),
+		func(doc *yaml.Node) error {
+			var err error
+			created, err = addScalarToSequence(doc, "admins", pattern)
+			return err
+		})
+	if err != nil {
+		s.writeConfigError(w, err)
+		return
+	}
+	s.audit.Warn("administrator binding added",
+		"identity", id.String(), "pattern", pattern, "created", created,
+		"version", version, "site", s.site)
+	w.Header().Set("ETag", `"`+version+`"`)
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, map[string]any{"version": version, "created": created})
+}
+
+// handleDeleteAdminBinding removes one administrator pattern. Removing the
+// last one is refused for the same reason an empty list is: it turns the API
+// off with no way back through it.
+func (s *Server) handleDeleteAdminBinding(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	pattern := r.URL.Query().Get("pattern")
+	if pattern == "" {
+		s.writeError(w, http.StatusBadRequest, "pattern is required")
+		return
+	}
+	current := s.manager.Current().Admins
+	if len(current) == 1 && current[0] == pattern {
+		s.writeError(w, http.StatusBadRequest,
+			"refusing to remove the last administrator through the API: edit the document directly if that is intended")
+		return
+	}
+
+	var found bool
+	version, err := s.mutateDocument(r.Context(), trimETag(r.Header.Get("If-Match")),
+		func(doc *yaml.Node) error {
+			var err error
+			found, err = removeScalarFromSequence(doc, "admins", pattern)
+			return err
+		})
+	if err != nil {
+		s.writeConfigError(w, err)
+		return
+	}
+	if !found {
+		s.writeError(w, http.StatusNotFound, "no administrator pattern "+pattern)
+		return
+	}
+	s.audit.Warn("administrator binding removed",
+		"identity", id.String(), "pattern", pattern, "version", version, "site", s.site)
+	w.Header().Set("ETag", `"`+version+`"`)
+	writeJSON(w, http.StatusOK, map[string]any{"version": version})
+}
+
+// handleGetOIDC returns the trusted OIDC issuers.
+func (s *Server) handleGetOIDC(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	w.Header().Set("ETag", `"`+s.manager.Version()+`"`)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"version":      s.manager.Version(),
+		"oidc_issuers": s.manager.Current().Auth.OIDC,
+	})
+}
+
+// handleGetOIDCIssuer returns one trusted issuer. The issuer is a URL, so it
+// travels as a query parameter for the same reason admin patterns do.
+func (s *Server) handleGetOIDCIssuer(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	issuer := r.URL.Query().Get("issuer")
+	if issuer == "" {
+		s.writeError(w, http.StatusBadRequest, "issuer is required")
+		return
+	}
+	for _, o := range s.manager.Current().Auth.OIDC {
+		if o.Issuer == issuer {
+			w.Header().Set("ETag", `"`+s.manager.Version()+`"`)
+			writeJSON(w, http.StatusOK, o)
+			return
+		}
+	}
+	s.writeError(w, http.StatusNotFound, "no OIDC issuer "+issuer)
+}
+
+// handlePutOIDCIssuer creates or replaces one trusted issuer.
+func (s *Server) handlePutOIDCIssuer(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	var issuer config.OIDCIssuer
+	if err := decodeBody(r, &issuer); err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if issuer.Issuer == "" {
+		issuer.Issuer = r.URL.Query().Get("issuer")
+	}
+	if issuer.Issuer == "" {
+		s.writeError(w, http.StatusBadRequest, "issuer is required")
+		return
+	}
+	if q := r.URL.Query().Get("issuer"); q != "" && q != issuer.Issuer {
+		s.writeError(w, http.StatusBadRequest,
+			"issuer in the body does not match the query parameter")
+		return
+	}
+
+	var created bool
+	version, err := s.mutateDocument(r.Context(), trimETag(r.Header.Get("If-Match")),
+		func(doc *yaml.Node) error {
+			auth := ensureMapping(doc, "auth")
+			var err error
+			created, err = upsertSequenceItemIn(auth, "oidc_issuers", "issuer", issuer.Issuer, issuer)
+			return err
+		})
+	if err != nil {
+		s.writeConfigError(w, err)
+		return
+	}
+	s.audit.Warn("OIDC issuer written",
+		"identity", id.String(), "issuer", issuer.Issuer, "audience", issuer.Audience,
+		"created", created, "version", version, "site", s.site)
+	w.Header().Set("ETag", `"`+version+`"`)
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, map[string]any{"version": version, "created": created})
+}
+
+// handleDeleteOIDCIssuer stops trusting one issuer.
+func (s *Server) handleDeleteOIDCIssuer(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	issuer := r.URL.Query().Get("issuer")
+	if issuer == "" {
+		s.writeError(w, http.StatusBadRequest, "issuer is required")
+		return
+	}
+
+	var found bool
+	version, err := s.mutateDocument(r.Context(), trimETag(r.Header.Get("If-Match")),
+		func(doc *yaml.Node) error {
+			authNode := findMapping(doc, "auth")
+			if authNode == nil {
+				return nil
+			}
+			var err error
+			found, err = removeSequenceItemIn(authNode, "oidc_issuers", "issuer", issuer)
+			return err
+		})
+	if err != nil {
+		s.writeConfigError(w, err)
+		return
+	}
+	if !found {
+		s.writeError(w, http.StatusNotFound, "no OIDC issuer "+issuer)
+		return
+	}
+	s.audit.Warn("OIDC issuer removed",
+		"identity", id.String(), "issuer", issuer, "version", version, "site", s.site)
+	w.Header().Set("ETag", `"`+version+`"`)
+	writeJSON(w, http.StatusOK, map[string]any{"version": version})
+}
+
+// handleGetPeer returns one replication peer, so a tool that owns a peer can
+// read exactly what it owns.
+func (s *Server) handleGetPeer(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	name := chi.URLParam(r, "peer")
+	for _, p := range s.manager.Current().Replication.Peers {
+		if p.Name == name {
+			w.Header().Set("ETag", `"`+s.manager.Version()+`"`)
+			writeJSON(w, http.StatusOK, p)
+			return
+		}
+	}
+	s.writeError(w, http.StatusNotFound, "no peer named "+name)
+}
+
 // handleGetPeers returns the replication peers.
 func (s *Server) handleGetPeers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
@@ -395,6 +631,52 @@ func removeSequenceItemIn(parent *yaml.Node, key, matchField, matchValue string)
 	}
 	for i, item := range seq.Content {
 		if mappingField(item, matchField) == matchValue {
+			seq.Content = append(seq.Content[:i], seq.Content[i+1:]...)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// addScalarToSequence appends a scalar to a top-level list of scalars,
+// leaving the list alone if it is already there.
+func addScalarToSequence(doc *yaml.Node, key, value string) (bool, error) {
+	root := documentRoot(doc)
+	if root == nil {
+		return false, errors.New("configuration document is not a mapping")
+	}
+	seq := childValue(root, key)
+	if seq == nil {
+		seq = &yaml.Node{Kind: yaml.SequenceNode}
+		root.Content = append(root.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: key}, seq)
+	}
+	if seq.Kind != yaml.SequenceNode {
+		return false, fmt.Errorf("%s is not a list", key)
+	}
+	for _, item := range seq.Content {
+		if item.Value == value {
+			return false, nil
+		}
+	}
+	seq.Content = append(seq.Content, &yaml.Node{
+		Kind: yaml.ScalarNode, Tag: "!!str", Style: yaml.DoubleQuotedStyle, Value: value,
+	})
+	return true, nil
+}
+
+// removeScalarFromSequence drops a scalar from a top-level list of scalars.
+func removeScalarFromSequence(doc *yaml.Node, key, value string) (bool, error) {
+	root := documentRoot(doc)
+	if root == nil {
+		return false, errors.New("configuration document is not a mapping")
+	}
+	seq := childValue(root, key)
+	if seq == nil || seq.Kind != yaml.SequenceNode {
+		return false, nil
+	}
+	for i, item := range seq.Content {
+		if item.Value == value {
 			seq.Content = append(seq.Content[:i], seq.Content[i+1:]...)
 			return true, nil
 		}

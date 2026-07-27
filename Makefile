@@ -6,7 +6,7 @@ GOLANGCI_LINT := $(BIN_DIR)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 
 COMPOSE_FILE := conformance/docker-compose.yml
 
-.PHONY: build ui test test-integration lint conformance conformance-live conformance-chaos conformance-geo load-test dev dev-down
+.PHONY: build ui test test-integration lint conformance conformance-live conformance-chaos conformance-geo terraform-build terraform-test terraform-docs load-test dev dev-down
 
 # `go build ./...` alone also works — the console directory carries a
 # placeholder so the embed compiles — but the binary then reports the console
@@ -52,6 +52,27 @@ conformance-chaos:
 # Two-site geo federation: replication, conflicts (rule K1), partition/heal.
 conformance-geo:
 	./conformance/geo/run.sh
+
+# Terraform provider: its own Go module, so it builds and lints separately.
+terraform-build: $(GOLANGCI_LINT)
+	cd terraform-provider-registry && go build ./... && go vet ./... && \
+		$(GOLANGCI_LINT) run && go test ./internal/client/...
+
+# Acceptance tests for the Terraform provider against a real registry in
+# Docker: apply from nothing, re-plan empty, edit through the API and see the
+# drift.
+terraform-test:
+	./conformance/run-terraform.sh
+
+# Provider reference docs, generated from the schemas and examples/.
+TFPLUGINDOCS := $(BIN_DIR)/tfplugindocs
+
+terraform-docs: $(TFPLUGINDOCS)
+	cd terraform-provider-registry && $(TFPLUGINDOCS) generate \
+		--provider-name registry --rendered-provider-name "Package Registry"
+
+$(TFPLUGINDOCS):
+	GOBIN=$(BIN_DIR) go install github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs@latest
 
 # k6 load test ("CI storm") against a warm cache; writes docs/perf.md.
 load-test:

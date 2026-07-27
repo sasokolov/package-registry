@@ -93,6 +93,58 @@ if ! wait_for_conformance 60 gone; then
   exit 1
 fi
 
+echo "--> one administrator binding can be added without rewriting the list"
+before_admins="$(api GET /config/admins)"
+grep -q '"token:ops-\*"' <<<"$before_admins" || { echo "$before_admins" >&2; exit 1; }
+api PUT '/config/admins/binding?pattern=project%3Atf-conf%2F*' -o /dev/null -w '%{http_code}' \
+  | grep -qE '^(200|201)$' || { echo "adding a binding failed" >&2; exit 1; }
+after_admins="$(api GET /config/admins)"
+grep -q '"project:tf-conf/\*"' <<<"$after_admins" || { echo "$after_admins" >&2; exit 1; }
+# The administrator this scenario is authenticating as must still be there,
+# or the next request would be a 403 caused by the previous one.
+grep -q '"token:ops-\*"' <<<"$after_admins" || { echo "the existing administrator was dropped: $after_admins" >&2; exit 1; }
+api DELETE '/config/admins/binding?pattern=project%3Atf-conf%2F*' -o /dev/null -w '%{http_code}' \
+  | grep -q '^200$' || { echo "removing a binding failed" >&2; exit 1; }
+
+echo "--> the last administrator cannot be removed through the API"
+code="$(api DELETE '/config/admins/binding?pattern=token%3Aops-*' -o /dev/null -w '%{http_code}')"
+[[ "$code" == "400" ]] || { echo "removing the last administrator returned $code, want 400" >&2; exit 1; }
+
+echo "--> an OIDC issuer is addressed by its URL, not by a mangled path"
+api PUT /config/oidc/issuer -o /dev/null -w '%{http_code}' \
+  -H 'Content-Type: application/json' \
+  --data '{"issuer":"https://gitlab.conf.example.com","audience":"registry"}' \
+  | grep -qE '^(200|201)$' || { echo "adding an issuer failed" >&2; exit 1; }
+issuer="$(api GET '/config/oidc/issuer?issuer=https%3A%2F%2Fgitlab.conf.example.com')"
+grep -q '"audience":"registry"' <<<"$issuer" || { echo "$issuer" >&2; exit 1; }
+api DELETE '/config/oidc/issuer?issuer=https%3A%2F%2Fgitlab.conf.example.com' -o /dev/null -w '%{http_code}' \
+  | grep -q '^200$' || { echo "removing an issuer failed" >&2; exit 1; }
+
+echo "--> a feed round-trips through the API with every field intact"
+api PUT /config/feeds/roundtrip -o /dev/null -w '%{http_code}' \
+  -H 'Content-Type: application/json' \
+  --data '{"name":"roundtrip","format":"maven","hosted":true,"anonymous":true,
+           "publishers":["token:ci-*"],"redirect_ttl":"20m","upstream_rps":5,
+           "replication_mode":"eager","peer_fallback":true,
+           "policies":[{"name":"allowlist","config":{"allow":["com.example:liba"]}}]}' \
+  | grep -qE '^(200|201)$' || { echo "writing the feed failed" >&2; exit 1; }
+roundtrip="$(api GET /config/feeds/roundtrip)"
+for want in '"replication_mode":"eager"' '"peer_fallback":true' '"redirect_ttl":"20m0s"' \
+            '"upstream_rps":5' '"publishers":["token:ci-*"]' '"name":"allowlist"'; do
+  # -F: these are JSON fragments, and "[token:ci-*]" is a character range
+  # to a regex engine.
+  grep -qF -- "$want" <<<"$roundtrip" || {
+    echo "the feed lost $want on the way through the API: $roundtrip" >&2; exit 1; }
+done
+
+echo "--> a misspelt field is refused, not silently dropped"
+code="$(api PUT /config/feeds/roundtrip -o /dev/null -w '%{http_code}' \
+  -H 'Content-Type: application/json' \
+  --data '{"name":"roundtrip","format":"maven","hosted":true,"anonymus":true}')"
+[[ "$code" == "400" ]] || { echo "a misspelt field returned $code, want 400" >&2; exit 1; }
+api DELETE /config/feeds/roundtrip -o /dev/null -w '%{http_code}' | grep -q '^200$' \
+  || { echo "cleanup failed" >&2; exit 1; }
+
 echo "--> tokens are listed without ever exposing a secret"
 tokens="$(api GET /tokens)"
 grep -q '"hash_prefix"' <<<"$tokens" || { echo "$tokens" >&2; exit 1; }

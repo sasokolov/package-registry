@@ -11,6 +11,7 @@
 package adminapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -327,7 +328,11 @@ func decodeBody(r *http.Request, out any) error {
 	if err != nil {
 		return fmt.Errorf("read body: %w", err)
 	}
-	if err := json.Unmarshal(raw, out); err != nil {
+	// Unknown fields are an error, not noise: a misspelt key that is
+	// silently dropped becomes a setting the operator believes is applied.
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(out); err != nil {
 		return fmt.Errorf("parse body: %w", err)
 	}
 	return nil

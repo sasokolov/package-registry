@@ -146,12 +146,12 @@ type AuthConfig struct {
 // id_tokens are accepted as identities.
 type OIDCIssuer struct {
 	// Issuer is the expected "iss" claim, e.g. "https://gitlab.com".
-	Issuer string `yaml:"issuer"`
+	Issuer string `yaml:"issuer" json:"issuer"`
 	// Audience is the required "aud" claim value.
-	Audience string `yaml:"audience"`
+	Audience string `yaml:"audience" json:"audience"`
 	// JWKSURL overrides the JWKS endpoint; default <issuer>/oauth/discovery/keys
 	// via OIDC discovery is derived by core/auth when empty.
-	JWKSURL string `yaml:"jwks_url"`
+	JWKSURL string `yaml:"jwks_url,omitempty" json:"jwks_url,omitempty"`
 }
 
 // StorageConfig selects and configures the blob storage backend.
@@ -236,44 +236,44 @@ func (s *S3Config) resolveSecrets() error {
 
 // FeedConfig declares a single feed.
 type FeedConfig struct {
-	Name     string `yaml:"name"`
-	Format   string `yaml:"format"`
-	Upstream string `yaml:"upstream"`
+	Name     string `yaml:"name" json:"name"`
+	Format   string `yaml:"format" json:"format"`
+	Upstream string `yaml:"upstream,omitempty" json:"upstream,omitempty"`
 	// Anonymous allows unauthenticated reads from this feed. Default false.
-	Anonymous bool `yaml:"anonymous"`
+	Anonymous bool `yaml:"anonymous,omitempty" json:"anonymous,omitempty"`
 	// Hosted enables locally published packages on this feed (requires the
 	// format module to implement the Hoster capability and a database).
-	Hosted bool `yaml:"hosted"`
+	Hosted bool `yaml:"hosted,omitempty" json:"hosted,omitempty"`
 	// Publishers lists identity patterns allowed to publish here, e.g.
 	// "token:ci-bot", "project:group/*", "*". Empty = publishing disabled.
-	Publishers []string `yaml:"publishers"`
+	Publishers []string `yaml:"publishers,omitempty" json:"publishers,omitempty"`
 	// UpstreamRPS rate-limits requests to this feed's upstream. 0 = unlimited.
-	UpstreamRPS float64 `yaml:"upstream_rps"`
+	UpstreamRPS float64 `yaml:"upstream_rps,omitempty" json:"upstream_rps,omitempty"`
 	// Redirect serves cached artifacts as a 302 to a pre-signed storage URL
 	// instead of streaming them, when the storage supports it. Only
 	// redirect-safe protocols honour it (see api.RedirectSafe).
-	Redirect bool `yaml:"redirect"`
+	Redirect bool `yaml:"redirect,omitempty" json:"redirect,omitempty"`
 	// RedirectTTL bounds a pre-signed URL. Default 15m.
-	RedirectTTL Duration `yaml:"redirect_ttl"`
+	RedirectTTL Duration `yaml:"redirect_ttl,omitempty" json:"redirect_ttl,omitempty"`
 	// PublishPolicy is the feed's write model in a federation:
 	// "forward:<site>" (write-affinity, the default model) or "local"
 	// (symmetric active-active, conflicts resolved by rule K1).
-	PublishPolicy string `yaml:"publish_policy"`
+	PublishPolicy string `yaml:"publish_policy,omitempty" json:"publish_policy,omitempty"`
 	// ReplicationMode is "eager" (blobs replicate ahead of demand, the
 	// durability watermark is a real RPO) or "lazy" (blobs fetched on
 	// demand from peers). Default lazy.
-	ReplicationMode string `yaml:"replication_mode"`
+	ReplicationMode string `yaml:"replication_mode,omitempty" json:"replication_mode,omitempty"`
 	// PeerFallback lets the read path fetch missing hosted content from
 	// peers, hiding replication lag from clients.
-	PeerFallback bool `yaml:"peer_fallback"`
+	PeerFallback bool `yaml:"peer_fallback,omitempty" json:"peer_fallback,omitempty"`
 	// Policies is the ordered policy chain for this feed.
-	Policies []PolicyConfig `yaml:"policies"`
+	Policies []PolicyConfig `yaml:"policies,omitempty" json:"policies,omitempty"`
 }
 
 // PolicyConfig names a registered policy and carries its options verbatim.
 type PolicyConfig struct {
-	Name    string         `yaml:"name"`
-	Options map[string]any `yaml:"config"`
+	Name    string         `yaml:"name" json:"name"`
+	Options map[string]any `yaml:"config,omitempty" json:"config,omitempty"`
 }
 
 // API converts the feed declaration to the canonical api.Feed passed to

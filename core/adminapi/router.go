@@ -47,7 +47,18 @@ func (s *Server) Handler() http.Handler {
 	r.Delete("/config/feeds/{feed}", s.handleDeleteFeed)
 	r.Get("/config/admins", s.handleGetAdmins)
 	r.Put("/config/admins", s.handlePutAdmins)
+	// One binding at a time, addressed by ?pattern=. A pattern contains ":"
+	// and often "/", which a path segment cannot carry without an encoding
+	// nobody wants to type.
+	r.Get("/config/admins/binding", s.handleGetAdminBinding)
+	r.Put("/config/admins/binding", s.handlePutAdminBinding)
+	r.Delete("/config/admins/binding", s.handleDeleteAdminBinding)
+	r.Get("/config/oidc", s.handleGetOIDC)
+	r.Get("/config/oidc/issuer", s.handleGetOIDCIssuer)
+	r.Put("/config/oidc/issuer", s.handlePutOIDCIssuer)
+	r.Delete("/config/oidc/issuer", s.handleDeleteOIDCIssuer)
 	r.Get("/config/peers", s.handleGetPeers)
+	r.Get("/config/peers/{peer}", s.handleGetPeer)
 	r.Put("/config/peers/{peer}", s.handlePutPeer)
 	r.Delete("/config/peers/{peer}", s.handleDeletePeer)
 

@@ -46,16 +46,16 @@ type ReplAuthConfig struct {
 
 // PeerConfig declares one replication partner.
 type PeerConfig struct {
-	Name string `yaml:"name"`
+	Name string `yaml:"name" json:"name"`
 	// URL is the peer's internal replication API.
-	URL string `yaml:"url"`
+	URL string `yaml:"url" json:"url"`
 	// PublicURL is the peer's client-facing base URL, used to forward
 	// publishes of feeds homed at that site. Required when any feed sets
 	// publish_policy: forward:<this peer>.
-	PublicURL    string   `yaml:"public_url"`
-	PullInterval Duration `yaml:"pull_interval"`
+	PublicURL    string   `yaml:"public_url,omitempty" json:"public_url,omitempty"`
+	PullInterval Duration `yaml:"pull_interval,omitempty" json:"pull_interval,omitempty"`
 	// TokenFile is the credential presented to this peer (bearer mode).
-	TokenFile string `yaml:"token_file"`
+	TokenFile string `yaml:"token_file,omitempty" json:"token_file,omitempty"`
 }
 
 // BlobFetchConfig bounds peer blob transfers.

@@ -158,6 +158,7 @@ modules/format/composer/
 modules/format/nuget/
 policies/allowlist/  policies/osv/  policies/license/  policies/quarantine/
 ui/                    — консоль: React+TS+Vite, встраивается go:embed
+terraform-provider-registry/ — Terraform-провайдер (отдельный Go-модуль)
 conformance/           — docker compose, fake-upstream fixtures, сценарии
 deploy/helm/
 docs/decisions.md      — журнал мелких решений (одна строка на решение)
@@ -185,6 +186,9 @@ make conformance    # docker compose: герметичный прогон с fak
 make conformance-chaos # два реплики + инъекция отказов
 make conformance-geo   # три гео-сайта: репликация, конфликты, партиция
 make conformance-live  # то же против реальных апстримов (ручной запуск)
+make terraform-build   # провайдер: build/vet/lint/unit (отдельный модуль)
+make terraform-test    # acceptance-тесты провайдера против registry в Docker
+make terraform-docs    # регенерация docs/ провайдера из схем и examples/
 make conformance-geo   # два полных сайта: федерация, конфликты, партиция (Фаза 7)
 make dev            # локальный запуск: compose с minio+postgres, registry на хосте
 ```

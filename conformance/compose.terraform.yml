@@ -1,0 +1,22 @@
+# Overlay for the Terraform provider's acceptance tests: adds a runner with a
+# Go toolchain and the terraform CLI, on the same network as the registry.
+services:
+  tf-acc:
+    build:
+      context: ./clients/terraform-acc
+    profiles: ["tools"]
+    environment:
+      REGISTRY_ENDPOINT: http://registry:8080
+      # The module cache is a volume, so a second run does not re-download
+      # the plugin framework.
+      GOMODCACHE: /gomod
+      GOCACHE: /gocache
+    volumes:
+      - ..:/src
+      - tf-gomod:/gomod
+      - tf-gocache:/gocache
+    entrypoint: ["go"]
+
+volumes:
+  tf-gomod:
+  tf-gocache:
