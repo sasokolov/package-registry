@@ -61,6 +61,18 @@ ALTER TABLE repl_parked
     ADD COLUMN hlc_logical    BIGINT NOT NULL DEFAULT 0,
     ADD COLUMN schema_version INT    NOT NULL DEFAULT 1;
 
+-- Rows published before this migration carry no HLC stamp, and an unstamped
+-- row reads as (0,0) — it would lose to every replicated update, however
+-- old. Stamp them once, in the past, so existing state stays authoritative
+-- against anything older than the upgrade and loses only to genuinely newer
+-- writes.
+UPDATE hosted_manifests
+   SET metadata = metadata
+       || jsonb_build_object(
+            'hlc_wall', (EXTRACT(EPOCH FROM COALESCE(updated_at, published_at)) * 1000)::BIGINT::text,
+            'hlc_logical', '0')
+ WHERE NOT (metadata ? 'hlc_wall');
+
 -- Peer identities are pinned durably: a per-process memory of "the UUID I
 -- saw first" means every replica and every restart re-decides who a peer
 -- is, which is exactly the in-memory correctness state invariant 3 bans.

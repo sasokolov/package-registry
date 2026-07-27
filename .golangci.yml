@@ -2,6 +2,10 @@ version: "2"
 
 run:
   timeout: 5m
+  # Integration-tagged files are real code with real bugs; linting only the
+  # default build left them unchecked.
+  build-tags:
+    - integration
 
 linters:
   default: standard

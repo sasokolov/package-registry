@@ -134,13 +134,6 @@ func TestJournalSequenceOrderMatchesCommitOrder(t *testing.T) {
 	}
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // Quarantine reasons are independent: releasing one must not lift another,
 // which is what makes the merge rules commutative.
 func TestQuarantineReasonsAreIndependent(t *testing.T) {

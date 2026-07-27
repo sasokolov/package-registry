@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strconv"
 	"sync"
 	"time"
 
@@ -348,6 +349,13 @@ func (m *Manager) bootstrap(ctx context.Context, c *Client, touched map[string]b
 	if err != nil {
 		return err
 	}
+	// Origin pinning applies here as well: a peer serves its OWN state, and
+	// a snapshot claiming to be another site's is a peer trying to write
+	// history it does not own (invariant 14).
+	if snap.Site != c.Name() {
+		return fmt.Errorf("peer %s served a snapshot attributed to site %q: refusing",
+			c.Name(), snap.Site)
+	}
 	m.logger.Info("bootstrapping from peer snapshot",
 		"peer", c.Name(), "manifests", len(snap.Manifests))
 
@@ -363,6 +371,11 @@ func (m *Manager) bootstrap(ctx context.Context, c *Client, touched map[string]b
 			OriginSite:    snap.Site,
 			Kind:          KindManifestPut,
 			SchemaVersion: SchemaVersion,
+			// The originating stamp travels in the manifest metadata (the
+			// applier writes it there). Re-stamping at (0,0) would make
+			// every imported mutable pointer lose to any later event,
+			// however old.
+			HLC: hlcFromMetadata(p.Metadata),
 		}
 		payload, err := json.Marshal(p)
 		if err != nil {
@@ -372,39 +385,37 @@ func (m *Manager) bootstrap(ctx context.Context, c *Client, touched map[string]b
 
 		// Snapshot entries have no sequence of their own, so they must not
 		// be parked: the parked table is keyed by (origin, seq) and every
-		// one of them would collide on seq 0. Fetch what an eager feed
-		// needs up front instead, and leave the rest to backfill.
-		if err := m.applier.prefetchBlob(ctx, c.Name(), entry); err != nil {
-			deferred++
-			m.logger.Warn("snapshot entry deferred to backfill",
-				"peer", c.Name(), "feed", p.Feed, "path", p.Path, "error", err)
-			continue
-		}
+		// one of them would collide on seq 0. Fetch the bytes up front
+		// where possible; where not, import the coordinate anyway — a
+		// missing blob is served through peer fallback and repaired by
+		// backfill, whereas a dropped coordinate is simply lost, and the
+		// cursor moves past it.
+		blobMissing := m.applier.prefetchBlob(ctx, c.Name(), entry) != nil
 
 		tx, err := m.db.Begin(ctx)
 		if err != nil {
 			return err
 		}
-		if err := m.applier.dispatch(ctx, tx, c.Name(), entry, touched); err != nil {
+		// Import as non-eager so a missing blob cannot park the entry.
+		if err := m.applier.importSnapshotEntry(ctx, tx, c.Name(), entry, touched); err != nil {
 			_ = tx.Rollback(ctx)
-			if errors.Is(err, errPark) {
-				deferred++
-				m.logger.Warn("snapshot entry deferred to backfill",
-					"peer", c.Name(), "feed", p.Feed, "path", p.Path, "reason", err)
-				continue
-			}
 			return err
 		}
 		if err := tx.Commit(ctx); err != nil {
 			return err
 		}
+		m.applier.flushProjections(ctx)
 		imported++
+		if blobMissing {
+			deferred++
+		}
 	}
 	m.logger.Info("snapshot bootstrap finished",
 		"peer", c.Name(), "imported", imported, "deferred", deferred)
 	if deferred > 0 {
-		m.logger.Warn("some coordinates need `registry repl backfill` before this site can serve them locally",
-			"peer", c.Name(), "deferred", deferred)
+		m.logger.Warn("some coordinates are served through peers until their blobs arrive; "+
+			"run `registry repl backfill -dry-run=false` to fetch them",
+			"peer", c.Name(), "without_local_blob", deferred)
 	}
 
 	// Only the peer's own watermark is ours to record: we do not import
@@ -443,6 +454,21 @@ func (m *Manager) pruneJournal(ctx context.Context, peer string) {
 	}
 }
 
+// hlcFromMetadata reads the stamp the applier stores alongside a manifest.
+func hlcFromMetadata(meta map[string]string) state.HLC {
+	var h state.HLC
+	if meta == nil {
+		return h
+	}
+	if v, err := strconv.ParseInt(meta["hlc_wall"], 10, 64); err == nil {
+		h.Wall = v
+	}
+	if v, err := strconv.ParseInt(meta["hlc_logical"], 10, 64); err == nil {
+		h.Logical = v
+	}
+	return h
+}
+
 // applySnapshotRestrictions imports the peer's active quarantines and
 // revoked token hashes. Both only ever remove access, so importing them
 // wholesale is safe and is what invariant 14 requires of a new site.
@@ -461,6 +487,17 @@ func (m *Manager) applySnapshotRestrictions(ctx context.Context, peer string, sn
 		// at zero: it establishes state on a fresh site and never
 		// overrides a decision this site already has.
 		if err := quarantineTx(ctx, tx, q.Feed, q.Coordinate, q.Reason, q.Detail, state.HLC{}); err != nil {
+			return err
+		}
+	}
+	// Operator decisions come first: a manifest imported afterwards then
+	// converges on the decision instead of re-opening the conflict.
+	for _, r := range snap.Resolutions {
+		if r.Feed == "" || r.Path == "" || len(r.KeepSHA) != 64 {
+			continue
+		}
+		decision := resolution{KeepSHA: r.KeepSHA}
+		if err := recordResolution(ctx, tx, r.Feed, r.Path, r.Coord, decision, r.Operator, peer); err != nil {
 			return err
 		}
 	}

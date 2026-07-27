@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -20,7 +21,7 @@ type fakeLookup struct {
 func (f *fakeLookup) lookup(_ context.Context, hash string) (string, error) {
 	f.calls++
 	if f.down {
-		return "", errors.New("connection refused")
+		return "", fmt.Errorf("dial: %w", api.ErrUnavailable)
 	}
 	name, ok := f.tokens[hash]
 	if !ok {
@@ -120,7 +121,7 @@ func TestVerifierServesStaleIdentityWhileBackendIsDown(t *testing.T) {
 	var down bool
 	lookup := func(_ context.Context, _ string) (string, error) {
 		if down {
-			return "", errors.New("connection refused")
+			return "", fmt.Errorf("dial: %w", api.ErrUnavailable)
 		}
 		return "ci-bot", nil
 	}
@@ -166,8 +167,53 @@ func TestRevocationBeatsStaleCache(t *testing.T) {
 		t.Fatalf("Revoke evicted %d entries, want 1", n)
 	}
 	// With the entry gone there is nothing stale to fall back to.
-	v.lookup = func(_ context.Context, _ string) (string, error) { return "", errors.New("down") }
+	v.lookup = func(_ context.Context, _ string) (string, error) {
+		return "", fmt.Errorf("connect: %w", api.ErrUnavailable)
+	}
 	if _, err := v.Authenticate(context.Background(), secret); !errors.Is(err, api.ErrUnavailable) {
 		t.Errorf("revoked token during an outage: %v, want ErrUnavailable", err)
+	}
+}
+
+// Only an unreachable backend degrades: a backend that answers with a real
+// problem must not authenticate anyone from cache.
+func TestStaleFallbackOnlyForUnavailableBackend(t *testing.T) {
+	var failure error
+	lookup := func(_ context.Context, _ string) (string, error) {
+		if failure != nil {
+			return "", failure
+		}
+		return "ci-bot", nil
+	}
+	now := time.Now()
+	v := NewTokenVerifier(lookup, time.Minute)
+	v.now = func() time.Time { return now }
+
+	secret := "reg_" + strings.Repeat("c", 40)
+	if _, err := v.Authenticate(context.Background(), secret); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Minute)
+
+	// A decode/consistency failure is not an outage.
+	failure = errors.New("scan tokens: invalid byte sequence")
+	if _, err := v.Authenticate(context.Background(), secret); err == nil {
+		t.Error("a malformed-row error authenticated the caller from cache")
+	}
+
+	// A genuine outage does degrade.
+	failure = fmt.Errorf("lookup: %w", api.ErrUnavailable)
+	id, err := v.Authenticate(context.Background(), secret)
+	if err != nil {
+		t.Fatalf("outage should serve the cached identity: %v", err)
+	}
+	if !id.Stale {
+		t.Error("identity served during an outage is not marked stale")
+	}
+
+	// With the window disabled, even an outage degrades loudly.
+	v.SetStaleWindow(0)
+	if _, err := v.Authenticate(context.Background(), secret); !errors.Is(err, api.ErrUnavailable) {
+		t.Errorf("with the fallback disabled: %v, want ErrUnavailable", err)
 	}
 }

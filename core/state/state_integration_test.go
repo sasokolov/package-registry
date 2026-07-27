@@ -121,10 +121,21 @@ func TestWithLockDifferentKeysDoNotBlock(t *testing.T) {
 }
 
 func TestLockIDStable(t *testing.T) {
-	if LockID("abc") != LockID("abc") {
-		t.Error("LockID not deterministic")
+	// The lock key must be stable across processes and releases: two
+	// replicas computing different ids for one key would both take "the"
+	// lock. Comparing computed values (not the literal expression twice)
+	// keeps the assertion real.
+	first, second := LockID("abc"), LockID("abc")
+	if first != second {
+		t.Errorf("LockID not deterministic: %d vs %d", first, second)
 	}
-	if LockID("abc") == LockID("abd") {
+	if first == LockID("abd") {
 		t.Error("LockID collides on trivially different keys")
+	}
+	// Pinning one known value catches an accidental hash change, which
+	// would silently split replicas across two different locks.
+	const wantABC = int64(-1792535898324117685)
+	if first != wantABC {
+		t.Errorf("LockID(%q) = %d, want %d: changing the hash splits running replicas", "abc", first, wantABC)
 	}
 }

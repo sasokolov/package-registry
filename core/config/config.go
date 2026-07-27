@@ -84,10 +84,9 @@ type DatabaseConfig struct {
 // StaleIdentityWindowOrDefault is how long a verified identity survives a
 // token-backend outage. A negative value disables the fallback.
 func (a AuthConfig) StaleIdentityWindowOrDefault() time.Duration {
-	if a.StaleIdentityWindow != 0 {
-		return a.StaleIdentityWindow.Std()
-	}
-	return 6 * time.Hour
+	// An explicit 0 disables the fallback, exactly as documented; the
+	// default is applied at load time, so "unset" never reaches here.
+	return a.StaleIdentityWindow.Std()
 }
 
 // RevocationSweepOrDefault is the eviction interval for revoked tokens.
@@ -96,6 +95,23 @@ func (a AuthConfig) RevocationSweepOrDefault() time.Duration {
 		return a.RevocationSweep.Std()
 	}
 	return 5 * time.Second
+}
+
+// UnmarshalYAML records whether stale_identity_window was given at all, so
+// an explicit 0 (disable) is distinguishable from an omitted key (default).
+func (a *AuthConfig) UnmarshalYAML(node *yaml.Node) error {
+	type plain AuthConfig
+	var raw plain
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	*a = AuthConfig(raw)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == "stale_identity_window" {
+			a.staleWindowSet = true
+		}
+	}
+	return nil
 }
 
 // AuthConfig configures authentication.
@@ -110,6 +126,8 @@ type AuthConfig struct {
 	// 0 disables the fallback, so an outage past TokenCacheTTL degrades
 	// loudly instead. Default 6h.
 	StaleIdentityWindow Duration `yaml:"stale_identity_window"`
+	// staleWindowSet distinguishes an explicit 0 from an absent key.
+	staleWindowSet bool `yaml:"-"`
 	// TokenCacheTTL bounds the in-memory cache of verified static tokens;
 	// within the TTL reads keep working while PostgreSQL is down
 	// (invariant 7). Default 5m.
@@ -283,29 +301,41 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// expandEnv substitutes ${VAR} references from the environment. It is how
-// secrets reach the config without ever being written into it: the file
-// stays a ConfigMap, the values come from a Secret mounted as environment
-// variables, and hot reload keeps working because nothing rewrites the file
-// out of band. An unset variable is an error rather than an empty string —
-// a registry that silently starts with no S3 credentials is worse than one
-// that refuses to start.
-func expandEnv(raw []byte) ([]byte, error) {
-	var missing []string
-	out := envRef.ReplaceAllFunc(raw, func(match []byte) []byte {
-		name := string(match[2 : len(match)-1])
-		value, ok := os.LookupEnv(name)
-		if !ok {
-			missing = append(missing, name)
-			return match
-		}
-		return []byte(value)
-	})
-	if len(missing) > 0 {
-		return nil, fmt.Errorf("config references unset environment variable(s): %s",
-			strings.Join(missing, ", "))
+// expandNode substitutes ${VAR} references from the environment inside
+// already-parsed scalar values. It is how secrets reach the config without
+// ever being written into it: the file stays a ConfigMap, the values come
+// from a Secret mounted as environment variables, and hot reload keeps
+// working because nothing rewrites the file out of band.
+//
+// Expansion happens AFTER parsing and only inside scalars, so a secret can
+// never change the document's structure: a value containing a newline, an
+// anchor marker or "anonymous: true" stays one string. An unset variable is
+// an error rather than an empty string — a registry that silently starts
+// with no S3 credentials is worse than one that refuses to start.
+func expandNode(node *yaml.Node, missing *[]string) {
+	if node == nil {
+		return
 	}
-	return out, nil
+	if node.Kind == yaml.ScalarNode {
+		node.Value = envRef.ReplaceAllStringFunc(node.Value, func(match string) string {
+			name := match[2 : len(match)-1]
+			value, ok := os.LookupEnv(name)
+			if !ok {
+				*missing = append(*missing, name)
+				return match
+			}
+			return value
+		})
+		// The substituted text is a value, never markup: force a style
+		// that cannot be reinterpreted if the node is ever re-encoded.
+		if node.Style == 0 && strings.ContainsAny(node.Value, "\n\"'&*!|>%@`") {
+			node.Style = yaml.DoubleQuotedStyle
+		}
+		return
+	}
+	for _, child := range node.Content {
+		expandNode(child, missing)
+	}
 }
 
 // envRef matches ${NAME} with a conventional environment-variable name.
@@ -314,23 +344,34 @@ var envRef = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*\}`)
 // Parse decodes a YAML config from r, applies defaults and validates it.
 // Unknown fields are rejected.
 func Parse(r io.Reader) (*Config, error) {
-	raw, err := io.ReadAll(io.LimitReader(r, 8<<20))
-	if err != nil {
-		return nil, fmt.Errorf("read config: %w", err)
-	}
-	expanded, err := expandEnv(raw)
-	if err != nil {
-		return nil, err
-	}
-	r = bytes.NewReader(expanded)
-
-	dec := yaml.NewDecoder(r)
-	dec.KnownFields(true)
-	var cfg Config
-	if err := dec.Decode(&cfg); err != nil {
+	var doc yaml.Node
+	dec := yaml.NewDecoder(io.LimitReader(r, 8<<20))
+	if err := dec.Decode(&doc); err != nil {
 		if errors.Is(err, io.EOF) {
 			return nil, errors.New("empty config")
 		}
+		return nil, fmt.Errorf("parse yaml: %w", err)
+	}
+
+	var missing []string
+	expandNode(&doc, &missing)
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("config references unset environment variable(s): %s",
+			strings.Join(missing, ", "))
+	}
+
+	// Re-encode the expanded document and decode it strictly: unknown
+	// fields must still be rejected, and the encoder quotes every scalar
+	// correctly, so a substituted secret cannot become markup on the way
+	// back in.
+	expanded, err := yaml.Marshal(&doc)
+	if err != nil {
+		return nil, fmt.Errorf("re-encode config: %w", err)
+	}
+	strict := yaml.NewDecoder(bytes.NewReader(expanded))
+	strict.KnownFields(true)
+	var cfg Config
+	if err := strict.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("parse yaml: %w", err)
 	}
 	cfg.applyDefaults()
@@ -360,6 +401,11 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Auth.RevocationSweep == 0 {
 		c.Auth.RevocationSweep = Duration(5 * time.Second)
+	}
+	// Distinguish "unset" from an explicit 0: only an unset window gets the
+	// default, so `stale_identity_window: 0` really disables the fallback.
+	if !c.Auth.staleWindowSet {
+		c.Auth.StaleIdentityWindow = Duration(6 * time.Hour)
 	}
 	if c.Auth.TokenCacheTTL == 0 {
 		c.Auth.TokenCacheTTL = Duration(5 * time.Minute)

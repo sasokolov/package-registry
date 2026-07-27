@@ -36,6 +36,8 @@ func gcCmd(args []string, out io.Writer) error {
 	doDelete := flags.Bool("delete", false, "actually delete unreferenced blobs (default: dry run)")
 	minAge := flags.Duration("min-age", 24*time.Hour,
 		"never collect blobs younger than this (protects in-flight ingests and unreplicated peers)")
+	ignoreLag := flags.Bool("ignore-replication-lag", false,
+		"sweep even when a peer is behind (unsafe: a blob whose manifest has not arrived here yet looks unreferenced)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -68,6 +70,20 @@ func gcCmd(args []string, out io.Writer) error {
 		return err
 	}
 	defer db.Close()
+	// A site that is behind cannot tell "unreferenced" from "the manifest
+	// has not arrived yet". Refuse rather than delete on a guess.
+	if cfg.Replication.Enabled && !*ignoreLag {
+		behind, detail, err := replicationBehind(ctx, db, cfg)
+		if err != nil {
+			return err
+		}
+		if behind {
+			return fmt.Errorf(
+				"refusing to sweep while replication is behind (%s): a blob whose manifest has not replicated here "+
+					"yet looks unreferenced; wait for convergence or pass -ignore-replication-lag", detail)
+		}
+	}
+
 	return db.WithLock(ctx, "gc", func(ctx context.Context) error {
 		return sweep(ctx, store, db, out, logger, *doDelete, *minAge)
 	})
@@ -92,7 +108,11 @@ func sweep(ctx context.Context, store api.BlobStore, db *state.DB, out io.Writer
 		for _, r := range rows {
 			referenced[r.SHA256] = true
 		}
-		conflicts, err := db.ListConflicts(ctx, false)
+		// Only OPEN conflicts protect both sides: until an operator
+		// decides, either digest may become canonical. Once resolved, the
+		// kept digest lives in hosted_manifests and the rejected one is
+		// ordinary garbage.
+		conflicts, err := db.ListConflicts(ctx, true)
 		if err != nil {
 			return fmt.Errorf("list publish conflicts: %w", err)
 		}
@@ -101,7 +121,7 @@ func sweep(ctx context.Context, store api.BlobStore, db *state.DB, out io.Writer
 			referenced[c.LoserSHA] = true
 		}
 		logger.Info("marked from the database",
-			"hosted", len(rows), "conflict_sides", 2*len(conflicts))
+			"hosted", len(rows), "open_conflicts", len(conflicts))
 	} else {
 		logger.Warn("no database: hosted rows and conflict losers cannot be protected")
 	}
@@ -204,4 +224,38 @@ func parseManifestSHA(raw []byte) (string, error) {
 		return "", err
 	}
 	return doc.SHA256, nil
+}
+
+// replicationBehind reports whether any peer stream is unconverged or any
+// event is parked — both mean this site does not yet know every manifest
+// the mesh has, and a sweep would treat those blobs as garbage.
+func replicationBehind(ctx context.Context, db *state.DB, cfg *config.Config) (bool, string, error) {
+	parked, err := db.CountParked(ctx)
+	if err != nil {
+		return false, "", err
+	}
+	if parked > 0 {
+		return true, fmt.Sprintf("%d parked event(s)", parked), nil
+	}
+	cursors, err := db.ListCursors(ctx)
+	if err != nil {
+		return false, "", err
+	}
+	byPeer := map[string]bool{}
+	for _, c := range cursors {
+		if c.LastError != "" {
+			return true, fmt.Sprintf("peer %s: %s", c.Peer, c.LastError), nil
+		}
+		if c.AppliedSeq > c.DurableSeq {
+			return true, fmt.Sprintf("peer %s has %d event(s) whose blobs are not local",
+				c.Peer, c.AppliedSeq-c.DurableSeq), nil
+		}
+		byPeer[c.Peer] = true
+	}
+	for _, p := range cfg.Replication.Peers {
+		if !byPeer[p.Name] {
+			return true, fmt.Sprintf("peer %s has never been reached", p.Name), nil
+		}
+	}
+	return false, "", nil
 }

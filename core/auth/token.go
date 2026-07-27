@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"sync"
 	"time"
 
@@ -145,11 +146,16 @@ func (v *TokenVerifier) Authenticate(ctx context.Context, secret string) (api.Id
 		v.mu.Unlock()
 		return api.Identity{}, fmt.Errorf("unknown token (hash %s…): %w", hash[:8], api.ErrUnauthorized)
 	default:
-		// The backend is unreachable. A previously verified identity keeps
-		// working within the stale window rather than turning a database
-		// outage into an authentication outage (invariant 7). Revocation
-		// is unaffected: the sweeper evicts revoked hashes, and a database
-		// that is down cannot have accepted new revocations either.
+		// An UNAVAILABLE backend is the only case that degrades: a
+		// malformed row or a decode error is a real failure and must not
+		// silently authenticate anyone. Within the stale window a
+		// previously verified identity keeps working rather than turning a
+		// database outage into an authentication outage (invariant 7);
+		// revocation is unaffected, since the sweeper evicts revoked
+		// hashes and a database that is down cannot accept new ones.
+		if !errors.Is(err, api.ErrUnavailable) && !isBackendUnreachable(err) {
+			return api.Identity{}, fmt.Errorf("token lookup failed (hash %s…): %w", hash[:8], err)
+		}
 		if ok && v.staleWindow() > 0 && v.now().Before(e.staleUntil) {
 			return api.Identity{Kind: api.IdentityToken, Subject: e.name, Stale: true}, nil
 		}
@@ -213,6 +219,16 @@ func (v *TokenVerifier) WatchRevocations(ctx context.Context, src RevocationSour
 			logger.Info("revoked tokens evicted from the auth cache", "count", n)
 		}
 	}
+}
+
+// isBackendUnreachable reports whether an error means "the token backend is
+// not answering" as opposed to "the backend answered with a problem".
+func isBackendUnreachable(err error) bool {
+	if errors.Is(err, state.ErrUnavailable) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
 }
 
 // Tokens is the PostgreSQL-backed token store.

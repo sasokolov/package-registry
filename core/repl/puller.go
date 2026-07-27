@@ -42,6 +42,13 @@ const snapshotTimeout = 10 * time.Minute
 // cheap, so this only has to be long enough for steady progress.
 const blobTimeout = 30 * time.Minute
 
+// Response bounds. A peer is authenticated but not trusted with this
+// site's memory: every JSON body is read through a limit.
+const (
+	maxControlResponse  = 32 << 20  // status, journal page, manifest lookup
+	maxSnapshotResponse = 512 << 20 // a whole site's manifest set
+)
+
 // Client talks to one peer's internal API.
 type Client struct {
 	peer   Peer
@@ -115,7 +122,7 @@ func (c *Client) Status(ctx context.Context) (StatusResponse, error) {
 		return StatusResponse{}, fmt.Errorf("peer %s status returned %d", c.peer.Name, resp.StatusCode)
 	}
 	var out StatusResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := decodeJSON(resp.Body, maxControlResponse, &out); err != nil {
 		return StatusResponse{}, fmt.Errorf("decode peer status: %w", err)
 	}
 	if out.Site != c.peer.Name {
@@ -152,7 +159,7 @@ func (c *Client) Journal(ctx context.Context, origin string, after int64, limit 
 		return JournalResponse{}, fmt.Errorf("peer %s journal returned %d", c.peer.Name, resp.StatusCode)
 	}
 	var out JournalResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := decodeJSON(resp.Body, maxControlResponse, &out); err != nil {
 		return JournalResponse{}, fmt.Errorf("decode peer journal: %w", err)
 	}
 	// Origin spoofing check: a peer may only serve entries of the origin it
@@ -178,7 +185,7 @@ func (c *Client) Snapshot(ctx context.Context) (SnapshotResponse, error) {
 		return SnapshotResponse{}, fmt.Errorf("peer %s snapshot returned %d", c.peer.Name, resp.StatusCode)
 	}
 	var out SnapshotResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := decodeJSON(resp.Body, maxSnapshotResponse, &out); err != nil {
 		return SnapshotResponse{}, fmt.Errorf("decode peer snapshot: %w", err)
 	}
 	return out, nil
@@ -323,7 +330,7 @@ func (c *Client) Manifest(ctx context.Context, feed, path string) (ManifestRespo
 		return ManifestResponse{}, fmt.Errorf("peer %s manifest lookup returned %d", c.peer.Name, resp.StatusCode)
 	}
 	var out ManifestResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := decodeJSON(resp.Body, maxControlResponse, &out); err != nil {
 		return ManifestResponse{}, fmt.Errorf("decode peer manifest: %w", err)
 	}
 	if len(out.SHA256) != 64 {
@@ -379,6 +386,20 @@ func (c *Client) Nudge(ctx context.Context) {
 		return
 	}
 	_ = resp.Body.Close()
+}
+
+// decodeJSON reads at most limit bytes and rejects anything longer, so an
+// oversized (or endless) response fails instead of exhausting memory.
+func decodeJSON(body io.Reader, limit int64, out any) error {
+	limited := io.LimitReader(body, limit+1)
+	raw, err := io.ReadAll(limited)
+	if err != nil {
+		return err
+	}
+	if int64(len(raw)) > limit {
+		return fmt.Errorf("response exceeds the %d byte limit", limit)
+	}
+	return json.Unmarshal(raw, out)
 }
 
 // SameEndpoint reports whether two clients address the same peer the same

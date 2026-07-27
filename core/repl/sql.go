@@ -342,9 +342,20 @@ func conflictSide(ctx context.Context, tx pgxTx, feed, path, sha256hex string) (
 			if len(candidate.raw) > 0 {
 				_ = json.Unmarshal(candidate.raw, &meta)
 			}
-			// Conflicts recorded before this data was carried fall back to
-			// the digest alone; the row keeps whatever it had.
 			meta.SHA256 = candidate.sha
+			if meta.Size == 0 && len(meta.Checksums) == 0 {
+				// A conflict recorded before this data was carried (or by
+				// an older binary): recover the side's size and checksums
+				// from the stored row when it is the one being kept, so a
+				// resolution never advertises one artifact's integrity for
+				// another's bytes.
+				if stored, found, err := hostedState(ctx, tx, feed, path); err == nil && found &&
+					stored.SHA256 == candidate.sha {
+					meta.Size = stored.Size
+					meta.Checksums = stored.Checksums
+					meta.Metadata = stored.Metadata
+				}
+			}
 			return meta, true, nil
 		}
 	}

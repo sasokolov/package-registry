@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/sasokolov/package-registry/core/state"
@@ -44,6 +45,11 @@ type Applier struct {
 	maxSkew time.Duration
 	now     func() time.Time
 	eager   func(feed string) bool
+
+	// pending holds projections decided by a committed transaction and not
+	// yet written to the blob store.
+	pendingMu sync.Mutex
+	pending   []projectionWrite
 }
 
 // ApplierOptions wires an Applier.
@@ -85,6 +91,26 @@ func NewApplier(o ApplierOptions) *Applier {
 		a.eager = func(string) bool { return false }
 	}
 	return a
+}
+
+// importSnapshotEntry applies a coordinate that came from a bootstrap
+// snapshot. Snapshot entries carry no sequence, so they can never be parked
+// (the parked table is keyed by origin and sequence); a coordinate whose
+// blob has not arrived is imported anyway and served through peer fallback
+// until backfill fetches it.
+func (a *Applier) importSnapshotEntry(ctx context.Context, tx pgxTx, peer string,
+	e state.JournalEntry, touched map[string]bool) error {
+	eager := a.eager
+	a.eager = func(string) bool { return false }
+	defer func() { a.eager = eager }()
+
+	err := a.dispatch(ctx, tx, peer, e, touched)
+	if errors.Is(err, errPark) {
+		// Nothing here can be retried later, so a malformed snapshot entry
+		// is reported rather than silently dropped.
+		return fmt.Errorf("snapshot entry from %s cannot be applied: %w", peer, err)
+	}
+	return err
 }
 
 // SetBlobs attaches the blob fetcher (the manager, which needs the applier
@@ -172,6 +198,7 @@ func (a *Applier) applyOne(ctx context.Context, peer string, e state.JournalEntr
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit applied event: %w", err)
 	}
+	a.flushProjections(ctx)
 	a.metrics.applied(e.Kind)
 	return nil
 }
@@ -362,18 +389,55 @@ func (a *Applier) applyManifestPut(ctx context.Context, tx pgxTx, _ string,
 			"winner_site", winnerSite, "loser_site", loserSite)
 	}
 
-	// The read path serves from the blob store, so a replicated coordinate
-	// is only visible once its projection matches the row exactly.
-	if a.project != nil {
-		if err := a.project.WriteReplicatedManifest(ctx, p.Feed, p.Path, servedSHA,
-			servedSize, servedChecksums, servedMetadata, e.OriginSite, p.Publisher); err != nil {
-			a.logger.Error("writing the replicated manifest projection failed",
-				"feed", p.Feed, "path", p.Path, "error", err)
-		}
-	}
+	// The projection is an object-store write, so it happens AFTER the
+	// transaction commits: holding the hlc_state row lock across a network
+	// round trip would stall every publish at this site. Until then the
+	// coordinate is served through peer fallback, and the repair loop
+	// rewrites the projection if this site dies in between.
+	a.deferProjection(projectionWrite{
+		Feed: p.Feed, Path: p.Path, SHA256: servedSHA, Size: servedSize,
+		Checksums: servedChecksums, Metadata: servedMetadata,
+		Origin: e.OriginSite, Publisher: p.Publisher,
+	})
 
 	touched[p.Feed] = true
 	return nil
+}
+
+// projectionWrite is a blob-store projection queued until the transaction
+// that decided it has committed.
+type projectionWrite struct {
+	Feed, Path, SHA256  string
+	Size                int64
+	Checksums, Metadata map[string]string
+	Origin, Publisher   string
+}
+
+func (a *Applier) deferProjection(w projectionWrite) {
+	a.pendingMu.Lock()
+	defer a.pendingMu.Unlock()
+	a.pending = append(a.pending, w)
+}
+
+// flushProjections writes the queued projections. Failures are logged, not
+// returned: the database is committed either way, and the repair loop is
+// what guarantees the projection catches up.
+func (a *Applier) flushProjections(ctx context.Context) {
+	a.pendingMu.Lock()
+	queued := a.pending
+	a.pending = nil
+	a.pendingMu.Unlock()
+
+	if a.project == nil {
+		return
+	}
+	for _, w := range queued {
+		if err := a.project.WriteReplicatedManifest(ctx, w.Feed, w.Path, w.SHA256,
+			w.Size, w.Checksums, w.Metadata, w.Origin, w.Publisher); err != nil {
+			a.logger.Error("writing the replicated manifest projection failed",
+				"feed", w.Feed, "path", w.Path, "error", err)
+		}
+	}
 }
 
 func short(sha string) string {
@@ -492,13 +556,11 @@ func (a *Applier) applyConflictResolve(ctx context.Context, tx pgxTx, e state.Jo
 	if err := applyResolutionTx(ctx, tx, p.Feed, p.Path, p.Coord, winning, e.OriginSite); err != nil {
 		return err
 	}
-	if a.project != nil {
-		if err := a.project.WriteReplicatedManifest(ctx, p.Feed, p.Path, winning.KeepSHA,
-			winning.Size, winning.Checksums, winning.Metadata, e.OriginSite, p.Operator); err != nil {
-			a.logger.Error("writing the resolved manifest projection failed",
-				"feed", p.Feed, "path", p.Path, "error", err)
-		}
-	}
+	a.deferProjection(projectionWrite{
+		Feed: p.Feed, Path: p.Path, SHA256: winning.KeepSHA, Size: winning.Size,
+		Checksums: winning.Checksums, Metadata: winning.Metadata,
+		Origin: e.OriginSite, Publisher: p.Operator,
+	})
 	a.audit.Warn("cross-site conflict resolved by operator",
 		"feed", p.Feed, "path", p.Path, "keep_sha256", winning.KeepSHA,
 		"operator", p.Operator, "origin", e.OriginSite)
@@ -526,6 +588,12 @@ func (a *Applier) RetryParked(ctx context.Context, peer string) error {
 	}
 	touched := map[string]bool{}
 	for i, e := range entries {
+		// The reason most events park is a blob that had not arrived yet;
+		// retrying without attempting the transfer again would park them
+		// forever.
+		if err := a.prefetchBlob(ctx, peer, e); err != nil {
+			continue
+		}
 		tx, err := a.db.Begin(ctx)
 		if err != nil {
 			return err
@@ -549,6 +617,7 @@ func (a *Applier) RetryParked(ctx context.Context, peer string) error {
 		if err := tx.Commit(ctx); err != nil {
 			return err
 		}
+		a.flushProjections(ctx)
 		if err := a.db.UnparkEvent(ctx, e.OriginSite, e.OriginSeq); err != nil {
 			return err
 		}

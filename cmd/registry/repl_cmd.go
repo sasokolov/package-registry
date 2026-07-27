@@ -70,7 +70,7 @@ func replCmd(args []string, out io.Writer) error {
 	case "resolve":
 		return replResolve(ctx, db, cfg, out, *feed, *path, *keep)
 	case "retry-parked":
-		return replRetryParked(ctx, db, out)
+		return replRetryParked(ctx, db, cfg, out)
 	case "peers":
 		return replPeers(ctx, db, cfg, out)
 	case "resync":
@@ -253,7 +253,10 @@ func replResolve(ctx context.Context, db *state.DB, cfg *config.Config, out io.W
 	return nil
 }
 
-func replRetryParked(ctx context.Context, db *state.DB, out io.Writer) error {
+// replRetryParked lists parked events and actually retries them: the alert
+// and the runbook both send an operator here to clear them, so the command
+// has to do something.
+func replRetryParked(ctx context.Context, db *state.DB, cfg *config.Config, out io.Writer) error {
 	entries, reasons, err := db.ParkedEvents(ctx, 1000)
 	if err != nil {
 		return err
@@ -270,8 +273,62 @@ func replRetryParked(ctx context.Context, db *state.DB, out io.Writer) error {
 	if err := w.Flush(); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintln(out, "\nparked events are retried automatically on every poll cycle")
+
+	before := len(entries)
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	store, err := api.NewStorage(cfg.Storage.Type, cfg.Storage.Options())
+	if err != nil {
+		return err
+	}
+	applier, manager, err := offlineApplier(ctx, db, cfg, store, logger)
+	if err != nil {
+		return err
+	}
+	applier.SetBlobs(manager)
+
+	// Retry each origin's stream: a blob that has since arrived, a clock
+	// that has caught up, or a binary that now understands the event kind.
+	origins := map[string]bool{}
+	for _, e := range entries {
+		origins[e.OriginSite] = true
+	}
+	for origin := range origins {
+		if err := applier.RetryParked(ctx, origin); err != nil {
+			_, _ = fmt.Fprintf(out, "retrying %s: %v\n", origin, err)
+		}
+	}
+
+	after, _, err := db.ParkedEvents(ctx, 1000)
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(out, "\nretried: %d parked before, %d after\n", before, len(after))
+	if len(after) > 0 {
+		_, _ = fmt.Fprintln(out,
+			"the rest still cannot be applied; the reasons above say why (they are also retried on every poll cycle)")
+	}
 	return nil
+}
+
+// offlineApplier builds an applier and a peer manager for one-shot CLI use.
+func offlineApplier(ctx context.Context, db *state.DB, cfg *config.Config,
+	store api.BlobStore, logger *slog.Logger) (*repl.Applier, *repl.Manager, error) {
+	clients, err := peerClients(cfg.Replication, cfg.Site.Name,
+		&http.Client{Timeout: 10 * time.Minute}, logger)
+	if err != nil {
+		return nil, nil, err
+	}
+	applier := repl.NewApplier(repl.ApplierOptions{
+		DB: db, Site: cfg.Site.Name, Logger: logger,
+		MaxSkew: cfg.Replication.SkewOrDefault(),
+		Eager:   func(string) bool { return false },
+	})
+	manager := repl.NewManager(repl.ManagerOptions{
+		DB: db, Store: store, Site: cfg.Site.Name,
+		Clients: clients, Applier: applier, Logger: logger,
+	})
+	_ = ctx
+	return applier, manager, nil
 }
 
 func truncate(s string, n int) string {
@@ -432,7 +489,7 @@ func replBackfill(ctx context.Context, db *state.DB, cfg *config.Config,
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	httpClient := &http.Client{Timeout: 10 * time.Minute}
-	clients, err := peerClients(cfg.Replication, httpClient, logger)
+	clients, err := peerClients(cfg.Replication, cfg.Site.Name, httpClient, logger)
 	if err != nil {
 		return err
 	}

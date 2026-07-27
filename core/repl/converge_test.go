@@ -174,13 +174,12 @@ func (m *modelState) applyOne(e state.JournalEntry, localSite string) {
 			// Two operators can decide one path: the newest decision wins
 			// by HLC, and an exact tie breaks by digest, so the outcome
 			// does not depend on arrival order.
-			if prev, ok := m.resolvedHLC[key]; ok {
-				if prev.Before(e.HLC) || (prev == e.HLC && p.KeepSHA > m.resolved[key]) {
-					// this decision wins
-				} else {
-					m.manifests[key] = m.resolved[key]
-					return
-				}
+			// An older decision (or an exact tie the digest loses) keeps
+			// the stored choice.
+			if prev, ok := m.resolvedHLC[key]; ok &&
+				!prev.Before(e.HLC) && (prev != e.HLC || p.KeepSHA <= m.resolved[key]) {
+				m.manifests[key] = m.resolved[key]
+				return
 			}
 			m.resolved[key] = p.KeepSHA
 			m.resolvedHLC[key] = e.HLC
@@ -320,6 +319,12 @@ func mkEvent(t *testing.T, site string, seq int64, wall, logical int64, kind str
 
 // randomEvents builds a mixed event set covering every merge rule.
 func randomEvents(t *testing.T, rng *rand.Rand) []state.JournalEntry {
+	return randomEventsForFeed(t, rng, "hosted")
+}
+
+// randomEventsForFeed is randomEvents scoped to one feed, so a test running
+// against a shared database can isolate itself.
+func randomEventsForFeed(t *testing.T, rng *rand.Rand, feed string) []state.JournalEntry {
 	t.Helper()
 	var events []state.JournalEntry
 	wall := int64(1_700_000_000_000)
@@ -347,14 +352,14 @@ func randomEvents(t *testing.T, rng *rand.Rand) []state.JournalEntry {
 			ext := []string{".jar", ".pom", "-sources.jar"}[rng.IntN(3)]
 			content := fmt.Sprintf("content-%d", rng.IntN(3))
 			events = append(events, mkEvent(t, site, seq, wall, logical, KindManifestPut, ManifestPut{
-				Feed: "hosted", Path: pkg + "/1.0.0/" + pkg + "-1.0.0" + ext,
+				Feed: feed, Path: pkg + "/1.0.0/" + pkg + "-1.0.0" + ext,
 				Coord:  "maven:com.example:" + pkg + "@1.0.0",
 				SHA256: digestOf(content), Size: int64(len(content)),
 			}))
 		case 2:
 			// Mutable pointer: dist-tag style, converges by HLC.
 			events = append(events, mkEvent(t, site, seq, wall, logical, KindManifestPut, ManifestPut{
-				Feed: "hosted", Path: "-/hosted/pkg/dist-tags/latest",
+				Feed: feed, Path: "-/hosted/pkg/dist-tags/latest",
 				Coord: "npm:pkg", SHA256: digestOf(fmt.Sprintf("v%d", rng.IntN(5))),
 				Mutable: true,
 			}))
@@ -364,7 +369,7 @@ func randomEvents(t *testing.T, rng *rand.Rand) []state.JournalEntry {
 			}))
 		case 4:
 			events = append(events, mkEvent(t, site, seq, wall, logical, KindQuarantineSet, QuarantineSet{
-				Feed: "hosted", Coordinate: fmt.Sprintf("maven:com.example:pkg-%d@1.0.0", rng.IntN(4)),
+				Feed: feed, Coordinate: fmt.Sprintf("maven:com.example:pkg-%d@1.0.0", rng.IntN(4)),
 				Reason: []string{"manual", "policy_osv"}[rng.IntN(2)],
 			}))
 		case 5:
@@ -372,7 +377,7 @@ func randomEvents(t *testing.T, rng *rand.Rand) []state.JournalEntry {
 			// usually originate at different sites and therefore travel in
 			// separate streams that arrive in any order.
 			events = append(events, mkEvent(t, site, seq, wall, logical, KindQuarantineRelease, QuarantineRelease{
-				Feed: "hosted", Coordinate: fmt.Sprintf("maven:com.example:pkg-%d@1.0.0", rng.IntN(4)),
+				Feed: feed, Coordinate: fmt.Sprintf("maven:com.example:pkg-%d@1.0.0", rng.IntN(4)),
 				Reason: []string{"manual", "policy_osv"}[rng.IntN(2)],
 			}))
 		case 6:
@@ -381,7 +386,7 @@ func randomEvents(t *testing.T, rng *rand.Rand) []state.JournalEntry {
 			pkg := fmt.Sprintf("pkg-%d", rng.IntN(4))
 			content := fmt.Sprintf("content-%d", rng.IntN(3))
 			events = append(events, mkEvent(t, site, seq, wall, logical, KindConflictResolve, ConflictResolve{
-				Feed: "hosted", Path: pkg + "/1.0.0/" + pkg + ".jar",
+				Feed: feed, Path: pkg + "/1.0.0/" + pkg + ".jar",
 				Coord:   "maven:com.example:" + pkg + "@1.0.0",
 				KeepSHA: digestOf(content), Operator: "alice",
 			}))

@@ -424,3 +424,86 @@ feeds:
 		t.Errorf("error does not name the missing variable: %v", err)
 	}
 }
+
+// A secret is a value, never markup: expansion happens after parsing, so no
+// environment variable can change what the config MEANS.
+func TestEnvExpansionCannotInjectStructure(t *testing.T) {
+	// A value that would open a new mapping key if it were spliced in as text.
+	t.Setenv("EVIL", "secret\nauth:\n  oidc:\n    - issuer: https://evil.example\n      audience: x")
+	cfg, err := Parse(strings.NewReader(`
+site: {name: eu-1}
+storage:
+  type: s3
+  s3:
+    endpoint: minio:9000
+    bucket: registry
+    access_key: static
+    secret_key: ${EVIL}
+feeds:
+  - name: npmjs
+    format: npm
+    upstream: https://registry.npmjs.org
+    anonymous: false
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(cfg.Auth.OIDC) != 0 {
+		t.Fatalf("an environment value injected %d OIDC issuer(s) into the config", len(cfg.Auth.OIDC))
+	}
+	if !strings.HasPrefix(cfg.Storage.S3.SecretKey, "secret\n") {
+		t.Errorf("secret value was mangled: %q", cfg.Storage.S3.SecretKey)
+	}
+	if cfg.Feeds[0].Anonymous {
+		t.Error("feed became anonymous through an environment value")
+	}
+
+	// YAML-significant leading characters must survive as data.
+	for _, value := range []string{"&anchor", "*alias", "!tag", "|block", ">folded", "@at", "%directive"} {
+		t.Setenv("TRICKY", value)
+		cfg, err := Parse(strings.NewReader(`
+site: {name: eu-1}
+storage: {type: s3, s3: {endpoint: m:9000, bucket: b, access_key: a, secret_key: "${TRICKY}"}}
+feeds: [{name: f, format: npm, upstream: "https://x"}]
+`))
+		if err != nil {
+			t.Fatalf("Parse with %q: %v", value, err)
+		}
+		if cfg.Storage.S3.SecretKey != value {
+			t.Errorf("credential %q became %q", value, cfg.Storage.S3.SecretKey)
+		}
+	}
+}
+
+// An explicit zero must disable the stale-identity fallback, as the field
+// comment and the runbook both promise; only an ABSENT key gets the default.
+func TestStaleIdentityWindowZeroDisablesFallback(t *testing.T) {
+	base := `
+site: {name: eu-1}
+storage: {type: fs, fs: {path: /tmp/x}}
+feeds: [{name: f, format: npm, upstream: "https://x"}]
+`
+	unset, err := Parse(strings.NewReader(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := unset.Auth.StaleIdentityWindowOrDefault(); got != 6*time.Hour {
+		t.Errorf("unset window = %s, want the 6h default", got)
+	}
+
+	explicit, err := Parse(strings.NewReader(base + "auth: {stale_identity_window: 0s}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := explicit.Auth.StaleIdentityWindowOrDefault(); got != 0 {
+		t.Errorf("explicit 0 window = %s, want 0 (fallback disabled)", got)
+	}
+
+	shorter, err := Parse(strings.NewReader(base + "auth: {stale_identity_window: 90s}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := shorter.Auth.StaleIdentityWindowOrDefault(); got != 90*time.Second {
+		t.Errorf("explicit window = %s, want 90s", got)
+	}
+}

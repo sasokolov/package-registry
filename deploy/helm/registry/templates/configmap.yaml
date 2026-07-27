@@ -1,7 +1,74 @@
 {{/* The registry config is declarative and hot-reloaded (invariant 8): a
      checksum annotation on the Deployment is deliberately NOT used, so a
      feed change does not restart pods — the kubelet updates the mounted
-     ConfigMap and the process re-reads it. */}}
+     ConfigMap and the process re-reads it.
+
+     The document is assembled as a map and merged with .Values.extraConfig,
+     so extraConfig can extend OR override any section. Appended as text it
+     could only ever produce a duplicate top-level key, which the registry
+     rejects.
+
+     Credentials appear as ${VAR} and are expanded by the registry itself
+     from the environment (see the Deployment), so no secret is ever written
+     into this ConfigMap and hot reload keeps working. */}}
+{{- $config := dict
+  "site" (dict "name" .Values.site.name)
+  "server" (dict
+    "listen" ":8080"
+    "shutdown_timeout" "30s"
+    "reload_interval" "30s")
+  "auth" (dict "token_cache_ttl" .Values.auth.tokenCacheTTL)
+  "feeds" .Values.feeds
+-}}
+{{- with .Values.site.externalURL }}
+{{- $_ := set (get $config "site") "external_url" . }}
+{{- end }}
+{{- with .Values.auth.oidcIssuers }}
+{{- $_ := set (get $config "auth") "oidc_issuers" . }}
+{{- end }}
+
+{{- if eq .Values.storage.type "s3" }}
+{{- $s3 := dict
+  "endpoint" .Values.storage.s3.endpoint
+  "bucket" .Values.storage.s3.bucket
+  "use_ssl" .Values.storage.s3.useSSL
+  "access_key" "${REGISTRY_S3_ACCESS_KEY}"
+  "secret_key" "${REGISTRY_S3_SECRET_KEY}" }}
+{{- with .Values.storage.s3.region }}{{- $_ := set $s3 "region" . }}{{- end }}
+{{- $_ := set $config "storage" (dict "type" "s3" "s3" $s3) }}
+{{- else }}
+{{- $_ := set $config "storage" (dict "type" "fs" "fs" (dict "path" .Values.storage.fs.path)) }}
+{{- end }}
+
+{{- if .Values.database.existingSecret }}
+{{- $_ := set $config "database" (dict "dsn" "${REGISTRY_DATABASE_DSN}") }}
+{{- else }}
+{{/* No database: reads work, publishing and static tokens do not
+     (invariant 7). */}}
+{{- $_ := set $config "database" (dict "dsn" "") }}
+{{- end }}
+
+{{- if .Values.replication.enabled }}
+{{- $replAuth := dict "type" .Values.replication.auth.type }}
+{{- if eq .Values.replication.auth.type "mtls" }}
+{{- $_ := set $replAuth "ca_file" "/etc/registry/replication/ca.crt" }}
+{{- $_ := set $replAuth "cert_file" "/etc/registry/replication/tls.crt" }}
+{{- $_ := set $replAuth "key_file" "/etc/registry/replication/tls.key" }}
+{{- else }}
+{{- $_ := set $replAuth "token_file" "/etc/registry/replication/token" }}
+{{- end }}
+{{- $_ := set $config "replication" (dict
+  "enabled" true
+  "internal_listen" (printf ":%v" .Values.replication.internalPort)
+  "topology" "mesh"
+  "nudge" .Values.replication.nudge
+  "journal_retention" .Values.replication.journalRetention
+  "max_clock_skew" .Values.replication.maxClockSkew
+  "auth" $replAuth
+  "peers" .Values.replication.peers) }}
+{{- end }}
+
+{{- $config = mustMergeOverwrite $config (.Values.extraConfig | default dict) -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -10,74 +77,4 @@ metadata:
     {{- include "registry.labels" . | nindent 4 }}
 data:
   config.yaml: |
-    site:
-      name: {{ .Values.site.name | quote }}
-      {{- with .Values.site.externalURL }}
-      external_url: {{ . | quote }}
-      {{- end }}
-
-    server:
-      listen: ":8080"
-      shutdown_timeout: 30s
-      reload_interval: 30s
-
-    storage:
-      type: {{ .Values.storage.type | quote }}
-      {{- if eq .Values.storage.type "s3" }}
-      s3:
-        endpoint: {{ .Values.storage.s3.endpoint | quote }}
-        bucket: {{ .Values.storage.s3.bucket | quote }}
-        {{- with .Values.storage.s3.region }}
-        region: {{ . | quote }}
-        {{- end }}
-        use_ssl: {{ .Values.storage.s3.useSSL }}
-        access_key: ${REGISTRY_S3_ACCESS_KEY}
-        secret_key: ${REGISTRY_S3_SECRET_KEY}
-      {{- else }}
-      fs:
-        path: {{ .Values.storage.fs.path | quote }}
-      {{- end }}
-
-    database:
-      {{- if .Values.database.existingSecret }}
-      dsn: ${REGISTRY_DATABASE_DSN}
-      {{- else }}
-      # No database: reads work, publishing and static tokens do not
-      # (invariant 7).
-      dsn: ""
-      {{- end }}
-
-    auth:
-      token_cache_ttl: {{ .Values.auth.tokenCacheTTL | quote }}
-      {{- with .Values.auth.oidcIssuers }}
-      oidc_issuers:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-
-    feeds:
-      {{- toYaml .Values.feeds | nindent 6 }}
-
-    {{- if .Values.replication.enabled }}
-    replication:
-      enabled: true
-      internal_listen: ":{{ .Values.replication.internalPort }}"
-      topology: mesh
-      nudge: {{ .Values.replication.nudge }}
-      journal_retention: {{ .Values.replication.journalRetention }}
-      max_clock_skew: {{ .Values.replication.maxClockSkew }}
-      auth:
-        type: {{ .Values.replication.auth.type }}
-        {{- if eq .Values.replication.auth.type "mtls" }}
-        ca_file: /etc/registry/replication/ca.crt
-        cert_file: /etc/registry/replication/tls.crt
-        key_file: /etc/registry/replication/tls.key
-        {{- else }}
-        token_file: /etc/registry/replication/token
-        {{- end }}
-      peers:
-        {{- toYaml .Values.replication.peers | nindent 8 }}
-    {{- end }}
-
-    {{- with .Values.extraConfig }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
+    {{- toYaml $config | nindent 4 }}

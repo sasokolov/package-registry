@@ -17,6 +17,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -32,9 +33,10 @@ var migrationsFS embed.FS
 
 // DB wraps the connection pool.
 type DB struct {
-	pool   *pgxpool.Pool
-	cfg    *pgxpool.Config
-	logger *slog.Logger
+	pool     *pgxpool.Pool
+	cfg      *pgxpool.Config
+	logger   *slog.Logger
+	migrated atomic.Bool
 }
 
 // Open parses the DSN (empty DSN falls back to the standard PG* environment
@@ -86,6 +88,11 @@ func (db *DB) Migrate(ctx context.Context) error {
 	return nil
 }
 
+// Migrated reports whether migrations have completed at least once in this
+// process. Publishing depends on schema objects the newest migration
+// creates, so readiness has to wait for it (reads do not — invariant 7).
+func (db *DB) Migrated() bool { return db.migrated.Load() }
+
 // MigrateLoop retries Migrate with backoff until it succeeds or ctx is done.
 // Startup must not depend on database availability (invariant 7), so the
 // caller runs this in a goroutine.
@@ -94,6 +101,7 @@ func (db *DB) MigrateLoop(ctx context.Context) {
 	for {
 		err := db.Migrate(ctx)
 		if err == nil {
+			db.migrated.Store(true)
 			db.logger.Info("database migrations up to date")
 			return
 		}

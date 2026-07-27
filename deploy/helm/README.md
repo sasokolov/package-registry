@@ -49,7 +49,7 @@ namespace ConfigMap обновляется kubelet'ом, процесс подх
 
 ```bash
 kubectl -n registry exec deploy/registry-registry -- \
-  registry token create -name ci-bot -config /tmp/config.yaml
+  registry token create -name ci-bot -config /etc/registry/config.yaml
 ```
 
 Секрет печатается один раз, в БД хранится только его хэш.
@@ -219,9 +219,9 @@ auth-материала требует рестарта (процесс пише
 ```bash
 # Сборка мусора: сначала всегда dry-run
 kubectl -n registry exec deploy/registry-registry -- \
-  registry gc -config /tmp/config.yaml
+  registry gc -config /etc/registry/config.yaml
 kubectl -n registry exec deploy/registry-registry -- \
-  registry gc -config /tmp/config.yaml -delete -min-age 168h
+  registry gc -config /etc/registry/config.yaml -delete -min-age 168h
 ```
 
 GC удаляет блобы, на которые не ссылается ни один манифест, держит

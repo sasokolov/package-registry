@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -206,6 +207,15 @@ func (p *Publisher) writeProjection(ctx context.Context, req api.PublishRequest)
 // serves it exactly like a locally published one.
 func (p *Publisher) WriteReplicatedManifest(ctx context.Context, feed, path, sha256hex string,
 	size int64, checksums, metadata map[string]string, originSite, publisher string) error {
+	// The path comes from a peer, so it gets the same validation as a
+	// locally published one: a crafted path must not escape the feed's
+	// prefix in the blob store.
+	if err := validRemotePath(path); err != nil {
+		return fmt.Errorf("replicated manifest path %q: %w", path, err)
+	}
+	if feed == "" || strings.ContainsAny(feed, "/\\") {
+		return fmt.Errorf("replicated manifest feed %q is not a feed name: %w", feed, api.ErrBadRequest)
+	}
 	m := manifest{
 		SHA256:     sha256hex,
 		Size:       size,

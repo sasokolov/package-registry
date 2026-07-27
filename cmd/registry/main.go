@@ -46,6 +46,8 @@ func run(args []string, logOut io.Writer) error {
 			return gcCmd(args[1:], logOut)
 		case "repl":
 			return replCmd(args[1:], logOut)
+		case "config":
+			return configCmd(args[1:], logOut)
 		case "serve":
 			args = args[1:]
 		}
@@ -147,7 +149,12 @@ func serveCmd(args []string, logOut io.Writer) error {
 		}()
 	}
 
-	return serveHTTP(ctx, cfg, logger, promReg, srv.Handler())
+	// Readiness reflects the schema: publishing needs objects the newest
+	// migration creates, so a pod that has not finished migrating must not
+	// take traffic that would fail. Reads do not depend on it, but a pod
+	// that is seconds from being fully functional is not worth routing to.
+	schemaReady := func() bool { return db == nil || db.Migrated() }
+	return serveHTTP(ctx, cfg, logger, promReg, srv.Handler(), schemaReady)
 }
 
 // initLoop retries one-time storage initialization (e.g. bucket creation)
@@ -177,11 +184,12 @@ func initLoop(ctx context.Context, init api.Initializer, logger *slog.Logger) {
 
 // serveHTTP runs the HTTP server until ctx is cancelled, then shuts it down
 // gracefully within cfg.Server.ShutdownTimeout.
-func serveHTTP(ctx context.Context, cfg *config.Config, logger *slog.Logger, promReg *prometheus.Registry, feeds http.Handler) error {
+func serveHTTP(ctx context.Context, cfg *config.Config, logger *slog.Logger,
+	promReg *prometheus.Registry, feeds http.Handler, schemaReady func() bool) error {
 	var ready atomic.Bool
 
 	srv := &http.Server{
-		Handler:           newRouter(&ready, logger, promReg, feeds),
+		Handler:           newRouter(&ready, schemaReady, logger, promReg, feeds),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -214,7 +222,8 @@ func serveHTTP(ctx context.Context, cfg *config.Config, logger *slog.Logger, pro
 }
 
 // newRouter combines operational endpoints with the dynamic feed handler.
-func newRouter(ready *atomic.Bool, logger *slog.Logger, promReg *prometheus.Registry, feeds http.Handler) http.Handler {
+func newRouter(ready *atomic.Bool, schemaReady func() bool, logger *slog.Logger,
+	promReg *prometheus.Registry, feeds http.Handler) http.Handler {
 	r := chi.NewRouter()
 	r.Use(requestLogger(logger))
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -223,6 +232,10 @@ func newRouter(ready *atomic.Bool, logger *slog.Logger, promReg *prometheus.Regi
 	r.Get("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		if !ready.Load() {
 			writeText(w, http.StatusServiceUnavailable, "shutting down\n")
+			return
+		}
+		if schemaReady != nil && !schemaReady() {
+			writeText(w, http.StatusServiceUnavailable, "database migrations have not completed\n")
 			return
 		}
 		writeText(w, http.StatusOK, "ok\n")

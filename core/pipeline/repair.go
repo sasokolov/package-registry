@@ -97,28 +97,60 @@ func (r *ProjectionRepair) RepairOnce(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("list hosted manifests: %w", err)
 	}
 
-	var divergent, repaired int
+	var divergent, repaired, failed int
+	var firstErr error
 	for _, row := range rows {
 		ok, err := r.projectionMatches(ctx, row.Feed, row.Path, row.SHA256)
 		if err != nil {
-			return repaired, err
+			// One unreadable object must not blind the whole pass: the
+			// gauge this loop feeds is what the divergence alert watches.
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
 		if ok {
 			continue
 		}
 		divergent++
-		if err := r.publisher.WriteReplicatedManifest(ctx, row.Feed, row.Path, row.SHA256,
-			row.Size, row.Checksums, row.Metadata, row.Site, row.PublishedBy); err != nil {
-			return repaired, fmt.Errorf("repair projection %s/%s: %w", row.Feed, row.Path, err)
+
+		// Re-read the row inside the write: this pass may have been
+		// listing for a while, and a conflict resolution in the meantime
+		// would otherwise be undone — writing back the digest an operator
+		// just rejected.
+		current, found, err := r.publisher.db.HostedRow(ctx, row.Feed, row.Path)
+		if err != nil {
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if !found || current.SHA256 != row.SHA256 {
+			// The row changed under us; the next pass sees the new state.
+			continue
+		}
+		if err := r.publisher.WriteReplicatedManifest(ctx, current.Feed, current.Path, current.SHA256,
+			current.Size, current.Checksums, current.Metadata, current.Site, current.PublishedBy); err != nil {
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
 		repaired++
 		r.publisher.logger.Info("hosted manifest projection repaired",
-			"feed", row.Feed, "path", row.Path, "sha256", row.SHA256)
+			"feed", current.Feed, "path", current.Path, "sha256", current.SHA256)
 	}
 
 	if r.metrics != nil {
 		r.metrics.Divergent.Set(float64(divergent))
 		r.metrics.Repaired.Add(float64(repaired))
+	}
+	if firstErr != nil {
+		return repaired, fmt.Errorf("%d of %d coordinates could not be checked or repaired: %w",
+			failed, len(rows), firstErr)
 	}
 	return repaired, nil
 }

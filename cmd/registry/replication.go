@@ -78,7 +78,7 @@ func setupReplication(ctx context.Context, cfg *config.Config, db *state.DB,
 			IdleConnTimeout:       90 * time.Second,
 		},
 	}
-	clients, err := peerClients(rc, httpClient, logger)
+	clients, err := peerClients(rc, cfg.Site.Name, httpClient, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +134,7 @@ func setupReplication(ctx context.Context, cfg *config.Config, db *state.DB,
 			logger.Warn("replication listener and auth changes need a restart",
 				"listen", nrc.InternalListen, "auth_type", nrc.Auth.Type)
 		}
-		updated, err := peerClients(nrc, httpClient, logger)
+		updated, err := peerClients(nrc, cfg.Site.Name, httpClient, logger)
 		if err != nil {
 			logger.Error("keeping the previous peer set: new one is invalid", "error", err)
 			return
@@ -150,10 +150,10 @@ func setupReplication(ctx context.Context, cfg *config.Config, db *state.DB,
 }
 
 // peerClients builds one client per configured peer.
-func peerClients(rc config.ReplicationConfig, httpClient *http.Client, logger *slog.Logger) ([]*repl.Client, error) {
+func peerClients(rc config.ReplicationConfig, localSite string, httpClient *http.Client, logger *slog.Logger) ([]*repl.Client, error) {
 	clients := make([]*repl.Client, 0, len(rc.Peers))
 	for _, p := range rc.Peers {
-		authz, err := peerAuthorizer(rc, p)
+		authz, err := peerAuthorizer(rc, p, localSite)
 		if err != nil {
 			return nil, err
 		}
@@ -266,7 +266,7 @@ func serverTLSConfig(base *tls.Config) *tls.Config {
 }
 
 // peerAuthorizer decorates outgoing requests with this site's credential.
-func peerAuthorizer(rc config.ReplicationConfig, p config.PeerConfig) (func(*http.Request), error) {
+func peerAuthorizer(rc config.ReplicationConfig, p config.PeerConfig, localSite string) (func(*http.Request), error) {
 	if rc.Auth.Type != "bearer" {
 		// mTLS: the transport authenticates, no header needed.
 		return func(*http.Request) {}, nil
@@ -281,7 +281,10 @@ func peerAuthorizer(rc config.ReplicationConfig, p config.PeerConfig) (func(*htt
 	}
 	return func(r *http.Request) {
 		r.Header.Set("Authorization", "Bearer "+token)
-		r.Header.Set("X-Registry-Peer", p.Name)
+		// Our OWN site name: the header says who is calling, not who is
+		// being called. The receiver still only trusts it as far as the
+		// credential allows (see serverAuthorizer).
+		r.Header.Set("X-Registry-Peer", localSite)
 	}, nil
 }
 
@@ -302,6 +305,15 @@ func serverAuthorizer(rc config.ReplicationConfig) (func(*http.Request) (string,
 		if err != nil {
 			return nil, err
 		}
+		// Bearer mode shares one token across the mesh, so the caller's
+		// name is a claim, not proof. It is accepted only if it matches a
+		// CONFIGURED peer: an authenticated site can then still lie about
+		// which of its peers it is, which is why mTLS (where the name is
+		// the certificate's subject) is the production mode.
+		known := map[string]bool{}
+		for _, p := range rc.Peers {
+			known[p.Name] = true
+		}
 		return func(r *http.Request) (string, error) {
 			header := r.Header.Get("Authorization")
 			presented := strings.TrimPrefix(header, "Bearer ")
@@ -309,8 +321,8 @@ func serverAuthorizer(rc config.ReplicationConfig) (func(*http.Request) (string,
 				return "", errors.New("invalid replication credential")
 			}
 			peer := r.Header.Get("X-Registry-Peer")
-			if peer == "" {
-				peer = "unknown"
+			if !known[peer] {
+				return "", fmt.Errorf("caller claims to be %q, which is not a configured peer", peer)
 			}
 			return peer, nil
 		}, nil

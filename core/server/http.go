@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/sasokolov/package-registry/core/api"
 	"github.com/sasokolov/package-registry/core/pipeline"
@@ -43,15 +44,16 @@ func (s *Server) feedHandler(rt *runtime, fr *feedRuntime) http.HandlerFunc {
 		// Quarantined coordinates are never served, whatever the policies
 		// say (manual takedown, cross-site publish conflict).
 		if blocked, reason := s.quarantine.Blocked(ctx, fr.feed.Name, intent.Coord.String()); blocked {
-			if reason == "cross_site_conflict" {
-				// Name the cause so operators (and clients) can tell a
-				// federation conflict from a policy takedown.
+			if strings.HasPrefix(reason, "cross_site_conflict") {
+				// Invariant 11: the header carries the CONFLICTED
+				// COORDINATE, so a client (and a log line) names what to
+				// look up with `repl conflicts`. Other quarantine reasons
+				// are not conflicts and do not set it.
 				w.Header().Set("X-Registry-Conflict", intent.Coord.String())
 			}
 			s.audit.Warn("quarantined coordinate requested",
 				"feed", fr.feed.Name, "identity", id.String(),
 				"coordinate", intent.Coord.String(), "reason", reason)
-			w.Header().Set("X-Registry-Conflict", reason)
 			s.writeError(w, api.ErrQuarantined, reason)
 			return
 		}
@@ -286,6 +288,15 @@ func (s *Server) writeErrorText(w http.ResponseWriter, err error, text string) {
 }
 
 func (s *Server) finishError(w http.ResponseWriter, status int, msg string) {
+	// Every response carries its provenance, error or not (invariant 11):
+	// a 409 from a federation conflict has to say which site answered, and
+	// that is exactly when an operator reads the header.
+	if w.Header().Get(api.SourceHeader) == "" {
+		w.Header().Set(api.SourceHeader, string(api.SourceLocal))
+	}
+	if w.Header().Get(api.SiteHeader) == "" {
+		w.Header().Set(api.SiteHeader, s.site)
+	}
 	if status == http.StatusUnauthorized {
 		// Basic is advertised too: maven-resolver and Gradle send
 		// username/password credentials only for a scheme they support.

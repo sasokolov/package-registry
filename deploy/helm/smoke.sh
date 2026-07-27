@@ -31,6 +31,59 @@ trap cleanup EXIT
 echo "==> building the registry image"
 docker build -q -f "$REPO_ROOT/conformance/Dockerfile" -t "$IMAGE" "$REPO_ROOT" >/dev/null
 
+echo "==> the chart renders a config the registry itself accepts"
+# A chart that renders an invalid config only fails at rollout, when the
+# pods crash-loop. Check every shape the chart can produce, up front.
+extract_config() { # <rendered helm output> <destination>
+  python3 -c '
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+cm = next(d for d in docs if d["kind"] == "ConfigMap" and "config.yaml" in d.get("data", {}))
+open(sys.argv[2], "w").write(cm["data"]["config.yaml"])
+' "$1" "$2"
+}
+
+render_and_check() { # <description> <helm args...>
+  local desc="$1"; shift
+  local rendered
+  rendered="$(mktemp -d)"
+  chmod 755 "$rendered"
+  helm template check "$SCRIPT_DIR/registry" "$@" > "$rendered/all.yaml"
+  extract_config "$rendered/all.yaml" "$rendered/config.yaml"
+  chmod 644 "$rendered/config.yaml"
+  # The mTLS material comes from a Secret at runtime; the check only needs
+  # the paths to exist, since what it verifies is the config's shape.
+  mkdir -p "$rendered/replication"
+  : > "$rendered/replication/ca.crt"
+  : > "$rendered/replication/tls.crt"
+  : > "$rendered/replication/tls.key"
+  : > "$rendered/replication/token"
+  chmod -R a+rX "$rendered/replication"
+  # Every ${VAR} the config references must be injected by the Deployment.
+  if ! docker run --rm -v "$rendered:/cfg:ro" \
+    -v "$rendered/replication:/etc/registry/replication:ro" \
+    -e REGISTRY_S3_ACCESS_KEY=access -e REGISTRY_S3_SECRET_KEY=secret \
+    -e REGISTRY_DATABASE_DSN=postgres://u:p@h/db \
+    "$IMAGE" config check -config /cfg/config.yaml; then
+    echo "chart config is invalid ($desc):" >&2
+    cat "$rendered/config.yaml" >&2
+    rm -rf "$rendered"
+    exit 1
+  fi
+  rm -rf "$rendered"
+  echo "    ok: $desc"
+}
+
+render_and_check "defaults"
+render_and_check "filesystem storage, no database" \
+  --set storage.type=fs --set database.existingSecret=""
+render_and_check "geo replication" \
+  --set replication.enabled=true \
+  --set 'replication.peerCIDRs={10.0.0.0/8}' \
+  --set-json 'replication.peers=[{"name":"us-1","url":"https://us.example.com:8443","public_url":"https://us.example.com","pull_interval":"10s"}]'
+render_and_check "extra config sections" \
+  --set-json 'extraConfig={"server":{"projection_repair":"10m"},"auth":{"stale_identity_window":"0s"}}'
+
 echo "==> creating kind cluster $CLUSTER"
 kind create cluster --name "$CLUSTER" --wait 120s >/dev/null
 kind load docker-image "$IMAGE" --name "$CLUSTER" >/dev/null

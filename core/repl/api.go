@@ -43,11 +43,14 @@ type JournalResponse struct {
 // SnapshotResponse bootstraps a new site: the full hosted manifest set plus
 // the watermark it corresponds to.
 type SnapshotResponse struct {
-	Site       string           `json:"site"`
-	Manifests  []ManifestPut    `json:"manifests"`
-	Revoked    []string         `json:"revoked_token_hashes"`
-	Quarantine []QuarantineSet  `json:"quarantine"`
-	Watermarks map[string]int64 `json:"watermarks"` // origin -> sequence
+	Site       string          `json:"site"`
+	Manifests  []ManifestPut   `json:"manifests"`
+	Revoked    []string        `json:"revoked_token_hashes"`
+	Quarantine []QuarantineSet `json:"quarantine"`
+	// Resolutions are operators' terminal decisions. Without them a
+	// resynced site would re-open conflicts a human already settled.
+	Resolutions []ConflictResolve `json:"conflict_resolutions"`
+	Watermarks  map[string]int64  `json:"watermarks"` // origin -> sequence
 }
 
 // ForwardedPublish is a write a peer accepted on our behalf. The peer
@@ -214,7 +217,10 @@ func (s *Server) handleJournal(w http.ResponseWriter, r *http.Request) {
 	// That is the only acknowledgement in the protocol, and it is what
 	// makes journal pruning safe: nothing is dropped that a peer has not
 	// confirmed reading.
-	if origin == s.site && after > 0 {
+	if origin == s.site && after > 0 && after <= head {
+		// Bounded by our own head: a peer must not be able to declare it
+		// has consumed sequences that do not exist and so let pruning
+		// delete entries other peers still need.
 		if err := s.db.RecordPeerAck(ctx, peerOf(r), s.site, after); err != nil {
 			s.logger.Warn("recording a peer acknowledgement failed",
 				"peer", peerOf(r), "after", after, "error", err)
@@ -381,6 +387,18 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.fail(w, err)
 		return
+	}
+
+	resolutions, err := state.ConflictResolutionsTx(ctx, tx)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	for _, r := range resolutions {
+		snap.Resolutions = append(snap.Resolutions, ConflictResolve{
+			Feed: r.Feed, Path: r.Path, Coord: r.Coordinate,
+			KeepSHA: r.KeepSHA, Operator: r.Operator,
+		})
 	}
 
 	origins, err := state.KnownOriginsTx(ctx, tx)

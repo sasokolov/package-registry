@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sasokolov/package-registry/core/state"
 )
@@ -39,43 +40,61 @@ func integrationDB(t *testing.T) *state.DB {
 	return db
 }
 
-// resetReplicationState clears everything the merge rules write, so each
-// permutation starts from the same blank slate.
-func resetReplicationState(ctx context.Context, t *testing.T, db *state.DB) {
+// resetReplicationState clears this run's own rows so each permutation
+// starts blank. It is scoped by feed and by origin site rather than
+// truncating: integration packages share one database and run in parallel,
+// and a TRUNCATE would pull the rug out from under them.
+func resetReplicationState(ctx context.Context, t *testing.T, db *state.DB, feed string) {
 	t.Helper()
-	for _, stmt := range []string{
-		"TRUNCATE hosted_manifests",
-		"TRUNCATE quarantine",
-		"TRUNCATE publish_conflicts",
-		"TRUNCATE conflict_resolutions",
-		"TRUNCATE repl_journal",
-		"TRUNCATE repl_parked",
-		"TRUNCATE repl_cursors",
-		"DELETE FROM tokens WHERE name LIKE 'converge-%'",
+	for _, stmt := range []struct {
+		sql  string
+		args []any
+	}{
+		{"DELETE FROM hosted_manifests WHERE feed = $1", []any{feed}},
+		{"DELETE FROM quarantine WHERE feed = $1", []any{feed}},
+		{"DELETE FROM publish_conflicts WHERE feed = $1", []any{feed}},
+		{"DELETE FROM conflict_resolutions WHERE feed = $1", []any{feed}},
+		{"DELETE FROM repl_journal WHERE origin_site = ANY($1)", []any{generatorSites}},
+		{"DELETE FROM repl_parked WHERE origin_site = ANY($1)", []any{generatorSites}},
+		{"UPDATE tokens SET revoked_at = NULL WHERE hash = ANY($1)", []any{generatorTokenHashes()}},
 	} {
-		if _, err := db.Pool().Exec(ctx, stmt); err != nil {
-			t.Fatalf("%s: %v", stmt, err)
+		if _, err := db.Pool().Exec(ctx, stmt.sql, stmt.args...); err != nil {
+			t.Fatalf("%s: %v", stmt.sql, err)
 		}
 	}
 	// The generator revokes these; they must exist for a revocation to be
 	// observable.
-	for i := 0; i < 3; i++ {
+	for i, hash := range generatorTokenHashes() {
 		if _, err := db.Pool().Exec(ctx, `
 			INSERT INTO tokens (name, hash) VALUES ($1, $2)
-			ON CONFLICT (name) DO NOTHING`,
-			fmt.Sprintf("converge-token-%d", i), digestOf(fmt.Sprintf("token-%d", i))); err != nil {
+			ON CONFLICT (hash) DO NOTHING`,
+			fmt.Sprintf("converge-token-%d", i), hash); err != nil {
 			t.Fatalf("seed token: %v", err)
 		}
 	}
 }
 
+// generatorSites are the origin sites randomEvents attributes events to.
+var generatorSites = []string{"eu-1", "us-1", "ap-1"}
+
+// generatorTokenHashes are the hashes randomEvents revokes. Matching on the
+// hash rather than a name keeps the fingerprint correct however the rows
+// were seeded.
+func generatorTokenHashes() []string {
+	out := make([]string, 0, 3)
+	for i := 0; i < 3; i++ {
+		out = append(out, digestOf(fmt.Sprintf("token-%d", i)))
+	}
+	return out
+}
+
 // applierFingerprint renders every piece of replicated state the merge rules
 // decide, so two runs can be compared exactly.
-func applierFingerprint(ctx context.Context, t *testing.T, db *state.DB) string {
+func applierFingerprint(ctx context.Context, t *testing.T, db *state.DB, feed string) string {
 	t.Helper()
 	var b strings.Builder
 
-	rows, err := db.ListHosted(ctx, "", "")
+	rows, err := db.ListHosted(ctx, feed, "")
 	if err != nil {
 		t.Fatalf("list hosted: %v", err)
 	}
@@ -86,7 +105,7 @@ func applierFingerprint(ctx context.Context, t *testing.T, db *state.DB) string 
 	// Active quarantines, by coordinate and reason.
 	qrows, err := db.Pool().Query(ctx, `
 		SELECT feed, coordinate, reason FROM quarantine
-		 WHERE released_at IS NULL ORDER BY feed, coordinate, reason`)
+		 WHERE released_at IS NULL AND feed = $1 ORDER BY feed, coordinate, reason`, feed)
 	if err != nil {
 		t.Fatalf("read quarantine: %v", err)
 	}
@@ -102,7 +121,7 @@ func applierFingerprint(ctx context.Context, t *testing.T, db *state.DB) string 
 	// The SET of digests ever recorded per path (a union, so it must not
 	// depend on arrival order).
 	crows, err := db.Pool().Query(ctx, `
-		SELECT feed, path, winner_sha256, loser_sha256 FROM publish_conflicts`)
+		SELECT feed, path, winner_sha256, loser_sha256 FROM publish_conflicts WHERE feed = $1`, feed)
 	if err != nil {
 		t.Fatalf("read conflicts: %v", err)
 	}
@@ -135,7 +154,7 @@ func applierFingerprint(ctx context.Context, t *testing.T, db *state.DB) string 
 	}
 
 	rrows, err := db.Pool().Query(ctx,
-		"SELECT feed, path, keep_sha256 FROM conflict_resolutions ORDER BY feed, path")
+		"SELECT feed, path, keep_sha256 FROM conflict_resolutions WHERE feed = $1 ORDER BY feed, path", feed)
 	if err != nil {
 		t.Fatalf("read resolutions: %v", err)
 	}
@@ -149,7 +168,8 @@ func applierFingerprint(ctx context.Context, t *testing.T, db *state.DB) string 
 	rrows.Close()
 
 	trows, err := db.Pool().Query(ctx,
-		"SELECT hash FROM tokens WHERE revoked_at IS NOT NULL ORDER BY hash")
+		"SELECT hash FROM tokens WHERE revoked_at IS NOT NULL AND hash = ANY($1) ORDER BY hash",
+		generatorTokenHashes())
 	if err != nil {
 		t.Fatalf("read revocations: %v", err)
 	}
@@ -199,13 +219,14 @@ func TestApplierConvergesUnderAnyOrder(t *testing.T) {
 	db := integrationDB(t)
 	ctx := t.Context()
 
+	feed := fmt.Sprintf("converge-%d", time.Now().UnixNano())
 	for seed := uint64(1); seed <= 8; seed++ {
 		rng := rand.New(rand.NewPCG(seed, seed*31+7))
-		events := randomEvents(t, rng)
+		events := randomEventsForFeed(t, rng, feed)
 
-		resetReplicationState(ctx, t, db)
+		resetReplicationState(ctx, t, db, feed)
 		applyAll(ctx, t, db, events)
-		want := applierFingerprint(ctx, t, db)
+		want := applierFingerprint(ctx, t, db, feed)
 
 		for trial := 0; trial < 3; trial++ {
 			shuffled := append([]state.JournalEntry(nil), events...)
@@ -218,9 +239,9 @@ func TestApplierConvergesUnderAnyOrder(t *testing.T) {
 				shuffled = append(shuffled, shuffled[idx])
 			}
 
-			resetReplicationState(ctx, t, db)
+			resetReplicationState(ctx, t, db, feed)
 			applyAll(ctx, t, db, shuffled)
-			got := applierFingerprint(ctx, t, db)
+			got := applierFingerprint(ctx, t, db, feed)
 
 			if got != want {
 				t.Fatalf("seed %d trial %d: the applier diverged\n--- reference ---\n%s\n--- shuffled ---\n%s",
@@ -237,11 +258,12 @@ func TestApplierMatchesTheModel(t *testing.T) {
 	db := integrationDB(t)
 	ctx := t.Context()
 
+	feed := fmt.Sprintf("model-%d", time.Now().UnixNano())
 	for seed := uint64(1); seed <= 8; seed++ {
 		rng := rand.New(rand.NewPCG(seed, seed*17+3))
-		events := randomEvents(t, rng)
+		events := randomEventsForFeed(t, rng, feed)
 
-		resetReplicationState(ctx, t, db)
+		resetReplicationState(ctx, t, db, feed)
 		applyAll(ctx, t, db, events)
 
 		model := newModel()
@@ -249,11 +271,11 @@ func TestApplierMatchesTheModel(t *testing.T) {
 			model.apply(e, "local-under-test")
 		}
 
-		real := normalizeFingerprint(applierFingerprint(ctx, t, db))
-		want := normalizeFingerprint(model.fingerprint())
-		if real != want {
+		implemented := normalizeFingerprint(applierFingerprint(ctx, t, db, feed))
+		modelled := normalizeFingerprint(model.fingerprint())
+		if implemented != modelled {
 			t.Fatalf("seed %d: the model and the implementation disagree\n--- model ---\n%s\n--- implementation ---\n%s",
-				seed, want, real)
+				seed, modelled, implemented)
 		}
 	}
 }

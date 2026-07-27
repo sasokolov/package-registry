@@ -136,6 +136,25 @@ func nonNilMap(m map[string]string) map[string]string {
 	return m
 }
 
+// HostedRow reads one coordinate, for callers that must act on the current
+// value rather than one they listed earlier.
+func (db *DB) HostedRow(ctx context.Context, feed, path string) (HostedRow, bool, error) {
+	rows, err := db.pool.Query(ctx, listHostedQuery+" LIMIT 1", feed, path)
+	if err != nil {
+		return HostedRow{}, false, classify(fmt.Errorf("read hosted manifest: %w", err))
+	}
+	out, err := scanHosted(rows)
+	if err != nil {
+		return HostedRow{}, false, err
+	}
+	for _, r := range out {
+		if r.Path == path {
+			return r, true, nil
+		}
+	}
+	return HostedRow{}, false, nil
+}
+
 // ActiveQuarantinesTx lists every coordinate currently blocked, for a
 // bootstrap snapshot.
 func ActiveQuarantinesTx(ctx context.Context, tx pgx.Tx) ([]QuarantineEntry, error) {
@@ -154,6 +173,45 @@ func ActiveQuarantinesTx(ctx context.Context, tx pgx.Tx) ([]QuarantineEntry, err
 			return nil, err
 		}
 		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// ResolutionRow is an operator's terminal decision for a coordinate.
+type ResolutionRow struct {
+	Feed       string
+	Path       string
+	Coordinate string
+	KeepSHA    string
+	Size       int64
+	Checksums  map[string]string
+	Metadata   map[string]string
+	Operator   string
+	HLCWall    int64
+	HLCLogical int64
+}
+
+// ConflictResolutionsTx lists operator decisions for a bootstrap snapshot.
+func ConflictResolutionsTx(ctx context.Context, tx pgx.Tx) ([]ResolutionRow, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT feed, path, coordinate, keep_sha256, size, checksums, metadata,
+		       operator, hlc_wall, hlc_logical
+		  FROM conflict_resolutions ORDER BY feed, path`)
+	if err != nil {
+		return nil, fmt.Errorf("list conflict resolutions: %w", err)
+	}
+	defer rows.Close()
+	var out []ResolutionRow
+	for rows.Next() {
+		var r ResolutionRow
+		var checksums, metadata []byte
+		if err := rows.Scan(&r.Feed, &r.Path, &r.Coordinate, &r.KeepSHA, &r.Size,
+			&checksums, &metadata, &r.Operator, &r.HLCWall, &r.HLCLogical); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(checksums, &r.Checksums)
+		_ = json.Unmarshal(metadata, &r.Metadata)
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }

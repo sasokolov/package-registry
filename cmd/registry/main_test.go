@@ -33,7 +33,7 @@ func TestRouterEndpoints(t *testing.T) {
 	feeds := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	})
-	srv := httptest.NewServer(newRouter(&ready, discardLogger(), testMetricsRegistry(), feeds))
+	srv := httptest.NewServer(newRouter(&ready, func() bool { return true }, discardLogger(), testMetricsRegistry(), feeds))
 	defer srv.Close()
 
 	get := func(t *testing.T, path string) (int, string) {
@@ -84,7 +84,9 @@ func TestServeShutsDownGracefully(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 
 	done := make(chan error, 1)
-	go func() { done <- serveHTTP(ctx, cfg, discardLogger(), testMetricsRegistry(), nil) }()
+	go func() {
+		done <- serveHTTP(ctx, cfg, discardLogger(), testMetricsRegistry(), nil, func() bool { return true })
+	}()
 
 	// Give the listener a moment to start, then trigger shutdown.
 	time.Sleep(50 * time.Millisecond)
@@ -97,5 +99,49 @@ func TestServeShutsDownGracefully(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("serve did not return after context cancellation")
+	}
+}
+
+// A pod whose migrations have not completed must not be routed to: the
+// publish path depends on schema objects the newest migration creates.
+func TestReadyzWaitsForMigrations(t *testing.T) {
+	var ready atomic.Bool
+	ready.Store(true)
+	migrated := atomic.Bool{}
+
+	srv := httptest.NewServer(newRouter(&ready, migrated.Load, discardLogger(), testMetricsRegistry(), nil))
+	defer srv.Close()
+
+	resp, err := srv.Client().Get(srv.URL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("/readyz before migrations = %d, want 503", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "migrations") {
+		t.Errorf("/readyz body does not say why: %q", body)
+	}
+
+	// Liveness is unaffected: the process is healthy, just not ready.
+	resp, err = srv.Client().Get(srv.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/healthz before migrations = %d, want 200", resp.StatusCode)
+	}
+
+	migrated.Store(true)
+	resp, err = srv.Client().Get(srv.URL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/readyz after migrations = %d, want 200", resp.StatusCode)
 	}
 }

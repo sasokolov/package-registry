@@ -15,7 +15,7 @@ in the other sites' replication.peers[].url.
 Next steps:
   1. Create a static token:
        kubectl exec deploy/{{ include "registry.fullname" . }} -- \
-         registry token create -name ci-bot -config /tmp/config.yaml
+         registry token create -name ci-bot -config /etc/registry/config.yaml
   2. Point your clients at the registry — see deploy/helm/README.md for
      ready-made GitLab CI snippets (.npmrc, settings.xml, auth.json,
      .terraformrc, NuGet.config).
