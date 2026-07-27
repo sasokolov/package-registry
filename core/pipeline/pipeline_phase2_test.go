@@ -1,11 +1,14 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1" //nolint:gosec // legacy checksum in tests
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -388,5 +391,58 @@ func TestSelfReferentialMetadataDoesNotDeadlock(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Serve deadlocked on a self-referential metadata intent")
+	}
+}
+
+// A manifest whose recorded size is wrong must not truncate the response.
+// Replication can import a coordinate whose size was lost in transit, and
+// the failure mode — a 200 with Content-Length: 0 and an empty body, with
+// every checksum still matching — is invisible to every other check.
+func TestBlobLengthWinsOverAWrongManifestSize(t *testing.T) {
+	h := newHarness(t)
+	h.set("lib/sized.jar", "twenty-four bytes here!!")
+	up := h.upstream(0)
+	ctx := t.Context()
+
+	intent := artifactIntent("lib/sized.jar")
+	if _, err := h.pipe.Serve(ctx, h.request(intent, up)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Corrupt the stored manifest's size the way a lossy import would.
+	key := "manifests/test-feed/lib/sized.jar"
+	rc, _, err := h.store.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	m["size"] = 0
+	patched, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.Put(ctx, key, bytes.NewReader(patched), api.PutOpts{}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := h.pipe.Serve(ctx, h.request(intent, up))
+	if err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	body := mustBody(t, res)
+	if res.Size != int64(len(body)) {
+		t.Errorf("declared size %d, body is %d bytes: the response would be truncated",
+			res.Size, len(body))
+	}
+	if body != "twenty-four bytes here!!" {
+		t.Errorf("body = %q", body)
 	}
 }

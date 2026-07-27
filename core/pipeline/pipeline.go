@@ -347,9 +347,22 @@ func (p *Pipeline) openBlob(ctx context.Context, m manifest, source api.Source) 
 	if err != nil {
 		return nil, fmt.Errorf("manifest points to missing blob %s: %w", m.SHA256, err)
 	}
+
+	// The BLOB's length is authoritative for the response, not the
+	// manifest's. A manifest that lost its size (a replicated decision
+	// imported without one, a truncated record) would otherwise be served
+	// as a 200 with Content-Length: 0 and an empty body, while every
+	// checksum and digest still matched — the quietest corruption there is.
+	size := m.Size
+	if info.Size >= 0 && info.Size != m.Size {
+		p.logger.Warn("manifest size disagrees with the stored blob; serving the blob's length",
+			"sha256", m.SHA256, "manifest_size", m.Size, "blob_size", info.Size)
+		size = info.Size
+	}
+
 	return &Result{
 		Body:    rc,
-		Size:    m.Size,
+		Size:    size,
 		SHA256:  m.SHA256,
 		ModTime: info.ModTime,
 		Source:  source,
