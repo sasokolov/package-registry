@@ -165,8 +165,24 @@ run_curl() { # <path> [curl args...]
 }
 
 echo "==> health endpoints answer"
-[[ "$(run_curl /healthz)" == "ok" ]] || { echo "healthz failed" >&2; exit 1; }
-run_curl /metrics | grep -q registry_site_info || { echo "metrics missing" >&2; exit 1; }
+# A pod that just became ready may still be finishing its first request
+# path; retry rather than fail the whole smoke on a one-second race.
+retry() { # <attempts> <command...>
+  local attempts="$1"; shift
+  local i
+  for (( i = 1; i <= attempts; i++ )); do
+    if "$@"; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+healthz_ok() { [[ "$(run_curl /healthz)" == "ok" ]]; }
+metrics_ok() { run_curl /metrics | grep -q registry_site_info; }
+
+retry 10 healthz_ok || { echo "healthz failed" >&2; run_curl /healthz >&2 || true; exit 1; }
+retry 10 metrics_ok || { echo "metrics missing" >&2; exit 1; }
 
 echo "==> the feed proxies a package from the fake upstream"
 body="$(run_curl /maven/smoke/com/example/lib/1.0.0/lib-1.0.0.jar)"
