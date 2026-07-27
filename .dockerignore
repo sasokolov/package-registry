@@ -1,3 +1,5 @@
 .git
 bin
 .devdata
+ui/node_modules
+ui/dist

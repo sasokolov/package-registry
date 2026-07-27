@@ -59,6 +59,9 @@ type Server struct {
 	// apiHandler serves the registry's own API, mounted ahead of the feed
 	// routes so a package path can never shadow it.
 	apiHandler atomic.Pointer[http.Handler]
+	// console wraps the feed router with the web console, which claims the
+	// site root and its own reserved prefix and passes everything else on.
+	console    atomic.Pointer[func(http.Handler) http.Handler]
 	pipe       *pipeline.Pipeline
 	publisher  *pipeline.Publisher
 	quarantine *quarantineCache
@@ -304,8 +307,18 @@ func (s *Server) FeedDigests(ctx context.Context) map[string]string {
 // summaries and permissions) as much as the server needs it.
 func (s *Server) SetAPI(h http.Handler) { s.apiHandler.Store(&h) }
 
+// SetConsole installs the web console in front of the feed router. It must be
+// called before Handler, which composes the chain once.
+func (s *Server) SetConsole(wrap func(http.Handler) http.Handler) { s.console.Store(&wrap) }
+
 // Handler returns the dynamic feed handler; the caller mounts it under /.
 func (s *Server) Handler() http.Handler {
+	var feeds http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.rt.Load().router.ServeHTTP(w, r)
+	})
+	if wrap := s.console.Load(); wrap != nil {
+		feeds = (*wrap)(feeds)
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The API answers first: its prefix is reserved, and letting the
 		// feed router see those paths would make a package name able to
@@ -314,7 +327,7 @@ func (s *Server) Handler() http.Handler {
 			http.StripPrefix(adminapi.APIPrefix, *api).ServeHTTP(w, r)
 			return
 		}
-		s.rt.Load().router.ServeHTTP(w, r)
+		feeds.ServeHTTP(w, r)
 	})
 }
 

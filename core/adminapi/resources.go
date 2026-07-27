@@ -4,12 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sort"
 
 	"github.com/go-chi/chi/v5"
 	"gopkg.in/yaml.v3"
 
-	"github.com/sasokolov/package-registry/core/api"
 	"github.com/sasokolov/package-registry/core/config"
 )
 
@@ -425,15 +423,3 @@ func mappingField(node *yaml.Node, field string) string {
 	}
 	return value.Value
 }
-
-// sortedFeedNames is used by the read API.
-func sortedFeedNames(cfg *config.Config) []string {
-	names := make([]string, 0, len(cfg.Feeds))
-	for _, f := range cfg.Feeds {
-		names = append(names, f.Name)
-	}
-	sort.Strings(names)
-	return names
-}
-
-var _ = api.ErrNotFound

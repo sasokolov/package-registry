@@ -157,6 +157,7 @@ modules/format/npm/
 modules/format/composer/
 modules/format/nuget/
 policies/allowlist/  policies/osv/  policies/license/  policies/quarantine/
+ui/                    — консоль: React+TS+Vite, встраивается go:embed
 conformance/           — docker compose, fake-upstream fixtures, сценарии
 deploy/helm/
 docs/decisions.md      — журнал мелких решений (одна строка на решение)
@@ -176,7 +177,8 @@ docs/geo-replication.md — ADR гео-репликации (журнальна�
 ## Команды
 
 ```
-make build          # go build ./...
+make build          # сборка консоли (make ui) + go build ./...
+make ui             # только консоль: npm ci && vite build -> ui/dist
 make test           # unit-тесты
 make lint           # golangci-lint run
 make conformance    # docker compose: герметичный прогон с fake-upstream

@@ -27,6 +27,18 @@ lint:
   script:
     - make lint
 
+# Консоль: типы и сборка. Бинарь собирается в conformance-образе, но
+# ошибка в TypeScript должна падать здесь, а не в docker build.
+ui:
+  stage: lint
+  image: node:24
+  cache:
+    key: ui-npm
+    paths:
+      - ui/node_modules
+  script:
+    - cd ui && npm ci && npm run typecheck && npm run build
+
 test:
   stage: test
   image: $GO_IMAGE

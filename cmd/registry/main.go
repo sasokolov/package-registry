@@ -30,6 +30,7 @@ import (
 	"github.com/sasokolov/package-registry/core/pipeline"
 	"github.com/sasokolov/package-registry/core/server"
 	"github.com/sasokolov/package-registry/core/state"
+	webui "github.com/sasokolov/package-registry/ui"
 )
 
 func main() {
@@ -154,6 +155,14 @@ func serveCmd(args []string, logOut io.Writer) error {
 			cfg.Server.ProjectionRepairOrDefault(), pipeline.NewRepairMetrics(promReg))
 		go repair.Run(ctx)
 	}
+
+	// The web console, served from the binary at the site root.
+	console := webui.New()
+	if !console.Built() {
+		logger.Warn("web console is not built into this binary; /ui/ will say so",
+			"hint", "make ui")
+	}
+	srv.SetConsole(console.Middleware)
 
 	// The registry's own API: the console's read surface and the write path
 	// that makes configuration manageable as code.

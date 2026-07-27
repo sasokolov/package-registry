@@ -6,10 +6,18 @@ GOLANGCI_LINT := $(BIN_DIR)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 
 COMPOSE_FILE := conformance/docker-compose.yml
 
-.PHONY: build test test-integration lint conformance conformance-live conformance-chaos conformance-geo load-test dev dev-down
+.PHONY: build ui test test-integration lint conformance conformance-live conformance-chaos conformance-geo load-test dev dev-down
 
-build:
+# `go build ./...` alone also works — the console directory carries a
+# placeholder so the embed compiles — but the binary then reports the console
+# as not built. `make build` is what produces a complete registry.
+build: ui
 	go build ./...
+
+# The console. Its output is generated, so it is not committed; this is the
+# one place that produces it.
+ui:
+	cd ui && npm ci && npm run build
 
 test:
 	go test ./...

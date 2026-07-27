@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-
-	"github.com/sasokolov/package-registry/core/api"
 )
 
 // The read surface the console needs. It answers questions an operator
@@ -290,6 +288,3 @@ func intParam(r *http.Request, name string, def, upperBound int) int {
 	}
 	return v
 }
-
-var _ = api.Anonymous
-var _ = sortedFeedNames
