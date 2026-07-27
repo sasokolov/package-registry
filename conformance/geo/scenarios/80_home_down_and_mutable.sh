@@ -56,6 +56,14 @@ for s in us eu; do
   fi
 done
 
+not_served_anywhere() {
+  local status
+  for s in us eu; do
+    read -r status _ <<<"$(fetch "$s" homed "com/example/orphan/1.0.0/orphan-1.0.0.jar")"
+    [[ "$status" != "200" ]] || return 1
+  done
+}
+
 echo "--> both sides move the same npm dist-tag while partitioned"
 npm_publish() { # <site> <version>
   compose run --rm -T -e NPM_TOKEN="$2" npm-client sh -c "
@@ -81,6 +89,13 @@ out_us="$(npm_publish us "$tok_us" "$V_US")" || { echo "$out_us" | tail -10; exi
 echo "--> healing"
 heal
 
+echo "--> and still nothing was queued once the home site is reachable again"
+sleep 5
+if ! not_served_anywhere; then
+  echo "the refused publish appeared after the partition healed (silent queue)" >&2
+  exit 1
+fi
+
 echo "--> both sites resolve the tag to the same version"
 tag_of() { # <eu|us>
   local body
@@ -103,13 +118,16 @@ fi
 echo "    both sites: $(tag_of eu)"
 
 echo "--> and both versions are still installable (nothing was lost)"
+lists_version() { # <eu|us> <version>
+  local body
+  body="$(compose run --rm -T npm-client sh -c \
+    "wget -qO- http://registry-$1:8080/npm/shared-npm/tagged-pkg 2>/dev/null")" || return 1
+  grep -q "\"$2\"" <<<"$body"
+}
 for version in "$V_EU" "$V_US"; do
   for site in eu us; do
-    if ! wait_for 60 bash -c "true"; then :; fi
-    body="$(compose run --rm -T npm-client sh -c \
-      "wget -qO- http://registry-$site:8080/npm/shared-npm/tagged-pkg 2>/dev/null")"
-    if ! grep -q "\"$version\"" <<<"$body"; then
-      echo "site $site lost version $version" >&2
+    if ! wait_for 90 lists_version "$site" "$version"; then
+      echo "site $site never lists version $version" >&2
       exit 1
     fi
   done

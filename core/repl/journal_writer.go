@@ -55,18 +55,33 @@ func (w *Writer) AppendTokenRevoke(ctx context.Context, tx pgx.Tx, hash string) 
 
 // AppendQuarantine records a quarantine decision.
 func (w *Writer) AppendQuarantine(ctx context.Context, tx pgx.Tx, feed, coordinate, reason, detail string) error {
-	_, err := state.AppendJournal(ctx, tx, w.site, KindQuarantineSet, QuarantineSet{
+	_, err := w.AppendQuarantineEntry(ctx, tx, feed, coordinate, reason, detail)
+	return err
+}
+
+// AppendQuarantineEntry is AppendQuarantine returning the journal entry, so
+// the caller can apply the decision locally with the SAME stamp peers will
+// order it by.
+func (w *Writer) AppendQuarantineEntry(ctx context.Context, tx pgx.Tx,
+	feed, coordinate, reason, detail string) (state.JournalEntry, error) {
+	return state.AppendJournal(ctx, tx, w.site, KindQuarantineSet, QuarantineSet{
 		Feed: feed, Coordinate: coordinate, Reason: reason, Detail: detail,
 	})
-	return err
 }
 
 // AppendQuarantineRelease records lifting a quarantine.
 func (w *Writer) AppendQuarantineRelease(ctx context.Context, tx pgx.Tx, feed, coordinate, reason string) error {
-	_, err := state.AppendJournal(ctx, tx, w.site, KindQuarantineRelease, QuarantineRelease{
+	_, err := w.AppendQuarantineReleaseEntry(ctx, tx, feed, coordinate, reason)
+	return err
+}
+
+// AppendQuarantineReleaseEntry is AppendQuarantineRelease returning the
+// journal entry and its stamp.
+func (w *Writer) AppendQuarantineReleaseEntry(ctx context.Context, tx pgx.Tx,
+	feed, coordinate, reason string) (state.JournalEntry, error) {
+	return state.AppendJournal(ctx, tx, w.site, KindQuarantineRelease, QuarantineRelease{
 		Feed: feed, Coordinate: coordinate, Reason: reason,
 	})
-	return err
 }
 
 // AppendConflictResolve records an operator's resolution of a K1 conflict.

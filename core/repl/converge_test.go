@@ -286,6 +286,14 @@ func (m *modelState) fingerprint() string {
 	for _, h := range revoked {
 		fmt.Fprintf(&b, "revoked|%s\n", h)
 	}
+	resolvedKeys := make([]string, 0, len(m.resolved))
+	for k := range m.resolved {
+		resolvedKeys = append(resolvedKeys, k)
+	}
+	sort.Strings(resolvedKeys)
+	for _, k := range resolvedKeys {
+		fmt.Fprintf(&b, "resolved|%s=%s\n", k, m.resolved[k])
+	}
 	conflicts := make([]string, 0, len(m.conflicts))
 	for k := range m.conflicts {
 		conflicts = append(conflicts, k)
@@ -330,6 +338,11 @@ func randomEventsForFeed(t *testing.T, rng *rand.Rand, feed string) []state.Jour
 	t.Helper()
 	var events []state.JournalEntry
 	wall := int64(1_700_000_000_000)
+	// Track what was actually published where, so a generated resolution
+	// names a real conflict. Picking path and digest independently made
+	// resolutions unapplicable, which left the whole terminal-decision
+	// branch untested.
+	published := map[string]map[string]bool{}
 
 	logical := int64(0)
 	for i := 0; i < 20; i++ {
@@ -353,8 +366,13 @@ func randomEventsForFeed(t *testing.T, rng *rand.Rand, feed string) []state.Jour
 			pkg := fmt.Sprintf("pkg-%d", rng.IntN(4))
 			ext := []string{".jar", ".pom", "-sources.jar"}[rng.IntN(3)]
 			content := fmt.Sprintf("content-%d", rng.IntN(3))
+			path := pkg + "/1.0.0/" + pkg + "-1.0.0" + ext
+			if published[path] == nil {
+				published[path] = map[string]bool{}
+			}
+			published[path][digestOf(content)] = true
 			events = append(events, mkEvent(t, site, seq, wall, logical, KindManifestPut, ManifestPut{
-				Feed: feed, Path: pkg + "/1.0.0/" + pkg + "-1.0.0" + ext,
+				Feed: feed, Path: path,
 				Coord:  "maven:com.example:" + pkg + "@1.0.0",
 				SHA256: digestOf(content), Size: int64(len(content)),
 			}))

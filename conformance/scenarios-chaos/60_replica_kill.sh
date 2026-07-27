@@ -44,15 +44,18 @@ compose run --rm -d -T --name "$CLIENT_NAME" npm-client sh -c '
   sleep 120
 ' >/dev/null
 
-# Kill only once the install is genuinely in flight: killing before the
-# client has issued a request would exercise nothing.
-echo "--> waiting for the install to actually start fetching"
+# Kill only once the install is genuinely in flight. The client writes its
+# output at the end, so the signal is the REGISTRY seeing tarball requests:
+# waiting on the client's log would mean killing after the install.
+echo "--> waiting for the install to actually start fetching tarballs"
 in_flight() {
-  docker exec "$CLIENT_NAME" test -s /tmp/out 2>/dev/null
+  local logs
+  logs="$(compose logs --since 120s registry 2>/dev/null)" || return 1
+  grep -qE '"path":"/npm/npmjs/[^"]*\.tgz"' <<<"$logs"
 }
 if ! wait_for_chaos 90 in_flight; then
-  echo "npm never started fetching" >&2
-  docker logs "$CLIENT_NAME" 2>&1 | tail -10 >&2
+  echo "npm never started fetching tarballs" >&2
+  compose logs --tail 20 registry >&2 || true
   exit 1
 fi
 

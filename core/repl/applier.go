@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/sasokolov/package-registry/core/state"
@@ -45,11 +44,6 @@ type Applier struct {
 	maxSkew time.Duration
 	now     func() time.Time
 	eager   func(feed string) bool
-
-	// pending holds projections decided by a committed transaction and not
-	// yet written to the blob store.
-	pendingMu sync.Mutex
-	pending   []projectionWrite
 }
 
 // ApplierOptions wires an Applier.
@@ -99,18 +93,25 @@ func NewApplier(o ApplierOptions) *Applier {
 // blob has not arrived is imported anyway and served through peer fallback
 // until backfill fetches it.
 func (a *Applier) importSnapshotEntry(ctx context.Context, tx pgxTx, peer string,
-	e state.JournalEntry, touched map[string]bool) error {
-	eager := a.eager
-	a.eager = func(string) bool { return false }
-	defer func() { a.eager = eager }()
-
-	err := a.dispatch(ctx, tx, peer, e, touched)
+	e state.JournalEntry, touched map[string]bool, pending *[]projectionWrite) error {
+	// A snapshot import is never eager: swapping the shared field would
+	// race every other peer's applier.
+	snapshot := a.withoutEagerFeeds()
+	err := snapshot.dispatch(ctx, tx, peer, e, touched, pending)
 	if errors.Is(err, errPark) {
 		// Nothing here can be retried later, so a malformed snapshot entry
 		// is reported rather than silently dropped.
 		return fmt.Errorf("snapshot entry from %s cannot be applied: %w", peer, err)
 	}
 	return err
+}
+
+// withoutEagerFeeds returns a shallow copy that treats every feed as lazy.
+// Copying is safe: an Applier's fields are set once at construction.
+func (a *Applier) withoutEagerFeeds() *Applier {
+	clone := *a
+	clone.eager = func(string) bool { return false }
+	return &clone
 }
 
 // SetBlobs attaches the blob fetcher (the manager, which needs the applier
@@ -187,7 +188,8 @@ func (a *Applier) applyOne(ctx context.Context, peer string, e state.JournalEntr
 		return tx.Commit(ctx)
 	}
 
-	if err := a.dispatch(ctx, tx, peer, e, touched); err != nil {
+	var pending []projectionWrite
+	if err := a.dispatch(ctx, tx, peer, e, touched, &pending); err != nil {
 		if errors.Is(err, errPark) {
 			_ = tx.Rollback(ctx)
 			a.metrics.parked()
@@ -198,7 +200,7 @@ func (a *Applier) applyOne(ctx context.Context, peer string, e state.JournalEntr
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit applied event: %w", err)
 	}
-	a.flushProjections(ctx)
+	a.flushProjections(ctx, pending)
 	a.metrics.applied(e.Kind)
 	return nil
 }
@@ -229,10 +231,11 @@ func parkf(format string, args ...any) error {
 	return fmt.Errorf("%s: %w", fmt.Sprintf(format, args...), errPark)
 }
 
-func (a *Applier) dispatch(ctx context.Context, tx pgxTx, peer string, e state.JournalEntry, touched map[string]bool) error {
+func (a *Applier) dispatch(ctx context.Context, tx pgxTx, peer string, e state.JournalEntry,
+	touched map[string]bool, pending *[]projectionWrite) error {
 	switch e.Kind {
 	case KindManifestPut:
-		return a.applyManifestPut(ctx, tx, peer, e, touched)
+		return a.applyManifestPut(ctx, tx, peer, e, touched, pending)
 	case KindBlobAvailable:
 		return a.applyBlobAvailable(ctx, peer, e)
 	case KindTokenRevoke:
@@ -242,7 +245,7 @@ func (a *Applier) dispatch(ctx context.Context, tx pgxTx, peer string, e state.J
 	case KindQuarantineRelease:
 		return a.applyQuarantineRelease(ctx, tx, e)
 	case KindConflictResolve:
-		return a.applyConflictResolve(ctx, tx, e, touched)
+		return a.applyConflictResolve(ctx, tx, e, touched, pending)
 	default:
 		// Unknown kind: a newer peer speaks a dialect we do not. Park it,
 		// alert, and let an upgraded binary retry — never silently drop.
@@ -257,7 +260,7 @@ func (a *Applier) dispatch(ctx context.Context, tx pgxTx, peer string, e state.J
 // resolution as terminal, orders mutable pointers by HLC, and applies rule
 // K1 to conflicting immutable content.
 func (a *Applier) applyManifestPut(ctx context.Context, tx pgxTx, _ string,
-	e state.JournalEntry, touched map[string]bool) error {
+	e state.JournalEntry, touched map[string]bool, pending *[]projectionWrite) error {
 
 	var p ManifestPut
 	if err := json.Unmarshal(e.Payload, &p); err != nil {
@@ -394,7 +397,7 @@ func (a *Applier) applyManifestPut(ctx context.Context, tx pgxTx, _ string,
 	// round trip would stall every publish at this site. Until then the
 	// coordinate is served through peer fallback, and the repair loop
 	// rewrites the projection if this site dies in between.
-	a.deferProjection(projectionWrite{
+	*pending = append(*pending, projectionWrite{
 		Feed: p.Feed, Path: p.Path, SHA256: servedSHA, Size: servedSize,
 		Checksums: servedChecksums, Metadata: servedMetadata,
 		Origin: e.OriginSite, Publisher: p.Publisher,
@@ -413,21 +416,13 @@ type projectionWrite struct {
 	Origin, Publisher   string
 }
 
-func (a *Applier) deferProjection(w projectionWrite) {
-	a.pendingMu.Lock()
-	defer a.pendingMu.Unlock()
-	a.pending = append(a.pending, w)
-}
-
-// flushProjections writes the queued projections. Failures are logged, not
-// returned: the database is committed either way, and the repair loop is
-// what guarantees the projection catches up.
-func (a *Applier) flushProjections(ctx context.Context) {
-	a.pendingMu.Lock()
-	queued := a.pending
-	a.pending = nil
-	a.pendingMu.Unlock()
-
+// flushProjections writes projections decided by a transaction that has
+// COMMITTED. The queue is per-apply, not shared: one goroutine per peer
+// applies concurrently, and draining another's queue would project a
+// coordinate whose transaction had been rolled back. Failures are logged,
+// not returned — the database is committed either way, and the repair loop
+// is what guarantees the projection catches up.
+func (a *Applier) flushProjections(ctx context.Context, queued []projectionWrite) {
 	if a.project == nil {
 		return
 	}
@@ -513,7 +508,8 @@ func (a *Applier) applyQuarantineRelease(ctx context.Context, tx pgxTx, e state.
 // recorded as terminal state (so a later conflicting publish cannot re-open
 // the coordinate), the row is restored to the kept digest's own size and
 // checksums, and the projection is rewritten to match.
-func (a *Applier) applyConflictResolve(ctx context.Context, tx pgxTx, e state.JournalEntry, touched map[string]bool) error {
+func (a *Applier) applyConflictResolve(ctx context.Context, tx pgxTx, e state.JournalEntry,
+	touched map[string]bool, pending *[]projectionWrite) error {
 	var p ConflictResolve
 	if err := json.Unmarshal(e.Payload, &p); err != nil {
 		return parkf("malformed conflict_resolve payload: %v", err)
@@ -556,7 +552,7 @@ func (a *Applier) applyConflictResolve(ctx context.Context, tx pgxTx, e state.Jo
 	if err := applyResolutionTx(ctx, tx, p.Feed, p.Path, p.Coord, winning, e.OriginSite); err != nil {
 		return err
 	}
-	a.deferProjection(projectionWrite{
+	*pending = append(*pending, projectionWrite{
 		Feed: p.Feed, Path: p.Path, SHA256: winning.KeepSHA, Size: winning.Size,
 		Checksums: winning.Checksums, Metadata: winning.Metadata,
 		Origin: e.OriginSite, Publisher: p.Operator,
@@ -605,7 +601,8 @@ func (a *Applier) RetryParked(ctx context.Context, peer string) error {
 			_ = tx.Rollback(ctx)
 			return err
 		}
-		err = a.dispatch(ctx, tx, peer, e, touched)
+		var pending []projectionWrite
+		err = a.dispatch(ctx, tx, peer, e, touched, &pending)
 		if err != nil {
 			_ = tx.Rollback(ctx)
 			if errors.Is(err, errPark) {
@@ -617,7 +614,7 @@ func (a *Applier) RetryParked(ctx context.Context, peer string) error {
 		if err := tx.Commit(ctx); err != nil {
 			return err
 		}
-		a.flushProjections(ctx)
+		a.flushProjections(ctx, pending)
 		if err := a.db.UnparkEvent(ctx, e.OriginSite, e.OriginSeq); err != nil {
 			return err
 		}

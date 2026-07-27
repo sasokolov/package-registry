@@ -345,15 +345,23 @@ func conflictSide(ctx context.Context, tx pgxTx, feed, path, sha256hex string) (
 			meta.SHA256 = candidate.sha
 			if meta.Size == 0 && len(meta.Checksums) == 0 {
 				// A conflict recorded before this data was carried (or by
-				// an older binary): recover the side's size and checksums
-				// from the stored row when it is the one being kept, so a
-				// resolution never advertises one artifact's integrity for
-				// another's bytes.
+				// an older binary). Recover the side's size and checksums:
+				// from the stored row when it is the one being kept, and
+				// otherwise from an already-recorded resolution or from
+				// the blob itself, so a resolution never advertises a size
+				// of zero for real bytes.
 				if stored, found, err := hostedState(ctx, tx, feed, path); err == nil && found &&
 					stored.SHA256 == candidate.sha {
 					meta.Size = stored.Size
 					meta.Checksums = stored.Checksums
 					meta.Metadata = stored.Metadata
+				}
+			}
+			if meta.Size == 0 {
+				// Last resort: the blob is content-addressed, so its length
+				// is authoritative and cheap to read.
+				if size, err := blobSize(ctx, tx, candidate.sha); err == nil && size > 0 {
+					meta.Size = size
 				}
 			}
 			return meta, true, nil
@@ -362,11 +370,44 @@ func conflictSide(ctx context.Context, tx pgxTx, feed, path, sha256hex string) (
 	return sideMeta{}, false, rows.Err()
 }
 
+// conflictSideSite reports which site published a conflicting digest.
+func conflictSideSite(ctx context.Context, tx pgxTx, feed, path, sha256hex string) (string, error) {
+	var site string
+	err := tx.QueryRow(ctx, `
+		SELECT CASE WHEN winner_sha256 = $3 THEN winner_site ELSE loser_site END
+		  FROM publish_conflicts
+		 WHERE feed=$1 AND path=$2 AND (winner_sha256 = $3 OR loser_sha256 = $3)
+		 LIMIT 1`, feed, path, sha256hex).Scan(&site)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return site, err
+}
+
+// blobSize recovers a blob's length from any coordinate that already
+// records it, which is enough to keep a resolution from advertising zero.
+func blobSize(ctx context.Context, tx pgxTx, sha256hex string) (int64, error) {
+	var size int64
+	err := tx.QueryRow(ctx,
+		"SELECT size FROM hosted_manifests WHERE sha256 = $1 AND size > 0 LIMIT 1",
+		sha256hex).Scan(&size)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	return size, err
+}
+
 // applyResolutionTx points the coordinate at the kept digest with that
 // digest's own size and checksums, closes the conflict and lifts the
 // conflict quarantine.
 func applyResolutionTx(ctx context.Context, tx pgxTx, feed, path, coord string,
 	r resolution, decidedBy string) error {
+	// Where the kept bytes came from: the conflict record knows, and it is
+	// the same answer on every site.
+	keptSite := decidedBy
+	if site, err := conflictSideSite(ctx, tx, feed, path, r.KeepSHA); err == nil && site != "" {
+		keptSite = site
+	}
 	checksums, err := json.Marshal(orEmpty(r.Checksums))
 	if err != nil {
 		return fmt.Errorf("encode resolved checksums: %w", err)
@@ -378,6 +419,12 @@ func applyResolutionTx(ctx context.Context, tx pgxTx, feed, path, coord string,
 	// Upsert, not update: a site bootstrapping from a snapshot learns the
 	// resolution BEFORE the coordinate itself, and an update against a row
 	// that does not exist yet would silently drop the package.
+	// Upsert, not update: a site bootstrapping from a snapshot learns the
+	// resolution BEFORE the coordinate itself, and an update against a row
+	// that does not exist yet would silently drop the package. The site
+	// column keeps naming where the KEPT bytes were published — attributing
+	// them to whoever resolved the conflict would make provenance depend on
+	// who happened to run the command.
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO hosted_manifests
 			(feed, path, coordinate, sha256, size, checksums, metadata, mutable,
@@ -386,8 +433,8 @@ func applyResolutionTx(ctx context.Context, tx pgxTx, feed, path, coord string,
 		ON CONFLICT ON CONSTRAINT hosted_manifests_feed_path_key
 		DO UPDATE SET sha256=EXCLUDED.sha256, size=EXCLUDED.size,
 		              checksums=EXCLUDED.checksums, metadata=EXCLUDED.metadata,
-		              site=EXCLUDED.site, updated_at=now()`,
-		feed, path, coord, r.KeepSHA, r.Size, checksums, metadata, decidedBy); err != nil {
+		              updated_at=now()`,
+		feed, path, coord, r.KeepSHA, r.Size, checksums, metadata, keptSite); err != nil {
 		return fmt.Errorf("apply conflict resolution: %w", err)
 	}
 	// Close this PATH's conflicts, then recompute the coordinate's block:
@@ -436,6 +483,30 @@ func recordResolvedConflictTx(ctx context.Context, tx pgxTx, p ManifestPut,
 		return fmt.Errorf("record post-resolution conflict: %w", err)
 	}
 	return nil
+}
+
+// importConflictTx records a conflict learned from a peer's snapshot and
+// re-derives the coordinate's block from it.
+func importConflictTx(ctx context.Context, tx pgxTx, c ConflictRecord) error {
+	var exists bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM publish_conflicts
+			 WHERE feed=$1 AND path=$2 AND winner_sha256=$3 AND loser_sha256=$4)`,
+		c.Feed, c.Path, c.WinnerSHA, c.LoserSHA).Scan(&exists); err != nil {
+		return fmt.Errorf("check imported conflict: %w", err)
+	}
+	if !exists {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO publish_conflicts
+				(feed, path, coordinate, winner_sha256, loser_sha256, winner_site, loser_site)
+			VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+			c.Feed, c.Path, c.Coordinate, c.WinnerSHA, c.LoserSHA,
+			c.WinnerSite, c.LoserSite); err != nil {
+			return fmt.Errorf("import conflict: %w", err)
+		}
+	}
+	return syncConflictQuarantineTx(ctx, tx, c.Feed, c.Coordinate)
 }
 
 // sideMeta is one side of a conflict: enough to restore a consistent row if

@@ -191,6 +191,41 @@ type ResolutionRow struct {
 	HLCLogical int64
 }
 
+// OpenConflictRow is an unresolved cross-site conflict.
+type OpenConflictRow struct {
+	Feed       string
+	Path       string
+	Coordinate string
+	WinnerSHA  string
+	LoserSHA   string
+	WinnerSite string
+	LoserSite  string
+}
+
+// OpenConflictsTx lists unresolved conflicts for a bootstrap snapshot. The
+// quarantine of a conflicted coordinate is derived from these, so a site
+// that imports the block without them would release it immediately.
+func OpenConflictsTx(ctx context.Context, tx pgx.Tx) ([]OpenConflictRow, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT feed, path, coordinate, winner_sha256, loser_sha256, winner_site, loser_site
+		  FROM publish_conflicts WHERE resolved_at IS NULL
+		 ORDER BY feed, path`)
+	if err != nil {
+		return nil, fmt.Errorf("list open conflicts: %w", err)
+	}
+	defer rows.Close()
+	var out []OpenConflictRow
+	for rows.Next() {
+		var c OpenConflictRow
+		if err := rows.Scan(&c.Feed, &c.Path, &c.Coordinate, &c.WinnerSHA, &c.LoserSHA,
+			&c.WinnerSite, &c.LoserSite); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // ConflictResolutionsTx lists operator decisions for a bootstrap snapshot.
 func ConflictResolutionsTx(ctx context.Context, tx pgx.Tx) ([]ResolutionRow, error) {
 	rows, err := tx.Query(ctx, `

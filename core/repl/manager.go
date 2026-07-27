@@ -229,7 +229,7 @@ func (m *Manager) pollPeer(ctx context.Context, c *Client) {
 		if origin != c.Name() {
 			continue
 		}
-		applied, err := m.catchUp(ctx, c, origin, head, touched)
+		applied, err := m.catchUp(ctx, c, origin, head, status.UUID, touched)
 		if err != nil {
 			m.metrics.pollFailure(c.Name())
 			m.logger.Warn("peer stream catch-up failed",
@@ -256,12 +256,31 @@ func (m *Manager) pollPeer(ctx context.Context, c *Client) {
 }
 
 // catchUp pages through one origin's journal until we reach its head.
-func (m *Manager) catchUp(ctx context.Context, c *Client, origin string, head int64, touched map[string]bool) (int, error) {
+func (m *Manager) catchUp(ctx context.Context, c *Client, origin string, head int64,
+	originUUID string, touched map[string]bool) (int, error) {
 	var appliedTotal int
 	for {
 		cursor, err := m.db.GetCursor(ctx, c.Name(), origin)
 		if err != nil {
 			return appliedTotal, err
+		}
+		// A rebuilt peer is detected by IDENTITY first: its UUID changed,
+		// so the sequences this cursor counted belong to a site that no
+		// longer exists. Comparing sequences alone races a peer that
+		// republishes past the old cursor before we next poll.
+		if cursor.OriginUUID != "" && originUUID != "" && cursor.OriginUUID != originUUID {
+			dropped, err := m.db.ForgetOriginJournal(ctx, origin)
+			if err != nil {
+				return appliedTotal, err
+			}
+			m.logger.Warn("peer identity changed, resetting the stream",
+				"peer", c.Name(), "origin", origin,
+				"was", cursor.OriginUUID, "now", originUUID, "dropped_entries", dropped)
+			if err := m.setCursor(ctx, c.Name(), origin, 0, 0, originUUID); err != nil {
+				return appliedTotal, err
+			}
+			cursor.AppliedSeq = 0
+			cursor.OriginUUID = originUUID
 		}
 		if cursor.AppliedSeq > head {
 			// The peer's journal went BACKWARDS: its database was rebuilt
@@ -278,7 +297,7 @@ func (m *Manager) catchUp(ctx context.Context, c *Client, origin string, head in
 			m.logger.Warn("peer journal restarted, resetting the stream",
 				"peer", c.Name(), "origin", origin, "cursor", cursor.AppliedSeq,
 				"peer_head", head, "dropped_entries", dropped)
-			if err := m.advanceCursor(ctx, c.Name(), origin, 0, 0); err != nil {
+			if err := m.setCursor(ctx, c.Name(), origin, 0, 0, originUUID); err != nil {
 				return appliedTotal, err
 			}
 			cursor.AppliedSeq = 0
@@ -313,7 +332,7 @@ func (m *Manager) catchUp(ctx context.Context, c *Client, origin string, head in
 
 		last := page.Entries[len(page.Entries)-1].OriginSeq
 		durable := m.durableThrough(ctx, page.Entries, last)
-		if err := m.advanceCursor(ctx, c.Name(), origin, last, durable); err != nil {
+		if err := m.setCursor(ctx, c.Name(), origin, last, durable, originUUID); err != nil {
 			return appliedTotal, err
 		}
 		appliedTotal += len(page.Entries)
@@ -348,7 +367,10 @@ func (m *Manager) durableThrough(ctx context.Context, entries []state.JournalEnt
 	return durable
 }
 
-func (m *Manager) advanceCursor(ctx context.Context, peer, origin string, applied, durable int64) error {
+// setCursor records progress along with the origin incarnation it belongs
+// to, so a rebuilt peer's stream is never counted against the old one.
+func (m *Manager) setCursor(ctx context.Context, peer, origin string,
+	applied, durable int64, originUUID string) error {
 	tx, err := m.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -356,6 +378,7 @@ func (m *Manager) advanceCursor(ctx context.Context, peer, origin string, applie
 	defer func() { _ = tx.Rollback(ctx) }()
 	if err := state.SetCursorTx(ctx, tx, state.Cursor{
 		Peer: peer, Origin: origin, AppliedSeq: applied, DurableSeq: durable,
+		OriginUUID: originUUID,
 	}); err != nil {
 		return err
 	}
@@ -417,14 +440,15 @@ func (m *Manager) bootstrap(ctx context.Context, c *Client, touched map[string]b
 			return err
 		}
 		// Import as non-eager so a missing blob cannot park the entry.
-		if err := m.applier.importSnapshotEntry(ctx, tx, c.Name(), entry, touched); err != nil {
+		var pending []projectionWrite
+		if err := m.applier.importSnapshotEntry(ctx, tx, c.Name(), entry, touched, &pending); err != nil {
 			_ = tx.Rollback(ctx)
 			return err
 		}
 		if err := tx.Commit(ctx); err != nil {
 			return err
 		}
-		m.applier.flushProjections(ctx)
+		m.applier.flushProjections(ctx, pending)
 		imported++
 		if blobMissing {
 			deferred++
@@ -441,7 +465,7 @@ func (m *Manager) bootstrap(ctx context.Context, c *Client, touched map[string]b
 	// Only the peer's own watermark is ours to record: we do not import
 	// third-party streams from it.
 	if seq, ok := snap.Watermarks[snap.Site]; ok {
-		if err := m.advanceCursor(ctx, c.Name(), snap.Site, seq, 0); err != nil {
+		if err := m.setCursor(ctx, c.Name(), snap.Site, seq, 0, snap.UUID); err != nil {
 			return err
 		}
 	}
@@ -460,17 +484,37 @@ func (m *Manager) pruneJournal(ctx context.Context, peer string) {
 		names = append(names, c.Name())
 	}
 	watermark, ok, err := m.db.MinCursorAcrossPeers(ctx, m.site, names)
-	if err != nil || !ok || watermark <= 0 {
-		return
-	}
-	n, err := m.db.PruneJournal(ctx, m.site, watermark+1)
 	if err != nil {
-		m.logger.Warn("journal prune failed", "error", err)
 		return
 	}
-	if n > 0 {
-		m.logger.Info("journal pruned",
-			"site", m.site, "below_seq", watermark+1, "entries", n, "acked_by", peer)
+
+	// Two independent floors. The acknowledgement watermark is the safe
+	// one: nothing a peer has not confirmed reading is ever dropped. The
+	// retention window is the bound that stops an unreachable or removed
+	// peer pinning the journal forever — past it, entries are dropped and
+	// that peer re-bootstraps from a snapshot (which is exactly what the
+	// 410 path exists for).
+	if ok && watermark > 0 {
+		n, err := m.db.PruneJournal(ctx, m.site, watermark+1)
+		if err != nil {
+			m.logger.Warn("journal prune failed", "error", err)
+			return
+		}
+		if n > 0 {
+			m.logger.Info("journal pruned to the acknowledged watermark",
+				"site", m.site, "below_seq", watermark+1, "entries", n, "acked_by", peer)
+		}
+	}
+
+	expired, err := m.db.PruneJournalOlderThan(ctx, m.site, m.retention)
+	if err != nil {
+		m.logger.Warn("journal retention prune failed", "error", err)
+		return
+	}
+	if expired > 0 {
+		m.logger.Warn("journal entries dropped by retention before every peer acknowledged them; "+
+			"any peer that far behind will re-bootstrap from a snapshot",
+			"site", m.site, "retention", m.retention, "entries", expired)
 	}
 }
 
@@ -510,14 +554,32 @@ func (m *Manager) applySnapshotRestrictions(ctx context.Context, peer string, sn
 			return err
 		}
 	}
+	// Unresolved conflicts first: the coordinate's block is derived from
+	// them, so importing the block alone would be released on the next
+	// recompute.
+	for _, c := range snap.Conflicts {
+		if c.Feed == "" || c.Path == "" || len(c.WinnerSHA) != 64 || len(c.LoserSHA) != 64 {
+			continue
+		}
+		if err := importConflictTx(ctx, tx, c); err != nil {
+			return err
+		}
+	}
+
 	// Operator decisions come first: a manifest imported afterwards then
 	// converges on the decision instead of re-opening the conflict.
 	for _, r := range snap.Resolutions {
 		if r.Feed == "" || r.Path == "" || len(r.KeepSHA) != 64 {
 			continue
 		}
-		decision := resolution{KeepSHA: r.KeepSHA}
-		if err := recordResolution(ctx, tx, r.Feed, r.Path, r.Coord, decision, r.Operator, peer); err != nil {
+		// Carry the decision whole: a resolution without the kept digest's
+		// size and checksums would store the coordinate as zero-length.
+		decision := resolution{
+			KeepSHA: r.KeepSHA, Size: r.Size,
+			Checksums: r.Checksums, Metadata: r.Metadata, HLC: r.HLC,
+		}
+		if err := recordResolution(ctx, tx, r.Feed, r.Path, r.Coordinate,
+			decision, r.Operator, peer); err != nil {
 			return err
 		}
 	}
@@ -534,9 +596,10 @@ func (m *Manager) applySnapshotRestrictions(ctx context.Context, peer string, sn
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	if len(snap.Quarantine) > 0 || len(snap.Revoked) > 0 {
+	if len(snap.Quarantine) > 0 || len(snap.Revoked) > 0 || len(snap.Conflicts) > 0 {
 		m.logger.Info("snapshot restrictions applied",
-			"peer", peer, "quarantines", len(snap.Quarantine), "revocations", len(snap.Revoked))
+			"peer", peer, "quarantines", len(snap.Quarantine),
+			"revocations", len(snap.Revoked), "open_conflicts", len(snap.Conflicts))
 	}
 	return nil
 }

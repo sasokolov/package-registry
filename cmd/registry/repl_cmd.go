@@ -401,32 +401,16 @@ func replResync(ctx context.Context, db *state.DB, cfg *config.Config, peer stri
 	if peer == "" {
 		return errors.New("resync needs -peer <name>")
 	}
-	var reset int
+	var reset, dropped int64
 	// Take the poll lease so a cycle that is already running cannot write a
 	// higher cursor straight back over the reset.
 	ran, err := db.TryLease(ctx, "repl-poll:"+cfg.Site.Name+":"+peer, func(ctx context.Context) error {
-		cursors, err := db.ListCursors(ctx)
-		if err != nil {
-			return err
-		}
-		for _, c := range cursors {
-			if c.Peer != peer {
-				continue
-			}
-			tx, err := db.Begin(ctx)
-			if err != nil {
-				return err
-			}
-			if err := state.SetCursorTx(ctx, tx, state.Cursor{Peer: c.Peer, Origin: c.Origin}); err != nil {
-				_ = tx.Rollback(ctx)
-				return err
-			}
-			if err := tx.Commit(ctx); err != nil {
-				return err
-			}
-			reset++
-		}
-		return nil
+		// Drop this site's copy of the peer's journal as well: apply
+		// deduplicates on (origin, seq), so rewinding the cursor alone
+		// would re-read the entries and skip every one of them.
+		var err error
+		reset, dropped, err = db.ResetPeerStream(ctx, peer)
+		return err
 	})
 	if err != nil {
 		return err
@@ -438,7 +422,8 @@ func replResync(ctx context.Context, db *state.DB, cfg *config.Config, peer stri
 		return fmt.Errorf("no cursors found for peer %q", peer)
 	}
 	_, _ = fmt.Fprintf(out,
-		"reset %d cursor(s) for peer %s; the next poll replays the retained journal\n", reset, peer)
+		"reset %d cursor(s) and dropped %d journal entr(ies) for peer %s; the next poll re-reads and re-applies\n",
+		reset, dropped, peer)
 	return nil
 }
 
@@ -548,52 +533,20 @@ func replTrustReset(ctx context.Context, db *state.DB, peer string, out io.Write
 	if peer == "" {
 		return errors.New("trust-reset needs -peer <name>")
 	}
-	old, err := db.ForgetPeerIdentity(ctx, peer)
+	// Idempotent and atomic: an operator who re-runs it after a partial
+	// failure must not be left with a dropped pin and stale cursors.
+	old, reset, dropped, err := db.ResetPeerTrust(ctx, peer)
 	if err != nil {
 		return err
 	}
-	// A new identity means a new database and a journal that restarted from
-	// one. Keeping the old cursors would make this site skip everything the
-	// rebuilt peer publishes, so the streams start over — apply is
-	// idempotent, so replaying costs traffic, not correctness.
-	cursors, err := db.ListCursors(ctx)
-	if err != nil {
-		return err
-	}
-	var reset int
-	for _, c := range cursors {
-		if c.Peer != peer {
-			continue
-		}
-		tx, err := db.Begin(ctx)
-		if err != nil {
-			return err
-		}
-		if err := state.SetCursorTx(ctx, tx, state.Cursor{Peer: c.Peer, Origin: c.Origin}); err != nil {
-			_ = tx.Rollback(ctx)
-			return err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return err
-		}
-		reset++
-	}
-	// Drop our copy of that origin's journal as well: the rebuilt peer
-	// numbers from one again, and the collisions would be discarded as
-	// duplicates, silently losing everything it publishes from now on.
-	dropped, err := db.ForgetOriginJournal(ctx, peer)
-	if err != nil {
-		return err
-	}
-	if err := db.RecordCursorError(ctx, peer, "*", ""); err != nil {
-		return err
-	}
-	if reset > 0 || dropped > 0 {
-		_, _ = fmt.Fprintf(out, "reset %d cursor(s) and dropped %d stale journal entr(ies) for peer %s\n",
-			reset, dropped, peer)
+	if old == "" {
+		_, _ = fmt.Fprintf(out, "peer %s had no pinned identity; cursors reset anyway (%d) and %d stale journal entr(ies) dropped\n",
+			peer, reset, dropped)
+		return nil
 	}
 	_, _ = fmt.Fprintf(out,
-		"forgot the pinned identity %s for peer %s; the next handshake re-pins it\n", old, peer)
+		"forgot the pinned identity %s for peer %s, reset %d cursor(s) and dropped %d stale journal entr(ies); "+
+			"the next handshake re-pins it\n", old, peer, reset, dropped)
 	return nil
 }
 
@@ -649,24 +602,33 @@ func writeQuarantineDecision(ctx context.Context, db *state.DB, cfg *config.Conf
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var wall, logical int64
-	if err := tx.QueryRow(ctx, "SELECT hlc_wall, hlc_logical FROM repl_hlc_now()").Scan(&wall, &logical); err != nil {
-		return fmt.Errorf("stamp decision: %w", err)
-	}
-	if err := repl.ApplyQuarantineDecisionTx(ctx, tx, feed, coordinate, reason, detail,
-		active, state.HLC{Wall: wall, Logical: logical}); err != nil {
-		return err
-	}
+	// Journal FIRST, then apply with the journal entry's own stamp: peers
+	// order the decision by that stamp, and stamping the local write
+	// separately would order it differently here than everywhere else.
+	var stamp state.HLC
 	if cfg.Replication.Enabled {
 		writer := repl.NewWriter(cfg.Site.Name)
+		var entry state.JournalEntry
 		if active {
-			err = writer.AppendQuarantine(ctx, tx, feed, coordinate, reason, detail)
+			entry, err = writer.AppendQuarantineEntry(ctx, tx, feed, coordinate, reason, detail)
 		} else {
-			err = writer.AppendQuarantineRelease(ctx, tx, feed, coordinate, reason)
+			entry, err = writer.AppendQuarantineReleaseEntry(ctx, tx, feed, coordinate, reason)
 		}
 		if err != nil {
 			return err
 		}
+		stamp = entry.HLC
+	} else {
+		var wall, logical int64
+		if err := tx.QueryRow(ctx,
+			"SELECT hlc_wall, hlc_logical FROM repl_hlc_now()").Scan(&wall, &logical); err != nil {
+			return fmt.Errorf("stamp decision: %w", err)
+		}
+		stamp = state.HLC{Wall: wall, Logical: logical}
+	}
+	if err := repl.ApplyQuarantineDecisionTx(ctx, tx, feed, coordinate, reason, detail,
+		active, stamp); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }

@@ -43,14 +43,23 @@ type JournalResponse struct {
 // SnapshotResponse bootstraps a new site: the full hosted manifest set plus
 // the watermark it corresponds to.
 type SnapshotResponse struct {
-	Site       string          `json:"site"`
+	Site string `json:"site"`
+	// UUID is the incarnation this snapshot came from, so a receiver's
+	// cursor records which one its counts belong to.
+	UUID       string          `json:"uuid"`
 	Manifests  []ManifestPut   `json:"manifests"`
 	Revoked    []string        `json:"revoked_token_hashes"`
 	Quarantine []QuarantineSet `json:"quarantine"`
-	// Resolutions are operators' terminal decisions. Without them a
-	// resynced site would re-open conflicts a human already settled.
-	Resolutions []ConflictResolve `json:"conflict_resolutions"`
-	Watermarks  map[string]int64  `json:"watermarks"` // origin -> sequence
+	// Resolutions are operators' terminal decisions, with everything the
+	// decision needs: a resolution without the kept digest's size and
+	// checksums would store the coordinate as zero-length and serve it as
+	// an empty 200.
+	Resolutions []ResolutionRecord `json:"conflict_resolutions"`
+	// Conflicts are the unresolved cross-site conflicts. The block on a
+	// coordinate is DERIVED from them, so importing the block without them
+	// would release it on the very next recompute.
+	Conflicts  []ConflictRecord `json:"open_conflicts"`
+	Watermarks map[string]int64 `json:"watermarks"` // origin -> sequence
 }
 
 // ForwardedPublish is a write a peer accepted on our behalf. The peer
@@ -69,6 +78,30 @@ type ForwardedPublish struct {
 
 // PublishHandler applies a forwarded publish locally.
 type PublishHandler func(ctx context.Context, req ForwardedPublish) (status int, body []byte, err error)
+
+// ResolutionRecord is an operator's decision as it travels in a snapshot.
+type ResolutionRecord struct {
+	Feed       string            `json:"feed"`
+	Path       string            `json:"path"`
+	Coordinate string            `json:"coordinate"`
+	KeepSHA    string            `json:"keep_sha256"`
+	Size       int64             `json:"size"`
+	Checksums  map[string]string `json:"checksums,omitempty"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
+	Operator   string            `json:"operator"`
+	HLC        state.HLC         `json:"hlc"`
+}
+
+// ConflictRecord is one recorded side-pair of a cross-site conflict.
+type ConflictRecord struct {
+	Feed       string `json:"feed"`
+	Path       string `json:"path"`
+	Coordinate string `json:"coordinate"`
+	WinnerSHA  string `json:"canonical_sha256"`
+	LoserSHA   string `json:"other_sha256"`
+	WinnerSite string `json:"canonical_site"`
+	LoserSite  string `json:"other_site"`
+}
 
 // Server exposes the internal replication API.
 type Server struct {
@@ -342,7 +375,7 @@ func parseResumeOffset(header string) (int64, bool) {
 // handleSnapshot returns the full replicable state for bootstrapping.
 func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	snap := SnapshotResponse{Site: s.site, Watermarks: map[string]int64{}}
+	snap := SnapshotResponse{Site: s.site, UUID: s.uuid, Watermarks: map[string]int64{}}
 
 	// One repeatable-read transaction for both halves. A publish commits
 	// its row and its journal entry atomically, so reading them separately
@@ -389,15 +422,31 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	openConflicts, err := state.OpenConflictsTx(ctx, tx)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	for _, c := range openConflicts {
+		snap.Conflicts = append(snap.Conflicts, ConflictRecord{
+			Feed: c.Feed, Path: c.Path, Coordinate: c.Coordinate,
+			WinnerSHA: c.WinnerSHA, LoserSHA: c.LoserSHA,
+			WinnerSite: c.WinnerSite, LoserSite: c.LoserSite,
+		})
+	}
+
 	resolutions, err := state.ConflictResolutionsTx(ctx, tx)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
 	for _, r := range resolutions {
-		snap.Resolutions = append(snap.Resolutions, ConflictResolve{
-			Feed: r.Feed, Path: r.Path, Coord: r.Coordinate,
-			KeepSHA: r.KeepSHA, Operator: r.Operator,
+		snap.Resolutions = append(snap.Resolutions, ResolutionRecord{
+			Feed: r.Feed, Path: r.Path, Coordinate: r.Coordinate,
+			KeepSHA: r.KeepSHA, Size: r.Size,
+			Checksums: r.Checksums, Metadata: r.Metadata,
+			Operator: r.Operator,
+			HLC:      state.HLC{Wall: r.HLCWall, Logical: r.HLCLogical},
 		})
 	}
 

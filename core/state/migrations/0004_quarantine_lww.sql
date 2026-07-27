@@ -83,7 +83,13 @@ CREATE TABLE repl_peer_identity (
     last_seen  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- The cursor remembers WHICH incarnation of the origin it counted, so a
+-- rebuilt peer (new UUID, sequence restarted from one) is detected however
+-- fast it republishes — a sequence comparison alone races.
+ALTER TABLE repl_cursors ADD COLUMN origin_uuid UUID;
+
 -- +goose Down
+ALTER TABLE repl_cursors DROP COLUMN origin_uuid;
 DROP TABLE repl_peer_identity;
 ALTER TABLE repl_parked
     DROP COLUMN schema_version, DROP COLUMN hlc_logical, DROP COLUMN hlc_wall;

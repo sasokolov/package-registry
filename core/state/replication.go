@@ -182,16 +182,21 @@ type Cursor struct {
 	DurableSeq int64
 	LastOKAt   time.Time
 	LastError  string
+	// OriginUUID is the incarnation of the origin these counts belong to.
+	// A rebuilt site gets a new UUID and restarts its sequence, so a
+	// cursor from the previous incarnation must not be carried over.
+	OriginUUID string
 }
 
 // GetCursor reads a cursor, returning zeroes when the stream is new.
 func (db *DB) GetCursor(ctx context.Context, peer, origin string) (Cursor, error) {
 	c := Cursor{Peer: peer, Origin: origin}
 	var lastOK *time.Time
+	var originUUID *string
 	err := db.pool.QueryRow(ctx, `
-		SELECT applied_seq, durable_seq, last_ok_at, last_error
+		SELECT applied_seq, durable_seq, last_ok_at, last_error, origin_uuid::text
 		  FROM repl_cursors WHERE peer=$1 AND origin_site=$2`, peer, origin).
-		Scan(&c.AppliedSeq, &c.DurableSeq, &lastOK, &c.LastError)
+		Scan(&c.AppliedSeq, &c.DurableSeq, &lastOK, &c.LastError, &originUUID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, nil
 	}
@@ -201,21 +206,33 @@ func (db *DB) GetCursor(ctx context.Context, peer, origin string) (Cursor, error
 	if lastOK != nil {
 		c.LastOKAt = *lastOK
 	}
+	if originUUID != nil {
+		c.OriginUUID = *originUUID
+	}
 	return c, nil
 }
 
 // SetCursorTx advances a cursor inside the same transaction that applied
 // the batch, so a crash can never skip events.
 func SetCursorTx(ctx context.Context, tx pgx.Tx, c Cursor) error {
+	var uuid any
+	if c.OriginUUID != "" {
+		uuid = c.OriginUUID
+	}
 	_, err := tx.Exec(ctx, `
-		INSERT INTO repl_cursors (peer, origin_site, applied_seq, durable_seq, last_ok_at, last_error)
-		VALUES ($1,$2,$3,$4, now(), $5)
+		INSERT INTO repl_cursors
+			(peer, origin_site, applied_seq, durable_seq, last_ok_at, last_error, origin_uuid)
+		VALUES ($1,$2,$3,$4, now(), $5, $6)
 		ON CONFLICT (peer, origin_site) DO UPDATE
 		   SET applied_seq = EXCLUDED.applied_seq,
-		       durable_seq = GREATEST(repl_cursors.durable_seq, EXCLUDED.durable_seq),
+		       durable_seq = CASE
+		           WHEN EXCLUDED.applied_seq < repl_cursors.applied_seq THEN EXCLUDED.durable_seq
+		           ELSE GREATEST(repl_cursors.durable_seq, EXCLUDED.durable_seq)
+		       END,
 		       last_ok_at  = now(),
-		       last_error  = EXCLUDED.last_error`,
-		c.Peer, c.Origin, c.AppliedSeq, c.DurableSeq, c.LastError)
+		       last_error  = EXCLUDED.last_error,
+		       origin_uuid = COALESCE(EXCLUDED.origin_uuid, repl_cursors.origin_uuid)`,
+		c.Peer, c.Origin, c.AppliedSeq, c.DurableSeq, c.LastError, uuid)
 	if err != nil {
 		return fmt.Errorf("advance cursor: %w", err)
 	}
@@ -270,7 +287,7 @@ func (db *DB) MarkPeerPollOK(ctx context.Context, peer string, origins []string)
 // ListCursors returns every known cursor (for metrics and `repl status`).
 func (db *DB) ListCursors(ctx context.Context) ([]Cursor, error) {
 	rows, err := db.pool.Query(ctx, `
-		SELECT peer, origin_site, applied_seq, durable_seq, last_ok_at, last_error
+		SELECT peer, origin_site, applied_seq, durable_seq, last_ok_at, last_error, origin_uuid::text
 		  FROM repl_cursors ORDER BY peer, origin_site`)
 	if err != nil {
 		return nil, classify(fmt.Errorf("list cursors: %w", err))
@@ -280,11 +297,16 @@ func (db *DB) ListCursors(ctx context.Context) ([]Cursor, error) {
 	for rows.Next() {
 		var c Cursor
 		var lastOK *time.Time
-		if err := rows.Scan(&c.Peer, &c.Origin, &c.AppliedSeq, &c.DurableSeq, &lastOK, &c.LastError); err != nil {
+		var originUUID *string
+		if err := rows.Scan(&c.Peer, &c.Origin, &c.AppliedSeq, &c.DurableSeq,
+			&lastOK, &c.LastError, &originUUID); err != nil {
 			return nil, err
 		}
 		if lastOK != nil {
 			c.LastOKAt = *lastOK
+		}
+		if originUUID != nil {
+			c.OriginUUID = *originUUID
 		}
 		out = append(out, c)
 	}
@@ -532,6 +554,79 @@ func (db *DB) ForgetOriginJournal(ctx context.Context, origin string) (int64, er
 	return tag.RowsAffected(), nil
 }
 
+// ResetPeerStream rewinds every cursor of a peer and drops this site's copy
+// of its journal, in one transaction. Both are needed: apply deduplicates on
+// (origin, seq), so rewinding the cursor alone would re-read the entries and
+// skip all of them.
+func (db *DB) ResetPeerStream(ctx context.Context, peer string) (reset, dropped int64, err error) {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return 0, 0, classify(fmt.Errorf("begin stream reset: %w", err))
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE repl_cursors SET applied_seq = 0, durable_seq = 0, last_error = ''
+		 WHERE peer = $1`, peer)
+	if err != nil {
+		return 0, 0, classify(fmt.Errorf("reset cursors: %w", err))
+	}
+	reset = tag.RowsAffected()
+
+	tag, err = tx.Exec(ctx, "DELETE FROM repl_journal WHERE origin_site = $1", peer)
+	if err != nil {
+		return 0, 0, classify(fmt.Errorf("drop journal copy: %w", err))
+	}
+	dropped = tag.RowsAffected()
+
+	if _, err := tx.Exec(ctx, "DELETE FROM repl_parked WHERE origin_site = $1", peer); err != nil {
+		return 0, 0, classify(fmt.Errorf("drop parked events: %w", err))
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, 0, classify(fmt.Errorf("commit stream reset: %w", err))
+	}
+	return reset, dropped, nil
+}
+
+// ResetPeerTrust forgets a peer's pinned identity and resets its stream, in
+// one transaction. It is idempotent: re-running it after a partial failure
+// must not leave a dropped pin beside stale cursors.
+func (db *DB) ResetPeerTrust(ctx context.Context, peer string) (oldUUID string, reset, dropped int64, err error) {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return "", 0, 0, classify(fmt.Errorf("begin trust reset: %w", err))
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	err = tx.QueryRow(ctx,
+		"DELETE FROM repl_peer_identity WHERE peer = $1 RETURNING site_uuid::text", peer).Scan(&oldUUID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", 0, 0, classify(fmt.Errorf("forget peer identity: %w", err))
+	}
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE repl_cursors SET applied_seq = 0, durable_seq = 0, last_error = '', origin_uuid = NULL
+		 WHERE peer = $1`, peer)
+	if err != nil {
+		return "", 0, 0, classify(fmt.Errorf("reset cursors: %w", err))
+	}
+	reset = tag.RowsAffected()
+
+	tag, err = tx.Exec(ctx, "DELETE FROM repl_journal WHERE origin_site = $1", peer)
+	if err != nil {
+		return "", 0, 0, classify(fmt.Errorf("drop journal copy: %w", err))
+	}
+	dropped = tag.RowsAffected()
+
+	if _, err := tx.Exec(ctx, "DELETE FROM repl_parked WHERE origin_site = $1", peer); err != nil {
+		return "", 0, 0, classify(fmt.Errorf("drop parked events: %w", err))
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", 0, 0, classify(fmt.Errorf("commit trust reset: %w", err))
+	}
+	return oldUUID, reset, dropped, nil
+}
+
 // ForgetPeerIdentity drops a pin so the next handshake re-pins the peer. It
 // is the deliberate operator action behind `registry repl trust-reset`: a
 // peer whose UUID changed is a different site until a human says otherwise.
@@ -642,6 +737,24 @@ func JournalHeadTx(ctx context.Context, tx pgx.Tx, origin string) (head, oldest 
 		return 0, 0, fmt.Errorf("read journal head: %w", err)
 	}
 	return head, oldest, nil
+}
+
+// PruneJournalOlderThan drops local entries older than the retention
+// window whatever the peers have acknowledged. It is the bound that stops a
+// removed or long-dead peer from pinning the journal forever; a peer that
+// falls behind it re-bootstraps from a snapshot.
+func (db *DB) PruneJournalOlderThan(ctx context.Context, origin string, retention time.Duration) (int64, error) {
+	if retention <= 0 {
+		return 0, nil
+	}
+	tag, err := db.pool.Exec(ctx, `
+		DELETE FROM repl_journal
+		 WHERE origin_site = $1 AND created_at < now() - $2::interval`,
+		origin, fmt.Sprintf("%d seconds", int(retention.Seconds())))
+	if err != nil {
+		return 0, classify(fmt.Errorf("prune journal by retention: %w", err))
+	}
+	return tag.RowsAffected(), nil
 }
 
 // Begin starts a transaction (used by the applier to make apply+cursor
