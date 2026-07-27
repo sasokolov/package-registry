@@ -419,6 +419,7 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 			SHA256: row.SHA256, Size: row.Size,
 			Checksums: row.Checksums, Metadata: row.Metadata,
 			Mutable: row.Mutable, Publisher: row.PublishedBy,
+			Site: row.Site,
 		})
 	}
 

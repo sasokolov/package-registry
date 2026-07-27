@@ -116,6 +116,15 @@ func (db *DB) ApplyForeignJournal(ctx context.Context, tx pgx.Tx, e JournalEntry
 	return tag.RowsAffected() > 0, nil
 }
 
+// ReceiveClock advances the local hybrid logical clock past an observed
+// timestamp, so locally generated stamps stay causally after it.
+func (db *DB) ReceiveClock(ctx context.Context, h HLC) error {
+	if _, err := db.pool.Exec(ctx, "SELECT repl_hlc_recv($1, $2)", h.Wall, h.Logical); err != nil {
+		return classify(fmt.Errorf("advance clock: %w", err))
+	}
+	return nil
+}
+
 // ReadJournal returns entries of one origin after a sequence, oldest first.
 func (db *DB) ReadJournal(ctx context.Context, origin string, after int64, limit int) ([]JournalEntry, error) {
 	if limit <= 0 || limit > 1000 {
@@ -407,15 +416,27 @@ func (db *DB) ParkEvent(ctx context.Context, e JournalEntry, reason string) erro
 	return nil
 }
 
+// ParkedEventsForOrigin returns one origin's parked events, oldest first.
+func (db *DB) ParkedEventsForOrigin(ctx context.Context, origin string, limit int) ([]JournalEntry, []string, error) {
+	return db.parkedEvents(ctx, origin, limit)
+}
+
 // ParkedEvents returns parked events for retry, oldest first.
 func (db *DB) ParkedEvents(ctx context.Context, limit int) ([]JournalEntry, []string, error) {
+	return db.parkedEvents(ctx, "", limit)
+}
+
+// parkedEvents lists parked events, optionally of one origin.
+func (db *DB) parkedEvents(ctx context.Context, origin string, limit int) ([]JournalEntry, []string, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	rows, err := db.pool.Query(ctx, `
 		SELECT origin_site, origin_seq, kind, payload, reason,
 		       hlc_wall, hlc_logical, schema_version
-		  FROM repl_parked ORDER BY parked_at LIMIT $1`, limit)
+		  FROM repl_parked
+		 WHERE ($1 = '' OR origin_site = $1)
+		 ORDER BY parked_at LIMIT $2`, origin, limit)
 	if err != nil {
 		return nil, nil, classify(fmt.Errorf("list parked events: %w", err))
 	}
@@ -452,8 +473,13 @@ func (db *DB) CountParked(ctx context.Context) (int, error) {
 // PruneJournal drops local entries below a watermark, keeping at least
 // keepMin entries so a briefly disconnected peer does not need a resync.
 func (db *DB) PruneJournal(ctx context.Context, origin string, below int64) (int64, error) {
-	tag, err := db.pool.Exec(ctx,
-		"DELETE FROM repl_journal WHERE origin_site=$1 AND origin_seq < $2", origin, below)
+	// Same floor as retention pruning: the newest entry stays so `oldest`
+	// keeps meaning "my horizon" for a peer that has fallen behind.
+	tag, err := db.pool.Exec(ctx, `
+		DELETE FROM repl_journal
+		 WHERE origin_site = $1 AND origin_seq < $2
+		   AND origin_seq < (SELECT MAX(origin_seq) FROM repl_journal WHERE origin_site = $1)`,
+		origin, below)
 	if err != nil {
 		return 0, classify(fmt.Errorf("prune journal: %w", err))
 	}
@@ -759,9 +785,15 @@ func (db *DB) PruneJournalOlderThan(ctx context.Context, origin string, retentio
 	// An empty origin ages out every stream, including this site's copies
 	// of its peers' journals — those are only a dedup ledger, and nothing
 	// reads them once the events are applied.
+	// Always keep each origin's newest entry. `oldest` is what tells a
+	// lagging peer it is past the horizon (410 -> snapshot); an empty
+	// journal cannot say that, and the peer would silently skip history.
 	tag, err := db.pool.Exec(ctx, `
-		DELETE FROM repl_journal
-		 WHERE ($1 = '' OR origin_site = $1) AND created_at < now() - $2::interval`,
+		DELETE FROM repl_journal j
+		 WHERE ($1 = '' OR j.origin_site = $1)
+		   AND j.created_at < now() - $2::interval
+		   AND j.origin_seq < (SELECT MAX(origin_seq) FROM repl_journal
+		                        WHERE origin_site = j.origin_site)`,
 		origin, fmt.Sprintf("%d seconds", int(retention.Seconds())))
 	if err != nil {
 		return 0, classify(fmt.Errorf("prune journal by retention: %w", err))

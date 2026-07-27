@@ -444,6 +444,12 @@ func (m *Manager) bootstrap(ctx context.Context, c *Client, touched map[string]b
 			deferred++
 		}
 	}
+	// Advance this site's clock past everything the snapshot carried:
+	// writes made afterwards must order AFTER the state they build on.
+	if err := m.advanceClockPastSnapshot(ctx, snap); err != nil {
+		m.logger.Warn("advancing the clock past the snapshot failed", "error", err)
+	}
+
 	m.logger.Info("snapshot bootstrap finished",
 		"peer", c.Name(), "imported", imported, "deferred", deferred)
 	if deferred > 0 {
@@ -523,6 +529,32 @@ func hlcFromMetadata(meta map[string]string) state.HLC {
 		h.Logical = v
 	}
 	return h
+}
+
+// advanceClockPastSnapshot pushes the local hybrid logical clock past the
+// newest stamp in a snapshot. Without it a freshly bootstrapped site stamps
+// its own writes below the state it just adopted, and every one of them
+// loses the comparison.
+func (m *Manager) advanceClockPastSnapshot(ctx context.Context, snap SnapshotResponse) error {
+	var newest state.HLC
+	consider := func(h state.HLC) {
+		if newest.Before(h) {
+			newest = h
+		}
+	}
+	for _, p := range snap.Manifests {
+		consider(hlcFromMetadata(p.Metadata))
+	}
+	for _, q := range snap.Quarantine {
+		consider(q.HLC)
+	}
+	for _, r := range snap.Resolutions {
+		consider(r.HLC)
+	}
+	if newest.Wall == 0 && newest.Logical == 0 {
+		return nil
+	}
+	return m.db.ReceiveClock(ctx, newest)
 }
 
 // applySnapshotRestrictions imports the peer's active quarantines and

@@ -48,6 +48,10 @@ type ManifestPut struct {
 	Metadata  map[string]string `json:"metadata,omitempty"`
 	Mutable   bool              `json:"mutable,omitempty"`
 	Publisher string            `json:"published_by"`
+	// Site is where the bytes were published. It travels only in a
+	// snapshot: in the journal the origin of the event says it, but a
+	// snapshot is served by whichever peer happened to answer.
+	Site string `json:"site,omitempty"`
 }
 
 // BlobAvailable announces that a site holds a blob. Peers use it to fetch

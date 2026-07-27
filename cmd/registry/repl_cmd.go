@@ -82,7 +82,7 @@ func replCmd(args []string, out io.Writer) error {
 	case "backfill":
 		return replBackfill(ctx, db, cfg, *peer, *dryRun, out)
 	case "trust-reset":
-		return replTrustReset(ctx, db, *peer, out)
+		return replTrustReset(ctx, db, cfg, *peer, out)
 	case "quarantine":
 		return replQuarantine(ctx, db, cfg, *feed, *coord, *reason, *detail, out)
 	case "release":
@@ -529,15 +529,26 @@ func replBackfill(ctx context.Context, db *state.DB, cfg *config.Config,
 // site that lost its database is an explicit operator decision rather than
 // hand-edited SQL — and so that it stays a decision, not an automatic
 // re-pin (invariant 14: nothing but a human widens trust).
-func replTrustReset(ctx context.Context, db *state.DB, peer string, out io.Writer) error {
+func replTrustReset(ctx context.Context, db *state.DB, cfg *config.Config, peer string, out io.Writer) error {
 	if peer == "" {
 		return errors.New("trust-reset needs -peer <name>")
 	}
-	// Idempotent and atomic: an operator who re-runs it after a partial
-	// failure must not be left with a dropped pin and stale cursors.
-	old, reset, dropped, err := db.ResetPeerTrust(ctx, peer)
+	// Take the poll lease first: a cycle already running would otherwise
+	// write the pre-reset cursor straight back over the reset.
+	var old string
+	var reset, dropped int64
+	ran, err := db.TryLease(ctx, "repl-poll:"+cfg.Site.Name+":"+peer, func(ctx context.Context) error {
+		// Idempotent and atomic: an operator who re-runs it after a partial
+		// failure must not be left with a dropped pin and stale cursors.
+		var err error
+		old, reset, dropped, err = db.ResetPeerTrust(ctx, peer)
+		return err
+	})
 	if err != nil {
 		return err
+	}
+	if !ran {
+		return fmt.Errorf("a poll cycle for peer %q is running; try again in a moment", peer)
 	}
 	if old == "" {
 		_, _ = fmt.Fprintf(out, "peer %s had no pinned identity; cursors reset anyway (%d) and %d stale journal entr(ies) dropped\n",

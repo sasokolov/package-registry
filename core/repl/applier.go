@@ -590,7 +590,9 @@ func isHex(s string) bool {
 // RetryParked re-attempts parked events (clock skew that has passed, blobs
 // that arrived, a binary that now understands the event kind).
 func (a *Applier) RetryParked(ctx context.Context, peer string) error {
-	entries, reasons, err := a.db.ParkedEvents(ctx, 100)
+	// Only this peer's own stream: origin pinning means each origin is
+	// pulled from itself, so two peers' loops must not race on one event.
+	entries, reasons, err := a.db.ParkedEventsForOrigin(ctx, peer, 100)
 	if err != nil {
 		return err
 	}

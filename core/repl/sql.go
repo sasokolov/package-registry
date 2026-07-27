@@ -86,6 +86,12 @@ func insertHosted(ctx context.Context, tx pgxTx, p ManifestPut, e state.JournalE
 	if err != nil {
 		return err
 	}
+	// The publishing site: the event's origin in the journal, or the value
+	// the snapshot carried — never the peer that happened to serve it.
+	site := e.OriginSite
+	if p.Site != "" {
+		site = p.Site
+	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO hosted_manifests
 			(feed, path, coordinate, sha256, size, checksums, metadata, mutable,
@@ -93,7 +99,7 @@ func insertHosted(ctx context.Context, tx pgxTx, p ManifestPut, e state.JournalE
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'replication',$9,$10)
 		ON CONFLICT ON CONSTRAINT hosted_manifests_feed_path_key DO NOTHING`,
 		p.Feed, p.Path, p.Coord, p.SHA256, p.Size, checksums, metadata, p.Mutable,
-		e.OriginSite, p.Publisher)
+		site, p.Publisher)
 	if err != nil {
 		return fmt.Errorf("insert replicated manifest: %w", err)
 	}
@@ -106,13 +112,17 @@ func updateHosted(ctx context.Context, tx pgxTx, p ManifestPut, e state.JournalE
 	if err != nil {
 		return err
 	}
+	site := e.OriginSite
+	if p.Site != "" {
+		site = p.Site
+	}
 	_, err = tx.Exec(ctx, `
 		UPDATE hosted_manifests
 		   SET sha256=$3, size=$4, checksums=$5, metadata=$6, mutable=$7,
 		       origin='replication', site=$8, published_by=$9, updated_at=now()
 		 WHERE feed=$1 AND path=$2`,
 		p.Feed, p.Path, p.SHA256, p.Size, checksums, metadata, p.Mutable,
-		e.OriginSite, p.Publisher)
+		site, p.Publisher)
 	if err != nil {
 		return fmt.Errorf("update replicated manifest: %w", err)
 	}
