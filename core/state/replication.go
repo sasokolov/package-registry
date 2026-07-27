@@ -244,6 +244,14 @@ func (db *DB) RecordCursorError(ctx context.Context, peer, origin, msg string) e
 // there was nothing to apply: without it a healthy but idle stream would
 // look like it had never been reached.
 func (db *DB) MarkPeerPollOK(ctx context.Context, peer string, origins []string) error {
+	// Clear the error on EVERY stream of this peer, not just the ones we
+	// import: the row that records how far the peer has consumed OUR
+	// journal is also marked when a poll fails, and would otherwise keep
+	// showing a fault long after the peer came back.
+	if _, err := db.pool.Exec(ctx,
+		"UPDATE repl_cursors SET last_error = '' WHERE peer = $1 AND last_error <> ''", peer); err != nil {
+		return classify(fmt.Errorf("clear peer errors: %w", err))
+	}
 	if len(origins) == 0 {
 		origins = []string{peer}
 	}
