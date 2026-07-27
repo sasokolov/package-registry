@@ -497,12 +497,25 @@ func importConflictTx(ctx context.Context, tx pgxTx, c ConflictRecord) error {
 		return fmt.Errorf("check imported conflict: %w", err)
 	}
 	if !exists {
+		winner, err := json.Marshal(sideMeta{
+			SHA256: c.WinnerSHA, Size: c.WinnerSize,
+			Checksums: c.WinnerSums, Metadata: c.WinnerMeta})
+		if err != nil {
+			return fmt.Errorf("encode imported winner: %w", err)
+		}
+		loser, err := json.Marshal(sideMeta{
+			SHA256: c.LoserSHA, Size: c.LoserSize,
+			Checksums: c.LoserSums, Metadata: c.LoserMeta})
+		if err != nil {
+			return fmt.Errorf("encode imported loser: %w", err)
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO publish_conflicts
-				(feed, path, coordinate, winner_sha256, loser_sha256, winner_site, loser_site)
-			VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+				(feed, path, coordinate, winner_sha256, loser_sha256, winner_site, loser_site,
+				 winner_meta, loser_meta)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 			c.Feed, c.Path, c.Coordinate, c.WinnerSHA, c.LoserSHA,
-			c.WinnerSite, c.LoserSite); err != nil {
+			c.WinnerSite, c.LoserSite, winner, loser); err != nil {
 			return fmt.Errorf("import conflict: %w", err)
 		}
 	}

@@ -46,13 +46,15 @@ func buildSnapshot(ctx context.Context, t *testing.T, db *state.DB, site, uuid s
 		})
 	}
 
-	quarantines, err := state.ActiveQuarantinesTx(ctx, tx)
+	quarantines, err := state.QuarantineStateTx(ctx, tx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, q := range quarantines {
-		snap.Quarantine = append(snap.Quarantine, QuarantineSet{
-			Feed: q.Feed, Coordinate: q.Coordinate, Reason: q.Reason, Detail: q.Detail,
+		snap.Quarantine = append(snap.Quarantine, QuarantineRecord{
+			Feed: q.Feed, Coordinate: q.Coordinate, Reason: q.Reason,
+			Detail: q.Detail, Active: q.Active,
+			HLC: state.HLC{Wall: q.HLCWall, Logical: q.HLCLogical},
 		})
 	}
 
@@ -65,6 +67,9 @@ func buildSnapshot(ctx context.Context, t *testing.T, db *state.DB, site, uuid s
 			Feed: c.Feed, Path: c.Path, Coordinate: c.Coordinate,
 			WinnerSHA: c.WinnerSHA, LoserSHA: c.LoserSHA,
 			WinnerSite: c.WinnerSite, LoserSite: c.LoserSite,
+			WinnerSize: c.WinnerSize, LoserSize: c.LoserSize,
+			WinnerSums: c.WinnerSums, LoserSums: c.LoserSums,
+			WinnerMeta: c.WinnerMeta, LoserMeta: c.LoserMeta,
 		})
 	}
 

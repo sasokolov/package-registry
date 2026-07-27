@@ -224,6 +224,10 @@ func (a *Applier) prefetchBlob(ctx context.Context, peer string, e state.Journal
 	return nil
 }
 
+// retryParkedBudget bounds one retry pass. Parked events are retried on
+// every poll cycle, so an unfinished pass costs a delay, never progress.
+const retryParkedBudget = 2 * time.Minute
+
 // errPark marks an event that should be parked rather than retried inline.
 var errPark = errors.New("event parked")
 
@@ -308,6 +312,14 @@ func (a *Applier) applyManifestPut(ctx context.Context, tx pgxTx, _ string,
 		if err := applyResolutionTx(ctx, tx, p.Feed, p.Path, p.Coord, decision, e.OriginSite); err != nil {
 			return err
 		}
+		// The read path serves from the projection, so a coordinate that
+		// arrives already-resolved needs one too — otherwise it is
+		// unservable until the repair loop notices.
+		*pending = append(*pending, projectionWrite{
+			Feed: p.Feed, Path: p.Path, SHA256: decision.KeepSHA, Size: decision.Size,
+			Checksums: decision.Checksums, Metadata: decision.Metadata,
+			Origin: e.OriginSite, Publisher: p.Publisher,
+		})
 		touched[p.Feed] = true
 		return nil
 	}
@@ -582,12 +594,23 @@ func (a *Applier) RetryParked(ctx context.Context, peer string) error {
 	if err != nil {
 		return err
 	}
+	// The retry runs inside the poll loop, which holds this site's lease on
+	// the peer: bound both the work and the time it can take, or one
+	// unreachable blob stalls replication for everyone.
+	retryCtx, cancel := context.WithTimeout(ctx, retryParkedBudget)
+	defer cancel()
+
 	touched := map[string]bool{}
 	for i, e := range entries {
+		if retryCtx.Err() != nil {
+			a.logger.Info("parked retry budget spent; the rest are retried next cycle",
+				"peer", peer, "retried", i, "remaining", len(entries)-i)
+			break
+		}
 		// The reason most events park is a blob that had not arrived yet;
 		// retrying without attempting the transfer again would park them
 		// forever.
-		if err := a.prefetchBlob(ctx, peer, e); err != nil {
+		if err := a.prefetchBlob(retryCtx, peer, e); err != nil {
 			continue
 		}
 		tx, err := a.db.Begin(ctx)

@@ -216,7 +216,7 @@ func (m *Manager) pollPeer(ctx context.Context, c *Client) {
 	// A reachable peer is recorded even when there is nothing to apply, so
 	// an idle healthy stream is distinguishable from an unreachable one.
 	origins := []string{c.Name()}
-	if err := m.db.MarkPeerPollOK(ctx, c.Name(), origins); err != nil {
+	if err := m.db.MarkPeerPollOK(ctx, c.Name(), origins, status.UUID); err != nil {
 		m.logger.Warn("recording a successful poll failed", "peer", c.Name(), "error", err)
 	}
 
@@ -282,26 +282,10 @@ func (m *Manager) catchUp(ctx context.Context, c *Client, origin string, head in
 			cursor.AppliedSeq = 0
 			cursor.OriginUUID = originUUID
 		}
-		if cursor.AppliedSeq > head {
-			// The peer's journal went BACKWARDS: its database was rebuilt
-			// and the sequence restarted. Holding the old cursor would
-			// silently stop importing from it forever, so start over —
-			// apply is idempotent, and the events are new ones anyway.
-			// The old copy has to go too: the peer's new sequences collide
-			// with the ones already stored here, and every collision would
-			// be dropped as a duplicate.
-			dropped, err := m.db.ForgetOriginJournal(ctx, origin)
-			if err != nil {
-				return appliedTotal, err
-			}
-			m.logger.Warn("peer journal restarted, resetting the stream",
-				"peer", c.Name(), "origin", origin, "cursor", cursor.AppliedSeq,
-				"peer_head", head, "dropped_entries", dropped)
-			if err := m.setCursor(ctx, c.Name(), origin, 0, 0, originUUID); err != nil {
-				return appliedTotal, err
-			}
-			cursor.AppliedSeq = 0
-		}
+		// NOTE: the head captured at poll start goes stale as soon as the
+		// peer publishes again, so a cursor ahead of it is normal, not a
+		// restart. A rebuilt peer is detected by identity above; guessing
+		// from sequence numbers here would drop a healthy journal.
 		if cursor.AppliedSeq >= head {
 			return appliedTotal, nil
 		}
@@ -336,6 +320,12 @@ func (m *Manager) catchUp(ctx context.Context, c *Client, origin string, head in
 			return appliedTotal, err
 		}
 		appliedTotal += len(page.Entries)
+		// The peer reports its head with every page, so a peer that kept
+		// publishing is followed to the end of this cycle instead of being
+		// left behind until the next one.
+		if page.Head > head {
+			head = page.Head
+		}
 	}
 }
 
@@ -506,7 +496,9 @@ func (m *Manager) pruneJournal(ctx context.Context, peer string) {
 		}
 	}
 
-	expired, err := m.db.PruneJournalOlderThan(ctx, m.site, m.retention)
+	// "" ages out every stream: our own journal past retention, and the
+	// dedup copies of peers' journals, which nothing reads once applied.
+	expired, err := m.db.PruneJournalOlderThan(ctx, "", m.retention)
 	if err != nil {
 		m.logger.Warn("journal retention prune failed", "error", err)
 		return
@@ -547,10 +539,15 @@ func (m *Manager) applySnapshotRestrictions(ctx context.Context, peer string, sn
 		if q.Feed == "" || q.Coordinate == "" || q.Reason == "" {
 			continue
 		}
-		// A snapshot carries no per-decision timestamp, so it is stamped
-		// at zero: it establishes state on a fresh site and never
-		// overrides a decision this site already has.
-		if err := quarantineTx(ctx, tx, q.Feed, q.Coordinate, q.Reason, q.Detail, state.HLC{}); err != nil {
+		// The conflict block is derived from recorded conflicts, so it is
+		// recomputed rather than imported.
+		if q.Reason == "cross_site_conflict" {
+			continue
+		}
+		// State and stamp both travel, so a release is applied as a
+		// release and the usual last-writer-wins rules decide.
+		if err := ApplyQuarantineDecisionTx(ctx, tx, q.Feed, q.Coordinate,
+			q.Reason, q.Detail, q.Active, q.HLC); err != nil {
 			return err
 		}
 	}

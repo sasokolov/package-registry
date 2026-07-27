@@ -155,6 +155,40 @@ func (db *DB) HostedRow(ctx context.Context, feed, path string) (HostedRow, bool
 	return HostedRow{}, false, nil
 }
 
+// QuarantineStateRow is one reason's register, active or released.
+type QuarantineStateRow struct {
+	Feed       string
+	Coordinate string
+	Reason     string
+	Detail     string
+	Active     bool
+	HLCWall    int64
+	HLCLogical int64
+}
+
+// QuarantineStateTx lists every quarantine register with its state and
+// stamp. A snapshot must carry releases explicitly: a receiver that already
+// blocks something the source released cannot learn it from an absence.
+func QuarantineStateTx(ctx context.Context, tx pgx.Tx) ([]QuarantineStateRow, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT feed, coordinate, reason, detail, released_at IS NULL, hlc_wall, hlc_logical
+		  FROM quarantine ORDER BY feed, coordinate, reason`)
+	if err != nil {
+		return nil, fmt.Errorf("list quarantine state: %w", err)
+	}
+	defer rows.Close()
+	var out []QuarantineStateRow
+	for rows.Next() {
+		var q QuarantineStateRow
+		if err := rows.Scan(&q.Feed, &q.Coordinate, &q.Reason, &q.Detail,
+			&q.Active, &q.HLCWall, &q.HLCLogical); err != nil {
+			return nil, err
+		}
+		out = append(out, q)
+	}
+	return out, rows.Err()
+}
+
 // ActiveQuarantinesTx lists every coordinate currently blocked, for a
 // bootstrap snapshot.
 func ActiveQuarantinesTx(ctx context.Context, tx pgx.Tx) ([]QuarantineEntry, error) {
@@ -200,6 +234,14 @@ type OpenConflictRow struct {
 	LoserSHA   string
 	WinnerSite string
 	LoserSite  string
+	// Each side's manifest data, so a site that learns the conflict from a
+	// snapshot can resolve to either one without losing the size.
+	WinnerSize int64
+	LoserSize  int64
+	WinnerSums map[string]string
+	LoserSums  map[string]string
+	WinnerMeta map[string]string
+	LoserMeta  map[string]string
 }
 
 // OpenConflictsTx lists unresolved conflicts for a bootstrap snapshot. The
@@ -207,7 +249,8 @@ type OpenConflictRow struct {
 // that imports the block without them would release it immediately.
 func OpenConflictsTx(ctx context.Context, tx pgx.Tx) ([]OpenConflictRow, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT feed, path, coordinate, winner_sha256, loser_sha256, winner_site, loser_site
+		SELECT feed, path, coordinate, winner_sha256, loser_sha256, winner_site, loser_site,
+		       winner_meta, loser_meta
 		  FROM publish_conflicts WHERE resolved_at IS NULL
 		 ORDER BY feed, path`)
 	if err != nil {
@@ -217,13 +260,29 @@ func OpenConflictsTx(ctx context.Context, tx pgx.Tx) ([]OpenConflictRow, error) 
 	var out []OpenConflictRow
 	for rows.Next() {
 		var c OpenConflictRow
+		var winnerMeta, loserMeta []byte
 		if err := rows.Scan(&c.Feed, &c.Path, &c.Coordinate, &c.WinnerSHA, &c.LoserSHA,
-			&c.WinnerSite, &c.LoserSite); err != nil {
+			&c.WinnerSite, &c.LoserSite, &winnerMeta, &loserMeta); err != nil {
 			return nil, err
 		}
+		c.WinnerSize, c.WinnerSums, c.WinnerMeta = decodeSideMeta(winnerMeta)
+		c.LoserSize, c.LoserSums, c.LoserMeta = decodeSideMeta(loserMeta)
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// decodeSideMeta unpacks one side of a recorded conflict.
+func decodeSideMeta(raw []byte) (size int64, checksums, metadata map[string]string) {
+	var side struct {
+		Size      int64             `json:"size"`
+		Checksums map[string]string `json:"checksums"`
+		Metadata  map[string]string `json:"metadata"`
+	}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &side)
+	}
+	return side.Size, side.Checksums, side.Metadata
 }
 
 // ConflictResolutionsTx lists operator decisions for a bootstrap snapshot.

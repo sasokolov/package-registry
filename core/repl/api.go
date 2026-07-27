@@ -46,10 +46,10 @@ type SnapshotResponse struct {
 	Site string `json:"site"`
 	// UUID is the incarnation this snapshot came from, so a receiver's
 	// cursor records which one its counts belong to.
-	UUID       string          `json:"uuid"`
-	Manifests  []ManifestPut   `json:"manifests"`
-	Revoked    []string        `json:"revoked_token_hashes"`
-	Quarantine []QuarantineSet `json:"quarantine"`
+	UUID       string             `json:"uuid"`
+	Manifests  []ManifestPut      `json:"manifests"`
+	Revoked    []string           `json:"revoked_token_hashes"`
+	Quarantine []QuarantineRecord `json:"quarantine"`
 	// Resolutions are operators' terminal decisions, with everything the
 	// decision needs: a resolution without the kept digest's size and
 	// checksums would store the coordinate as zero-length and serve it as
@@ -79,6 +79,18 @@ type ForwardedPublish struct {
 // PublishHandler applies a forwarded publish locally.
 type PublishHandler func(ctx context.Context, req ForwardedPublish) (status int, body []byte, err error)
 
+// QuarantineRecord is one quarantine reason as it travels in a snapshot:
+// the state AND its stamp, so a release is conveyed explicitly rather than
+// by being absent from the list.
+type QuarantineRecord struct {
+	Feed       string    `json:"feed"`
+	Coordinate string    `json:"coordinate"`
+	Reason     string    `json:"reason"`
+	Detail     string    `json:"detail,omitempty"`
+	Active     bool      `json:"active"`
+	HLC        state.HLC `json:"hlc"`
+}
+
 // ResolutionRecord is an operator's decision as it travels in a snapshot.
 type ResolutionRecord struct {
 	Feed       string            `json:"feed"`
@@ -92,15 +104,23 @@ type ResolutionRecord struct {
 	HLC        state.HLC         `json:"hlc"`
 }
 
-// ConflictRecord is one recorded side-pair of a cross-site conflict.
+// ConflictRecord is one recorded side-pair of a cross-site conflict. Each
+// side carries its own size and checksums: resolving to a side whose
+// metadata was lost would store the coordinate as zero-length.
 type ConflictRecord struct {
-	Feed       string `json:"feed"`
-	Path       string `json:"path"`
-	Coordinate string `json:"coordinate"`
-	WinnerSHA  string `json:"canonical_sha256"`
-	LoserSHA   string `json:"other_sha256"`
-	WinnerSite string `json:"canonical_site"`
-	LoserSite  string `json:"other_site"`
+	Feed       string            `json:"feed"`
+	Path       string            `json:"path"`
+	Coordinate string            `json:"coordinate"`
+	WinnerSHA  string            `json:"canonical_sha256"`
+	LoserSHA   string            `json:"other_sha256"`
+	WinnerSite string            `json:"canonical_site"`
+	LoserSite  string            `json:"other_site"`
+	WinnerSize int64             `json:"canonical_size"`
+	LoserSize  int64             `json:"other_size"`
+	WinnerSums map[string]string `json:"canonical_checksums,omitempty"`
+	LoserSums  map[string]string `json:"other_checksums,omitempty"`
+	WinnerMeta map[string]string `json:"canonical_metadata,omitempty"`
+	LoserMeta  map[string]string `json:"other_metadata,omitempty"`
 }
 
 // Server exposes the internal replication API.
@@ -406,14 +426,18 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	// them a bootstrapped site would serve coordinates that answer 409
 	// everywhere else, and honour tokens every other site has revoked
 	// (invariant 14 works only if revocations reach new sites too).
-	quarantines, err := state.ActiveQuarantinesTx(ctx, tx)
+	// Every reason, active or not: a receiver that already blocks something
+	// the source has released must learn that, and absence cannot say it.
+	quarantines, err := state.QuarantineStateTx(ctx, tx)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
 	for _, q := range quarantines {
-		snap.Quarantine = append(snap.Quarantine, QuarantineSet{
-			Feed: q.Feed, Coordinate: q.Coordinate, Reason: q.Reason, Detail: q.Detail,
+		snap.Quarantine = append(snap.Quarantine, QuarantineRecord{
+			Feed: q.Feed, Coordinate: q.Coordinate, Reason: q.Reason,
+			Detail: q.Detail, Active: q.Active,
+			HLC: state.HLC{Wall: q.HLCWall, Logical: q.HLCLogical},
 		})
 	}
 	snap.Revoked, err = state.RevokedTokenHashesTx(ctx, tx)
@@ -432,6 +456,9 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 			Feed: c.Feed, Path: c.Path, Coordinate: c.Coordinate,
 			WinnerSHA: c.WinnerSHA, LoserSHA: c.LoserSHA,
 			WinnerSite: c.WinnerSite, LoserSite: c.LoserSite,
+			WinnerSize: c.WinnerSize, LoserSize: c.LoserSize,
+			WinnerSums: c.WinnerSums, LoserSums: c.LoserSums,
+			WinnerMeta: c.WinnerMeta, LoserMeta: c.LoserMeta,
 		})
 	}
 

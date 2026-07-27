@@ -225,10 +225,10 @@ func SetCursorTx(ctx context.Context, tx pgx.Tx, c Cursor) error {
 		VALUES ($1,$2,$3,$4, now(), $5, $6)
 		ON CONFLICT (peer, origin_site) DO UPDATE
 		   SET applied_seq = EXCLUDED.applied_seq,
-		       durable_seq = CASE
-		           WHEN EXCLUDED.applied_seq < repl_cursors.applied_seq THEN EXCLUDED.durable_seq
-		           ELSE GREATEST(repl_cursors.durable_seq, EXCLUDED.durable_seq)
-		       END,
+		       -- The caller computes durability from the batch it just
+		       -- applied; ratcheting it upward would report blobs as local
+		       -- that a later batch found missing, which is the RPO lying.
+		       durable_seq = LEAST(EXCLUDED.durable_seq, EXCLUDED.applied_seq),
 		       last_ok_at  = now(),
 		       last_error  = EXCLUDED.last_error,
 		       origin_uuid = COALESCE(EXCLUDED.origin_uuid, repl_cursors.origin_uuid)`,
@@ -260,7 +260,7 @@ func (db *DB) RecordCursorError(ctx context.Context, peer, origin, msg string) e
 // MarkPeerPollOK records a successful handshake with a peer, even when
 // there was nothing to apply: without it a healthy but idle stream would
 // look like it had never been reached.
-func (db *DB) MarkPeerPollOK(ctx context.Context, peer string, origins []string) error {
+func (db *DB) MarkPeerPollOK(ctx context.Context, peer string, origins []string, originUUID string) error {
 	// Clear the error on EVERY stream of this peer, not just the ones we
 	// import: the row that records how far the peer has consumed OUR
 	// journal is also marked when a poll fails, and would otherwise keep
@@ -272,12 +272,21 @@ func (db *DB) MarkPeerPollOK(ctx context.Context, peer string, origins []string)
 	if len(origins) == 0 {
 		origins = []string{peer}
 	}
+	var uuid any
+	if originUUID != "" {
+		uuid = originUUID
+	}
 	for _, origin := range origins {
+		// Stamp the incarnation on every successful poll, not only when a
+		// page is applied: an idle stream would otherwise keep a NULL from
+		// before the upgrade and the rebuild check would never engage.
 		if _, err := db.pool.Exec(ctx, `
-			INSERT INTO repl_cursors (peer, origin_site, last_ok_at, last_error)
-			VALUES ($1,$2, now(), '')
+			INSERT INTO repl_cursors (peer, origin_site, last_ok_at, last_error, origin_uuid)
+			VALUES ($1,$2, now(), '', $3)
 			ON CONFLICT (peer, origin_site) DO UPDATE
-			   SET last_ok_at = now(), last_error = ''`, peer, origin); err != nil {
+			   SET last_ok_at = now(), last_error = '',
+			       origin_uuid = COALESCE(repl_cursors.origin_uuid, EXCLUDED.origin_uuid)`,
+			peer, origin, uuid); err != nil {
 			return classify(fmt.Errorf("record successful poll: %w", err))
 		}
 	}
@@ -747,9 +756,12 @@ func (db *DB) PruneJournalOlderThan(ctx context.Context, origin string, retentio
 	if retention <= 0 {
 		return 0, nil
 	}
+	// An empty origin ages out every stream, including this site's copies
+	// of its peers' journals — those are only a dedup ledger, and nothing
+	// reads them once the events are applied.
 	tag, err := db.pool.Exec(ctx, `
 		DELETE FROM repl_journal
-		 WHERE origin_site = $1 AND created_at < now() - $2::interval`,
+		 WHERE ($1 = '' OR origin_site = $1) AND created_at < now() - $2::interval`,
 		origin, fmt.Sprintf("%d seconds", int(retention.Seconds())))
 	if err != nil {
 		return 0, classify(fmt.Errorf("prune journal by retention: %w", err))

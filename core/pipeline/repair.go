@@ -100,7 +100,7 @@ func (r *ProjectionRepair) RepairOnce(ctx context.Context) (int, error) {
 	var divergent, repaired, failed int
 	var firstErr error
 	for _, row := range rows {
-		ok, err := r.projectionMatches(ctx, row.Feed, row.Path, row.SHA256)
+		ok, err := r.projectionMatches(ctx, row.Feed, row.Path, row.SHA256, row.Size)
 		if err != nil {
 			// One unreadable object must not blind the whole pass: the
 			// gauge this loop feeds is what the divergence alert watches.
@@ -155,9 +155,11 @@ func (r *ProjectionRepair) RepairOnce(ctx context.Context) (int, error) {
 	return repaired, nil
 }
 
-// projectionMatches reports whether the stored projection names the same
-// digest as the database row.
-func (r *ProjectionRepair) projectionMatches(ctx context.Context, feed, path, sha256hex string) (bool, error) {
+// projectionMatches reports whether the stored projection agrees with the
+// database row. The size is compared too: a projection with the right
+// digest and a wrong size serves a truncated response, and comparing
+// digests alone would call that healthy.
+func (r *ProjectionRepair) projectionMatches(ctx context.Context, feed, path, sha256hex string, size int64) (bool, error) {
 	rc, _, err := r.publisher.store.Get(ctx, "manifests/"+feed+"/"+path)
 	if err != nil {
 		if errors.Is(err, api.ErrNotFound) {
@@ -172,5 +174,5 @@ func (r *ProjectionRepair) projectionMatches(ctx context.Context, feed, path, sh
 		// Unreadable projection: rewrite it rather than guess.
 		return false, nil
 	}
-	return m.SHA256 == sha256hex, nil
+	return m.SHA256 == sha256hex && m.Size == size, nil
 }
