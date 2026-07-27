@@ -263,6 +263,26 @@ func (m *Manager) catchUp(ctx context.Context, c *Client, origin string, head in
 		if err != nil {
 			return appliedTotal, err
 		}
+		if cursor.AppliedSeq > head {
+			// The peer's journal went BACKWARDS: its database was rebuilt
+			// and the sequence restarted. Holding the old cursor would
+			// silently stop importing from it forever, so start over —
+			// apply is idempotent, and the events are new ones anyway.
+			// The old copy has to go too: the peer's new sequences collide
+			// with the ones already stored here, and every collision would
+			// be dropped as a duplicate.
+			dropped, err := m.db.ForgetOriginJournal(ctx, origin)
+			if err != nil {
+				return appliedTotal, err
+			}
+			m.logger.Warn("peer journal restarted, resetting the stream",
+				"peer", c.Name(), "origin", origin, "cursor", cursor.AppliedSeq,
+				"peer_head", head, "dropped_entries", dropped)
+			if err := m.advanceCursor(ctx, c.Name(), origin, 0, 0); err != nil {
+				return appliedTotal, err
+			}
+			cursor.AppliedSeq = 0
+		}
 		if cursor.AppliedSeq >= head {
 			return appliedTotal, nil
 		}

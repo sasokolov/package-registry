@@ -515,6 +515,23 @@ func (db *DB) ListPeerIdentities(ctx context.Context) ([]PeerIdentity, error) {
 	return out, rows.Err()
 }
 
+// ForgetOriginJournal drops this site's copy of an origin's journal. A
+// rebuilt peer starts numbering from one again, and those new sequences
+// collide with the ones already recorded here — every colliding event would
+// be discarded as a duplicate and its effect silently lost. The entries are
+// only a dedup ledger (a site serves nothing but its own origin), so
+// clearing them costs a re-pull and nothing else.
+func (db *DB) ForgetOriginJournal(ctx context.Context, origin string) (int64, error) {
+	tag, err := db.pool.Exec(ctx, "DELETE FROM repl_journal WHERE origin_site = $1", origin)
+	if err != nil {
+		return 0, classify(fmt.Errorf("forget origin journal: %w", err))
+	}
+	if _, err := db.pool.Exec(ctx, "DELETE FROM repl_parked WHERE origin_site = $1", origin); err != nil {
+		return 0, classify(fmt.Errorf("forget parked events: %w", err))
+	}
+	return tag.RowsAffected(), nil
+}
+
 // ForgetPeerIdentity drops a pin so the next handshake re-pins the peer. It
 // is the deliberate operator action behind `registry repl trust-reset`: a
 // peer whose UUID changed is a different site until a human says otherwise.

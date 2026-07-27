@@ -77,6 +77,17 @@ func (w *Writer) AppendConflictResolve(ctx context.Context, tx pgx.Tx, feed, pat
 	return err
 }
 
+// ApplyQuarantineDecisionTx applies an operator's quarantine decision with
+// the same last-writer-wins rules the applier uses, so a local decision and
+// a replicated one order identically.
+func ApplyQuarantineDecisionTx(ctx context.Context, tx pgx.Tx, feed, coordinate, reason, detail string,
+	active bool, hlc state.HLC) error {
+	if active {
+		return quarantineTx(ctx, tx, feed, coordinate, reason, detail, hlc)
+	}
+	return releaseQuarantineTx(ctx, tx, feed, coordinate, reason, hlc)
+}
+
 // ProjectionWriter writes the blob-store view of a coordinate. The
 // pipeline's Publisher implements it; naming it here keeps the resolve
 // operation in one place instead of duplicated between the applier and the

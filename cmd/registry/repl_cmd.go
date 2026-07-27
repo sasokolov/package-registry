@@ -29,14 +29,18 @@ import (
 func replCmd(args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return errors.New(
-			"usage: registry repl status|peers|conflicts|resolve|retry-parked|resync|backfill|trust-reset [-config <path>]")
+			"usage: registry repl status|peers|conflicts|resolve|retry-parked|resync|backfill|trust-reset|" +
+				"quarantine|release [-config <path>]")
 	}
 	sub := args[0]
 	flags := flag.NewFlagSet("registry repl "+sub, flag.ContinueOnError)
 	configPath := flags.String("config", "/etc/registry/config.yaml", "path to the YAML config file")
-	feed := flags.String("feed", "", "feed name (resolve)")
+	feed := flags.String("feed", "", "feed name (resolve, quarantine, release)")
 	path := flags.String("path", "", "coordinate path (resolve)")
 	keep := flags.String("keep", "", "sha256 to keep (resolve)")
+	coord := flags.String("coordinate", "", "package coordinate, e.g. maven:com.example:lib@1.0.0 (quarantine, release)")
+	reason := flags.String("reason", "manual", "quarantine reason (quarantine, release)")
+	detail := flags.String("detail", "", "human-readable explanation (quarantine)")
 	openOnly := flags.Bool("open", true, "list only unresolved conflicts")
 	peer := flags.String("peer", "", "peer name (resync, backfill)")
 	dryRun := flags.Bool("dry-run", true, "report what backfill would fetch without fetching (backfill)")
@@ -79,6 +83,10 @@ func replCmd(args []string, out io.Writer) error {
 		return replBackfill(ctx, db, cfg, *peer, *dryRun, out)
 	case "trust-reset":
 		return replTrustReset(ctx, db, *peer, out)
+	case "quarantine":
+		return replQuarantine(ctx, db, cfg, *feed, *coord, *reason, *detail, out)
+	case "release":
+		return replRelease(ctx, db, cfg, *feed, *coord, *reason, out)
 	default:
 		return fmt.Errorf("unknown repl subcommand %q", sub)
 	}
@@ -544,12 +552,121 @@ func replTrustReset(ctx context.Context, db *state.DB, peer string, out io.Write
 	if err != nil {
 		return err
 	}
-	// Cursors for that peer carry the refusal; clear it so the next poll
-	// starts from a clean state.
+	// A new identity means a new database and a journal that restarted from
+	// one. Keeping the old cursors would make this site skip everything the
+	// rebuilt peer publishes, so the streams start over — apply is
+	// idempotent, so replaying costs traffic, not correctness.
+	cursors, err := db.ListCursors(ctx)
+	if err != nil {
+		return err
+	}
+	var reset int
+	for _, c := range cursors {
+		if c.Peer != peer {
+			continue
+		}
+		tx, err := db.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		if err := state.SetCursorTx(ctx, tx, state.Cursor{Peer: c.Peer, Origin: c.Origin}); err != nil {
+			_ = tx.Rollback(ctx)
+			return err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		reset++
+	}
+	// Drop our copy of that origin's journal as well: the rebuilt peer
+	// numbers from one again, and the collisions would be discarded as
+	// duplicates, silently losing everything it publishes from now on.
+	dropped, err := db.ForgetOriginJournal(ctx, peer)
+	if err != nil {
+		return err
+	}
 	if err := db.RecordCursorError(ctx, peer, "*", ""); err != nil {
 		return err
+	}
+	if reset > 0 || dropped > 0 {
+		_, _ = fmt.Fprintf(out, "reset %d cursor(s) and dropped %d stale journal entr(ies) for peer %s\n",
+			reset, dropped, peer)
 	}
 	_, _ = fmt.Fprintf(out,
 		"forgot the pinned identity %s for peer %s; the next handshake re-pins it\n", old, peer)
 	return nil
+}
+
+// replQuarantine blocks a coordinate everywhere. It is the operator half of
+// invariant 14: replication carries decisions that REMOVE access, and this
+// is how one is made.
+func replQuarantine(ctx context.Context, db *state.DB, cfg *config.Config,
+	feed, coordinate, reason, detail string, out io.Writer) error {
+	if feed == "" || coordinate == "" {
+		return errors.New("quarantine needs -feed and -coordinate")
+	}
+	if reason == "" {
+		reason = "manual"
+	}
+	if reason == "cross_site_conflict" {
+		return errors.New("cross_site_conflict is derived from recorded conflicts; use `repl resolve` instead")
+	}
+	if err := writeQuarantineDecision(ctx, db, cfg, feed, coordinate, reason, detail, true); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(out, "quarantined %s %s (reason %s); the decision replicates to every site\n",
+		feed, coordinate, reason)
+	return nil
+}
+
+// replRelease lifts one quarantine reason.
+func replRelease(ctx context.Context, db *state.DB, cfg *config.Config,
+	feed, coordinate, reason string, out io.Writer) error {
+	if feed == "" || coordinate == "" {
+		return errors.New("release needs -feed and -coordinate")
+	}
+	if reason == "" {
+		reason = "manual"
+	}
+	if reason == "cross_site_conflict" {
+		return errors.New("a conflict quarantine lifts itself when the conflict is resolved; use `repl resolve`")
+	}
+	if err := writeQuarantineDecision(ctx, db, cfg, feed, coordinate, reason, "", false); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(out, "released %s %s (reason %s); the decision replicates to every site\n",
+		feed, coordinate, reason)
+	return nil
+}
+
+// writeQuarantineDecision applies the decision locally and journals it in
+// one transaction, so peers cannot see a half-applied takedown.
+func writeQuarantineDecision(ctx context.Context, db *state.DB, cfg *config.Config,
+	feed, coordinate, reason, detail string, active bool) error {
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var wall, logical int64
+	if err := tx.QueryRow(ctx, "SELECT hlc_wall, hlc_logical FROM repl_hlc_now()").Scan(&wall, &logical); err != nil {
+		return fmt.Errorf("stamp decision: %w", err)
+	}
+	if err := repl.ApplyQuarantineDecisionTx(ctx, tx, feed, coordinate, reason, detail,
+		active, state.HLC{Wall: wall, Logical: logical}); err != nil {
+		return err
+	}
+	if cfg.Replication.Enabled {
+		writer := repl.NewWriter(cfg.Site.Name)
+		if active {
+			err = writer.AppendQuarantine(ctx, tx, feed, coordinate, reason, detail)
+		} else {
+			err = writer.AppendQuarantineRelease(ctx, tx, feed, coordinate, reason)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
