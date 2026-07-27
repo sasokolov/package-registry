@@ -157,8 +157,10 @@ func quarantineTx(ctx context.Context, tx pgxTx, feed, coordinate, reason, detai
 		              released_at = NULL,
 		              hlc_wall = EXCLUDED.hlc_wall,
 		              hlc_logical = EXCLUDED.hlc_logical
+		-- Equal timestamps break towards "blocked": with no way to order
+		-- two decisions, the safe one wins, and every site picks the same.
 		WHERE (quarantine.hlc_wall, quarantine.hlc_logical)
-		    < (EXCLUDED.hlc_wall, EXCLUDED.hlc_logical)`,
+		   <= (EXCLUDED.hlc_wall, EXCLUDED.hlc_logical)`,
 		feed, coordinate, reason, detail, hlc.Wall, hlc.Logical)
 	if err != nil {
 		return fmt.Errorf("quarantine coordinate: %w", err)
@@ -176,11 +178,55 @@ func releaseQuarantineTx(ctx context.Context, tx pgxTx, feed, coordinate, reason
 		DO UPDATE SET released_at = now(),
 		              hlc_wall = EXCLUDED.hlc_wall,
 		              hlc_logical = EXCLUDED.hlc_logical
+		-- Strict: a release with the same timestamp as a set loses, so the
+		-- tie-break above ("blocked wins") holds from both directions.
 		WHERE (quarantine.hlc_wall, quarantine.hlc_logical)
 		    < (EXCLUDED.hlc_wall, EXCLUDED.hlc_logical)`,
 		feed, coordinate, reason, hlc.Wall, hlc.Logical)
 	if err != nil {
 		return fmt.Errorf("release quarantine: %w", err)
+	}
+	return nil
+}
+
+// syncConflictQuarantineTx recomputes the cross_site_conflict quarantine of
+// a coordinate from the conflicts recorded for it. It is a pure function of
+// committed table state, so every site derives the same answer whatever
+// order events arrived in — unlike a timestamped register, which recorded
+// whichever publish happened to be applied second here.
+//
+// A Maven GAV spans several paths (jar, pom, sources), and each path
+// conflicts on its own; the coordinate stays blocked while ANY of them is
+// unresolved.
+func syncConflictQuarantineTx(ctx context.Context, tx pgxTx, feed, coordinate string) error {
+	var open int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM publish_conflicts
+		 WHERE feed = $1 AND coordinate = $2 AND resolved_at IS NULL`,
+		feed, coordinate).Scan(&open); err != nil {
+		return fmt.Errorf("count open conflicts: %w", err)
+	}
+
+	if open > 0 {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO quarantine (feed, coordinate, reason, detail, hlc_wall, hlc_logical)
+			VALUES ($1,$2,'cross_site_conflict',$3,0,0)
+			ON CONFLICT ON CONSTRAINT quarantine_feed_coord_reason_key
+			DO UPDATE SET detail = EXCLUDED.detail, released_at = NULL`,
+			feed, coordinate, fmt.Sprintf("%d unresolved cross-site conflict(s)", open))
+		if err != nil {
+			return fmt.Errorf("quarantine conflicted coordinate: %w", err)
+		}
+		return nil
+	}
+
+	// Nothing unresolved left: lift the block. Other reasons (a manual
+	// takedown, a policy verdict) are separate rows and are untouched.
+	if _, err := tx.Exec(ctx, `
+		UPDATE quarantine SET released_at = now()
+		 WHERE feed=$1 AND coordinate=$2 AND reason='cross_site_conflict' AND released_at IS NULL`,
+		feed, coordinate); err != nil {
+		return fmt.Errorf("release conflict quarantine: %w", err)
 	}
 	return nil
 }
@@ -240,8 +286,10 @@ func recordResolution(ctx context.Context, tx pgxTx, feed, path, coord string,
 		       hlc_wall = EXCLUDED.hlc_wall,
 		       hlc_logical = EXCLUDED.hlc_logical,
 		       decided_at = now()
-		WHERE (conflict_resolutions.hlc_wall, conflict_resolutions.hlc_logical)
-		    < (EXCLUDED.hlc_wall, EXCLUDED.hlc_logical)`,
+		-- Two operators can decide one coordinate at the same instant; the
+		-- digest breaks the tie so every site keeps the same bytes.
+		WHERE (conflict_resolutions.hlc_wall, conflict_resolutions.hlc_logical, conflict_resolutions.keep_sha256)
+		    < (EXCLUDED.hlc_wall, EXCLUDED.hlc_logical, EXCLUDED.keep_sha256)`,
 		feed, path, coord, r.KeepSHA, r.Size, checksums, metadata,
 		operator, decidedBy, r.HLC.Wall, r.HLC.Logical)
 	if err != nil {
@@ -323,27 +371,15 @@ func applyResolutionTx(ctx context.Context, tx pgxTx, feed, path, coord string,
 		feed, path, r.KeepSHA, r.Size, checksums, metadata, decidedBy); err != nil {
 		return fmt.Errorf("apply conflict resolution: %w", err)
 	}
-	// A resolution is terminal, so the conflict quarantine is lifted
-	// unconditionally. Comparing HLCs here would make the outcome depend on
-	// which of the two conflicting publishes happened to trigger detection
-	// locally — that stamp differs per site, and the coordinate would stay
-	// blocked on some sites and not others.
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO quarantine (feed, coordinate, reason, detail, released_at, hlc_wall, hlc_logical)
-		VALUES ($1,$2,'cross_site_conflict','', now(), $3,$4)
-		ON CONFLICT ON CONSTRAINT quarantine_feed_coord_reason_key
-		DO UPDATE SET released_at = now(),
-		              hlc_wall = GREATEST(quarantine.hlc_wall, EXCLUDED.hlc_wall),
-		              hlc_logical = GREATEST(quarantine.hlc_logical, EXCLUDED.hlc_logical)`,
-		feed, coord, r.HLC.Wall, r.HLC.Logical); err != nil {
-		return fmt.Errorf("release conflict quarantine: %w", err)
-	}
+	// Close this PATH's conflicts, then recompute the coordinate's block:
+	// a sibling path of the same coordinate may still be unresolved, and
+	// releasing on its behalf would serve bytes nobody chose.
 	if _, err := tx.Exec(ctx, `
 		UPDATE publish_conflicts SET resolved_at = now(), resolved_sha256 = $3
 		 WHERE feed=$1 AND path=$2 AND resolved_at IS NULL`, feed, path, r.KeepSHA); err != nil {
 		return fmt.Errorf("close conflict record: %w", err)
 	}
-	return nil
+	return syncConflictQuarantineTx(ctx, tx, feed, coord)
 }
 
 // recordResolvedConflictTx records a publish that arrived after an operator

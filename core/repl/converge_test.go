@@ -29,9 +29,12 @@ type modelState struct {
 	// timestamp travel together.
 	quarantine map[string]map[string]quarantineState
 	revoked    map[string]bool
-	// conflicts holds the SET of digests ever seen for a coordinate: a set
-	// is order-independent, a winner/loser pair is not.
+	// conflicts holds the SET of digests ever seen for a path: a set is
+	// order-independent, a winner/loser pair is not.
 	conflicts map[string]map[string]bool
+	// coordOf maps a path to its coordinate — several paths share one
+	// (a Maven GAV covers jar, pom and sources).
+	coordOf map[string]string
 	// resolved records operator decisions, which are terminal: a late
 	// conflicting publish must not undo them.
 	resolved    map[string]string
@@ -52,6 +55,7 @@ func newModel() *modelState {
 		conflicts:   map[string]map[string]bool{},
 		resolved:    map[string]string{},
 		resolvedHLC: map[string]state.HLC{},
+		coordOf:     map[string]string{},
 	}
 }
 
@@ -88,6 +92,7 @@ func (m *modelState) applyOne(e state.JournalEntry, localSite string) {
 			return
 		}
 		key := p.Feed + "/" + p.Path
+		m.coordOf[key] = p.Feed + "/" + p.Coord
 		if keep, resolved := m.resolved[key]; resolved {
 			// An operator already decided this coordinate; replaying either
 			// publish converges on the decision and never re-quarantines.
@@ -100,7 +105,7 @@ func (m *modelState) applyOne(e state.JournalEntry, localSite string) {
 				}
 				m.conflicts[key][p.SHA256] = true
 			}
-			m.forceRelease(p.Feed+"/"+p.Coord, "cross_site_conflict")
+			m.syncConflictQuarantine(p.Feed, p.Coord)
 			return
 		}
 		existing, found := m.manifests[key]
@@ -134,7 +139,7 @@ func (m *modelState) applyOne(e state.JournalEntry, localSite string) {
 			if p.SHA256 < existing {
 				m.manifests[key] = p.SHA256
 			}
-			m.setQuarantine(p.Feed+"/"+p.Coord, "cross_site_conflict", true, e.HLC)
+			m.syncConflictQuarantine(p.Feed, p.Coord)
 		}
 	case KindTokenRevoke:
 		var p TokenRevoke
@@ -166,18 +171,24 @@ func (m *modelState) applyOne(e state.JournalEntry, localSite string) {
 				m.parked = append(m.parked, e)
 				return
 			}
-			// Two operators can decide one coordinate: the newest decision
-			// wins by HLC, so the outcome does not depend on arrival order.
-			if prev, ok := m.resolvedHLC[key]; ok && !prev.Before(e.HLC) {
-				m.manifests[key] = m.resolved[key]
-				return
+			// Two operators can decide one path: the newest decision wins
+			// by HLC, and an exact tie breaks by digest, so the outcome
+			// does not depend on arrival order.
+			if prev, ok := m.resolvedHLC[key]; ok {
+				if prev.Before(e.HLC) || (prev == e.HLC && p.KeepSHA > m.resolved[key]) {
+					// this decision wins
+				} else {
+					m.manifests[key] = m.resolved[key]
+					return
+				}
 			}
 			m.resolved[key] = p.KeepSHA
 			m.resolvedHLC[key] = e.HLC
 			m.manifests[key] = p.KeepSHA
-			// Terminal: the conflict quarantine is lifted unconditionally,
-			// because the stamp that set it differs per site.
-			m.forceRelease(p.Feed+"/"+p.Coord, "cross_site_conflict")
+			m.coordOf[key] = p.Feed + "/" + p.Coord
+			// The block is derived, so resolving one path only lifts it
+			// when no sibling path of the coordinate is still open.
+			m.syncConflictQuarantine(p.Feed, p.Coord)
 		}
 	}
 	_ = localSite
@@ -194,21 +205,40 @@ func (m *modelState) setQuarantine(key, reason string, active bool, hlc state.HL
 	if m.quarantine[key] == nil {
 		m.quarantine[key] = map[string]quarantineState{}
 	}
-	if cur, ok := m.quarantine[key][reason]; ok && !cur.hlc.Before(hlc) {
-		return // an older decision never overwrites a newer one
+	cur, ok := m.quarantine[key][reason]
+	if ok {
+		// Equal timestamps break towards "blocked": with no way to order
+		// the two decisions, every site must still pick the same one.
+		switch {
+		case cur.hlc.Before(hlc):
+		case cur.hlc == hlc && active && !cur.active:
+		default:
+			return
+		}
 	}
 	m.quarantine[key][reason] = quarantineState{active: active, hlc: hlc}
 }
 
-// forceRelease clears a reason regardless of timestamps, for state that is
-// derived rather than decided (a resolved conflict).
-func (m *modelState) forceRelease(key, reason string) {
+// syncConflictQuarantine mirrors syncConflictQuarantineTx: the block is
+// derived from the coordinate's unresolved path conflicts, never stamped.
+func (m *modelState) syncConflictQuarantine(feed, coord string) {
+	key := feed + "/" + coord
+	open := false
+	for path, digests := range m.conflicts {
+		if m.coordOf[path] != key {
+			continue
+		}
+		if len(digests) > 1 && m.resolved[path] == "" {
+			open = true
+			break
+		}
+	}
 	if m.quarantine[key] == nil {
 		m.quarantine[key] = map[string]quarantineState{}
 	}
-	st := m.quarantine[key][reason]
-	st.active = false
-	m.quarantine[key][reason] = st
+	st := m.quarantine[key]["cross_site_conflict"]
+	st.active = open
+	m.quarantine[key]["cross_site_conflict"] = st
 }
 
 // activeReasons lists the reasons currently blocking a coordinate.
@@ -309,11 +339,15 @@ func randomEvents(t *testing.T, rng *rand.Rand) []state.JournalEntry {
 		switch rng.IntN(7) {
 		case 0, 1:
 			// Immutable publish; some coordinates collide with different
-			// content, which exercises rule K1.
+			// content, which exercises rule K1. Several PATHS share one
+			// COORDINATE — a Maven GAV covers jar, pom and sources — which
+			// is what makes coordinate-level quarantine and path-level
+			// conflicts disagree if the block is not derived.
 			pkg := fmt.Sprintf("pkg-%d", rng.IntN(4))
+			ext := []string{".jar", ".pom", "-sources.jar"}[rng.IntN(3)]
 			content := fmt.Sprintf("content-%d", rng.IntN(3))
 			events = append(events, mkEvent(t, site, seq, wall, logical, KindManifestPut, ManifestPut{
-				Feed: "hosted", Path: pkg + "/1.0.0/" + pkg + ".jar",
+				Feed: "hosted", Path: pkg + "/1.0.0/" + pkg + "-1.0.0" + ext,
 				Coord:  "maven:com.example:" + pkg + "@1.0.0",
 				SHA256: digestOf(content), Size: int64(len(content)),
 			}))

@@ -267,6 +267,9 @@ func (a *Applier) applyManifestPut(ctx context.Context, tx pgxTx, _ string,
 			if err := recordResolvedConflictTx(ctx, tx, p, kept, rejected, e.OriginSite); err != nil {
 				return err
 			}
+			if err := syncConflictQuarantineTx(ctx, tx, p.Feed, p.Coord); err != nil {
+				return err
+			}
 			a.metrics.conflict()
 			a.audit.Warn("publish rejected: the coordinate was already resolved by an operator",
 				"feed", p.Feed, "path", p.Path, "rejected_sha256", p.SHA256,
@@ -343,12 +346,13 @@ func (a *Applier) applyManifestPut(ctx context.Context, tx pgxTx, _ string,
 		servedChecksums = winner.Checksums
 		servedMetadata = winner.Metadata
 
-		if err := quarantineTx(ctx, tx, p.Feed, p.Coord, "cross_site_conflict",
-			fmt.Sprintf("%s published different content for %s (%s vs %s)",
-				e.OriginSite, p.Path, short(winner.SHA256), short(loser.SHA256)), e.HLC); err != nil {
+		if err := recordConflictTx(ctx, tx, p, winner, loser, winnerSite, loserSite); err != nil {
 			return err
 		}
-		if err := recordConflictTx(ctx, tx, p, winner, loser, winnerSite, loserSite); err != nil {
+		// The block is derived from the recorded conflicts, so it survives
+		// any arrival order and stays until every path of the coordinate
+		// is resolved.
+		if err := syncConflictQuarantineTx(ctx, tx, p.Feed, p.Coord); err != nil {
 			return err
 		}
 		a.metrics.conflict()
