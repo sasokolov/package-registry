@@ -42,6 +42,13 @@ export function Feeds({ anonymous }: { anonymous: boolean }) {
                 <tr key={feed.name}>
                   <td>
                     <Link to={`/ui/feeds/${encodeURIComponent(feed.name)}`}>{feed.name}</Link>
+                    {feed.members?.length ? (
+                      <div className="muted" style={{ fontSize: 12 }}>
+                        {/* Order is meaningful: the first member that has a
+                            coordinate wins it. */}
+                        members: {feed.members.join(" → ")}
+                      </div>
+                    ) : null}
                     {feed.policies?.length ? (
                       <div className="muted" style={{ fontSize: 12 }}>
                         policies: {feed.policies.join(", ")}
@@ -54,6 +61,7 @@ export function Feeds({ anonymous }: { anonymous: boolean }) {
                   </td>
                   <td>
                     <div className="row" style={{ gap: 4 }}>
+                      {feed.group ? <Badge kind="warn">group</Badge> : null}
                       {feed.hosted ? <Badge kind="ok">hosted</Badge> : null}
                       {feed.upstream ? <Badge>proxy</Badge> : null}
                       {feed.publish_policy ? <Badge>{feed.publish_policy}</Badge> : null}

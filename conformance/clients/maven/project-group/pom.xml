@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Resolves through a group only:
+       liba as a RANGE, so Maven has to read maven-metadata.xml and pick the
+            highest version — which only exists locally, and is therefore
+            only visible if the group merged the index rather than answering
+            it from one member;
+       libb at a fixed version that exists upstream only. -->
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>group-app</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>liba</artifactId>
+      <version>[1.0.0,)</version>
+    </dependency>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>libb</artifactId>
+      <version>1.0.0</version>
+    </dependency>
+  </dependencies>
+</project>

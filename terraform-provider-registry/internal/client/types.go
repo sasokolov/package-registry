@@ -18,6 +18,7 @@ type Feed struct {
 	PublishPolicy   string   `json:"publish_policy,omitempty"`
 	ReplicationMode string   `json:"replication_mode,omitempty"`
 	PeerFallback    bool     `json:"peer_fallback,omitempty"`
+	Members         []string `json:"members,omitempty"`
 	Policies        []Policy `json:"policies,omitempty"`
 }
 

@@ -40,3 +40,19 @@ resource "registry_feed" "eu_releases" {
   replication_mode = "eager"
   peer_fallback    = true
 }
+
+# A group: one URL for clients, over everything the site holds. Order is
+# precedence — the hosted feed comes first, so an internally published
+# coordinate wins over a public one of the same name. The documents that list
+# versions are merged across members, so neither hides the other.
+#
+# A group cannot proxy or host itself; it is a view.
+resource "registry_feed" "maven_public" {
+  name      = "maven-public"
+  format    = "maven"
+  anonymous = true
+  members = [
+    registry_feed.releases.name,
+    registry_feed.central.name,
+  ]
+}

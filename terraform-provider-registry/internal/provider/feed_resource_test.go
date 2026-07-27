@@ -79,6 +79,114 @@ resource "registry_feed" "acc" {
 	})
 }
 
+// A group is a feed whose content is other feeds. What must survive the
+// round trip is the order: it decides which member wins a coordinate two
+// members both have.
+func TestAccFeedResource_group(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+resource "registry_feed" "group" {
+  name      = "tf-acc-group"
+  format    = "maven"
+  anonymous = true
+  members   = ["hosted", "central"]
+}
+`,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("registry_feed.group", "members.0", "hosted"),
+					resource.TestCheckResourceAttr("registry_feed.group", "members.1", "central"),
+					// A group serves without an upstream and without hosting.
+					resource.TestCheckNoResourceAttr("registry_feed.group", "upstream"),
+				),
+			},
+			{
+				// Reordering is a real change: it changes precedence.
+				Config: `
+resource "registry_feed" "group" {
+  name      = "tf-acc-group"
+  format    = "maven"
+  anonymous = true
+  members   = ["central", "hosted"]
+}
+`,
+				Check: resource.TestCheckResourceAttr("registry_feed.group", "members.0", "central"),
+			},
+			{
+				ResourceName:      "registry_feed.group",
+				ImportState:       true,
+				ImportStateId:     "tf-acc-group",
+				ImportStateVerify: true,
+			},
+		},
+	})
+}
+
+func TestAccFeedResource_groupValidation(t *testing.T) {
+	cases := []struct {
+		name   string
+		config string
+		expect *regexp.Regexp
+	}{
+		{
+			name: "a group cannot proxy as well",
+			config: `
+resource "registry_feed" "bad" {
+  name     = "tf-acc-badgroup"
+  format   = "maven"
+  upstream = "http://fake-upstream/maven"
+  members  = ["central"]
+}`,
+			expect: regexp.MustCompile(`A group cannot proxy`),
+		},
+		{
+			name: "a group cannot host as well",
+			config: `
+resource "registry_feed" "bad" {
+  name    = "tf-acc-badgroup"
+  format  = "maven"
+  hosted  = true
+  members = ["central"]
+}`,
+			expect: regexp.MustCompile(`A group cannot host`),
+		},
+		{
+			name: "a group cannot contain itself",
+			config: `
+resource "registry_feed" "bad" {
+  name    = "tf-acc-selfgroup"
+  format  = "maven"
+  members = ["tf-acc-selfgroup"]
+}`,
+			expect: regexp.MustCompile(`A group cannot contain itself`),
+		},
+		{
+			name: "a member listed twice",
+			config: `
+resource "registry_feed" "bad" {
+  name    = "tf-acc-dupgroup"
+  format  = "maven"
+  members = ["central", "central"]
+}`,
+			expect: regexp.MustCompile(`A member is listed twice`),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resource.Test(t, resource.TestCase{
+				PreCheck:                 func() { testAccPreCheck(t) },
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				Steps: []resource.TestStep{{
+					Config: tc.config, PlanOnly: true, ExpectError: tc.expect,
+				}},
+			})
+		})
+	}
+}
+
 // A change made outside Terraform has to show up as a change. This is the
 // property that makes "configuration as code" mean anything.
 func TestAccFeedResource_driftIsDetected(t *testing.T) {

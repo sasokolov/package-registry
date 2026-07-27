@@ -99,6 +99,7 @@ type feedDataModel struct {
 	PublishPolicy   types.String  `tfsdk:"publish_policy"`
 	ReplicationMode types.String  `tfsdk:"replication_mode"`
 	PeerFallback    types.Bool    `tfsdk:"peer_fallback"`
+	Members         types.List    `tfsdk:"members"`
 	Policies        types.List    `tfsdk:"policies"`
 }
 
@@ -123,6 +124,11 @@ func (d *feedDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, r
 			"publish_policy":   schema.StringAttribute{Computed: true},
 			"replication_mode": schema.StringAttribute{Computed: true},
 			"peer_fallback":    schema.BoolAttribute{Computed: true},
+			"members": schema.ListAttribute{
+				Computed:            true,
+				ElementType:         types.StringType,
+				MarkdownDescription: "Group members, in order; empty for a feed that is not a group.",
+			},
 			"policies": schema.ListAttribute{
 				Computed:            true,
 				ElementType:         types.StringType,

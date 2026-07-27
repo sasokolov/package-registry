@@ -325,14 +325,17 @@ func integrityFrom(checksums map[string]string) string {
 }
 
 // highestVersion picks the fallback "latest" tag deterministically.
+//
+// The comparison is by version, not by string: sorted as text, 1.9.0 comes
+// after 1.10.0 and the feed would announce the older release as latest.
 func highestVersion(versions map[string]any) string {
 	list := make([]string, 0, len(versions))
 	for v := range versions {
 		list = append(list, v)
 	}
-	sort.Strings(list)
 	if len(list) == 0 {
 		return ""
 	}
+	sort.Slice(list, func(i, j int) bool { return compareSemver(list[i], list[j]) < 0 })
 	return list[len(list)-1]
 }

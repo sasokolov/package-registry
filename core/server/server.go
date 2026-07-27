@@ -93,6 +93,9 @@ type feedRuntime struct {
 	// Geo federation (docs/geo-replication.md).
 	publish      config.PublishPolicy
 	peerFallback bool
+	// members is non-empty for a group: the leaf feeds it serves from, in
+	// order, already flattened through any nested groups.
+	members []*feedRuntime
 }
 
 // New builds the server and its initial runtime from the manager's current
@@ -351,7 +354,12 @@ func (s *Server) buildRuntime(cfg *config.Config) (*runtime, error) {
 		stop:   stopRuntime,
 	}
 
+	// Leaf feeds first: a group can only be wired once the feeds it names
+	// exist as runtimes.
 	for _, fc := range cfg.Feeds {
+		if fc.IsGroup() {
+			continue
+		}
 		module, ok := api.Format(fc.Format)
 		if !ok {
 			return nil, fmt.Errorf("feed %s: format %q is not registered", fc.Name, fc.Format)
@@ -411,6 +419,10 @@ func (s *Server) buildRuntime(cfg *config.Config) (*runtime, error) {
 			}
 		}
 		rt.router.Mount(mount, http.StripPrefix(mount, sub))
+	}
+
+	if err := s.mountGroups(cfg, rt); err != nil {
+		return nil, err
 	}
 
 	// Root-level protocol endpoints (e.g. /.well-known/terraform.json)

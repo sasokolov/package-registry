@@ -124,6 +124,27 @@ feeds:
     anonymous: true
     publishers: ["token:ci-*"]
 
+  # Hosted maven feed used by the group scenario, so the group has its own
+  # local content independent of what other scenarios publish.
+  - name: group-hosted
+    format: maven
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+
+  # Groups: one URL over local and proxied content. The hosted member comes
+  # first, so an internally published coordinate wins over an upstream one of
+  # the same name.
+  - name: maven-public
+    format: maven
+    anonymous: true
+    members: [group-hosted, central]
+
+  - name: npm-public
+    format: npm
+    anonymous: true
+    members: [npm-hosted, npmjs]
+
   # Redirect mode: cached tarballs are answered with a 302 to a pre-signed
   # MinIO URL instead of being streamed through the registry.
   - name: npm-redirect

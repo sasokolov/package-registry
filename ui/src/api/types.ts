@@ -36,6 +36,10 @@ export interface FeedSummary {
   replication_mode?: string;
   peer_fallback?: boolean;
   packages?: number;
+  /** A read-only view over other feeds. */
+  group?: boolean;
+  /** Its members, in order. Configuration, so identified callers only. */
+  members?: string[];
 }
 
 export interface PackageEntry {

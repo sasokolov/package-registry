@@ -189,6 +189,13 @@ const (
 	SourceHeader = "X-Registry-Source"
 	// SiteHeader names the geo site that answered.
 	SiteHeader = "X-Registry-Site"
+	// GroupMemberHeader names the member feed that answered a group
+	// request, so "which repository is this actually from" is one header
+	// away instead of a guess.
+	GroupMemberHeader = "X-Registry-Member"
+	// GroupMergedHeader lists, in order, the members whose documents were
+	// merged into the answer.
+	GroupMergedHeader = "X-Registry-Merged"
 )
 
 // ---------------------------------------------------------------------------
@@ -356,6 +363,38 @@ type ConditionalPutter interface {
 	// PutIfAbsent writes key only when it does not exist yet; it returns
 	// ErrImmutable when the key is already present.
 	PutIfAbsent(ctx context.Context, key string, r io.Reader, opts PutOpts) error
+}
+
+// GroupPart is one member's answer to a group request, in member order.
+type GroupPart struct {
+	// Feed is the member feed the document came from.
+	Feed string
+	Body []byte
+}
+
+// GroupMerger is an optional FormatModule capability: combining the same
+// document from several members of a group into one answer.
+//
+// A group exists so a client can point at one URL and get both what this
+// site hosts and what it proxies. For an artifact that is a first-hit
+// lookup, but for the documents that LIST what exists — maven-metadata.xml,
+// an npm packument, a NuGet flat-container index — first-hit is silently
+// wrong: the hosted member answers, and every version the upstream had
+// disappears. Those documents have to be merged, and only the format knows
+// how, so the core asks rather than guesses (invariant 1).
+//
+// A format without this capability cannot be grouped: configuration naming
+// it in a group is refused. Half a version list is a worse answer than a
+// clear error.
+type GroupMerger interface {
+	// MergeableIntent reports whether this intent names a document that
+	// must be merged across members rather than answered by the first
+	// member that has it.
+	MergeableIntent(intent Intent) bool
+	// Merge combines member documents into one body. Parts arrive in
+	// member order and only for members that had the document; there is
+	// always at least one.
+	Merge(feed Feed, intent Intent, parts []GroupPart) ([]byte, error)
 }
 
 // FeedSetValidator is an optional FormatModule capability: validate the

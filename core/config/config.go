@@ -268,7 +268,15 @@ type FeedConfig struct {
 	PeerFallback bool `yaml:"peer_fallback,omitempty" json:"peer_fallback,omitempty"`
 	// Policies is the ordered policy chain for this feed.
 	Policies []PolicyConfig `yaml:"policies,omitempty" json:"policies,omitempty"`
+	// Members makes this feed a group: a read-only view over other feeds of
+	// the same format, in this order. Artifacts come from the first member
+	// that has them; the documents that list what exists are merged, so a
+	// hosted member cannot hide what the proxied one offers.
+	Members []string `yaml:"members,omitempty" json:"members,omitempty"`
 }
+
+// IsGroup reports whether this feed is a group over other feeds.
+func (f FeedConfig) IsGroup() bool { return len(f.Members) > 0 }
 
 // PolicyConfig names a registered policy and carries its options verbatim.
 type PolicyConfig struct {
@@ -575,8 +583,8 @@ func (c *Config) Validate() error {
 		if len(feed.Publishers) > 0 && !feed.Hosted {
 			errs = append(errs, fmt.Errorf("%s: publishers require hosted: true", at))
 		}
-		if feed.Upstream == "" && !feed.Hosted {
-			errs = append(errs, fmt.Errorf("%s: a feed needs an upstream, hosted: true, or both", at))
+		if feed.Upstream == "" && !feed.Hosted && !feed.IsGroup() {
+			errs = append(errs, fmt.Errorf("%s: a feed needs an upstream, hosted: true, members, or a combination", at))
 		}
 		switch {
 		case feed.PublishPolicy == "", feed.PublishPolicy == "local":
@@ -601,7 +609,113 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	errs = append(errs, c.validateGroups()...)
+
 	return errors.Join(errs...)
+}
+
+// maxGroupDepth bounds how deep groups may nest. Nesting is useful — a
+// "public" group of "internal" plus a proxy — but a request fanning out
+// through an unbounded tree is a way to turn one client into many.
+const maxGroupDepth = 5
+
+// validateGroups checks the group graph as a whole: what a group may
+// contain, that its members exist and agree on the format, and that
+// following them terminates.
+func (c *Config) validateGroups() []error {
+	var errs []error
+
+	byName := make(map[string]FeedConfig, len(c.Feeds))
+	for _, f := range c.Feeds {
+		byName[f.Name] = f
+	}
+
+	for i, feed := range c.Feeds {
+		if !feed.IsGroup() {
+			continue
+		}
+		at := fmt.Sprintf("feeds[%d] (%s)", i, feed.Name)
+
+		// A group is a view, not a repository: it stores nothing and
+		// accepts nothing. Allowing either would create a second answer to
+		// "where did this artifact actually come from".
+		if feed.Upstream != "" {
+			errs = append(errs, fmt.Errorf("%s: a group cannot have an upstream; proxy through a member instead", at))
+		}
+		if feed.Hosted {
+			errs = append(errs, fmt.Errorf("%s: a group cannot be hosted; publish to a member instead", at))
+		}
+		if len(feed.Publishers) > 0 {
+			errs = append(errs, fmt.Errorf("%s: a group cannot have publishers; they belong on the hosted member", at))
+		}
+
+		// The format has to know how to merge the documents that list what
+		// exists, or the group would quietly serve a subset of them.
+		if module, ok := api.Format(feed.Format); ok {
+			if _, mergeable := module.(api.GroupMerger); !mergeable {
+				errs = append(errs, fmt.Errorf(
+					"%s: format %q does not support groups: it cannot merge the documents that list versions, "+
+						"so a group would hide what its members hold", at, feed.Format))
+			}
+		}
+
+		seenMember := map[string]bool{}
+		for j, member := range feed.Members {
+			switch {
+			case member == feed.Name:
+				errs = append(errs, fmt.Errorf("%s: members[%d]: a group cannot contain itself", at, j))
+				continue
+			case seenMember[member]:
+				errs = append(errs, fmt.Errorf("%s: members[%d]: %q is listed twice", at, j, member))
+				continue
+			}
+			seenMember[member] = true
+
+			target, ok := byName[member]
+			if !ok {
+				errs = append(errs, fmt.Errorf("%s: members[%d]: no feed named %q", at, j, member))
+				continue
+			}
+			if target.Format != feed.Format {
+				errs = append(errs, fmt.Errorf(
+					"%s: members[%d]: %q is a %s feed; a group can only contain its own format (%s)",
+					at, j, member, target.Format, feed.Format))
+			}
+		}
+
+		if err := walkGroup(byName, feed, nil, 0); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", at, err))
+		}
+	}
+	return errs
+}
+
+// walkGroup follows a group's members and reports a cycle or excessive
+// nesting. path is the chain that led here, used to name the cycle.
+func walkGroup(byName map[string]FeedConfig, feed FeedConfig, path []string, depth int) error {
+	if depth > maxGroupDepth {
+		return fmt.Errorf("groups nest deeper than %d levels (%s)",
+			maxGroupDepth, strings.Join(append(path, feed.Name), " -> "))
+	}
+	for _, seen := range path {
+		if seen == feed.Name {
+			return fmt.Errorf("groups form a cycle: %s", strings.Join(append(path, feed.Name), " -> "))
+		}
+	}
+	path = append(path, feed.Name)
+	for _, member := range feed.Members {
+		target, ok := byName[member]
+		if !ok {
+			continue // already reported as a missing member
+		}
+		if !target.IsGroup() {
+			continue
+		}
+		if err := walkGroup(byName, target, path, depth+1); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validateHTTPURL(raw string) error {

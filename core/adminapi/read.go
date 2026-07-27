@@ -41,6 +41,11 @@ type FeedSummary struct {
 	PublishPolicy   string   `json:"publish_policy,omitempty"`
 	ReplicationMode string   `json:"replication_mode,omitempty"`
 	PeerFallback    bool     `json:"peer_fallback,omitempty"`
+	// Group marks a read-only view over other feeds. Members are
+	// configuration, so they are told to identified callers only; that this
+	// URL is a group is not a secret, because using it says so.
+	Group   bool     `json:"group,omitempty"`
+	Members []string `json:"members,omitempty"`
 	// Packages is absent rather than zero when the caller may not be told:
 	// "none" and "not your business" are different answers.
 	Packages *int `json:"packages,omitempty"`
@@ -158,6 +163,7 @@ func (s *Server) feedSummaries(r *http.Request) []FeedSummary {
 			out = append(out, FeedSummary{
 				Name: f.Name, Format: f.Format,
 				Hosted: f.Hosted, Anonymous: true,
+				Group: f.IsGroup(),
 			})
 			continue
 		}
@@ -166,6 +172,7 @@ func (s *Server) feedSummaries(r *http.Request) []FeedSummary {
 			Hosted: f.Hosted, Anonymous: f.Anonymous,
 			Publishers: f.Publishers, PublishPolicy: f.PublishPolicy,
 			ReplicationMode: f.ReplicationMode, PeerFallback: f.PeerFallback,
+			Group: f.IsGroup(), Members: f.Members,
 		}
 		count := counts[f.Name]
 		summary.Packages = &count

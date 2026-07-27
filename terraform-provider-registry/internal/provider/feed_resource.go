@@ -50,6 +50,7 @@ type feedModel struct {
 	PublishPolicy   types.String  `tfsdk:"publish_policy"`
 	ReplicationMode types.String  `tfsdk:"replication_mode"`
 	PeerFallback    types.Bool    `tfsdk:"peer_fallback"`
+	Members         types.List    `tfsdk:"members"`
 	Policies        []policyModel `tfsdk:"policy"`
 }
 
@@ -131,6 +132,17 @@ func (r *feedResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				MarkdownDescription: "Let the read path fetch missing hosted content from peers, hiding " +
 					"replication lag from clients.",
 			},
+			"members": schema.ListAttribute{
+				Optional:    true,
+				ElementType: types.StringType,
+				MarkdownDescription: "Makes this feed a **group**: a read-only view over these feeds, " +
+					"in this order, so one URL serves both what the site hosts and what it proxies.\n\n" +
+					"Order matters — an artifact comes from the first member that has it, which is how " +
+					"an internal package takes precedence over a public one of the same name. The " +
+					"documents that list versions are merged across members instead, so nothing is " +
+					"hidden. A group cannot have `upstream`, `hosted` or `publishers`; publish to the " +
+					"member that hosts.",
+			},
 		},
 		Blocks: map[string]schema.Block{
 			"policy": schema.ListNestedBlock{
@@ -185,11 +197,44 @@ func (r *feedResource) ValidateConfig(ctx context.Context, req resource.Validate
 			fmt.Sprintf("%q must match %s.", format, formatRE))
 	}
 
-	// A feed that neither proxies nor hosts serves nothing at all.
-	if !model.Upstream.IsUnknown() && !model.Hosted.IsUnknown() &&
+	isGroup := !model.Members.IsNull() && !model.Members.IsUnknown() && len(model.Members.Elements()) > 0
+
+	// A feed that neither proxies nor hosts nor groups serves nothing.
+	if !model.Upstream.IsUnknown() && !model.Hosted.IsUnknown() && !isGroup &&
 		model.Upstream.ValueString() == "" && !model.Hosted.ValueBool() {
 		resp.Diagnostics.AddError("Feed serves nothing",
-			"A feed needs an upstream, hosted = true, or both.")
+			"A feed needs an upstream, hosted = true, members, or a combination.")
+	}
+
+	// A group is a view: it stores nothing and accepts nothing, or there
+	// would be two answers to where an artifact actually came from.
+	if isGroup {
+		if model.Upstream.ValueString() != "" {
+			resp.Diagnostics.AddAttributeError(pathOf("upstream"), "A group cannot proxy",
+				"Give the upstream to a member feed and put that member in members.")
+		}
+		if model.Hosted.ValueBool() {
+			resp.Diagnostics.AddAttributeError(pathOf("hosted"), "A group cannot host",
+				"Publish to a hosted member feed and put that member in members.")
+		}
+		if !model.Publishers.IsNull() && len(model.Publishers.Elements()) > 0 {
+			resp.Diagnostics.AddAttributeError(pathOf("publishers"), "A group cannot have publishers",
+				"They belong on the hosted member.")
+		}
+		var members []string
+		resp.Diagnostics.Append(model.Members.ElementsAs(ctx, &members, false)...)
+		seen := map[string]bool{}
+		for _, member := range members {
+			if member == model.Name.ValueString() {
+				resp.Diagnostics.AddAttributeError(pathOf("members"), "A group cannot contain itself",
+					"Remove "+member+" from members.")
+			}
+			if seen[member] {
+				resp.Diagnostics.AddAttributeError(pathOf("members"), "A member is listed twice",
+					member+" appears more than once; order is meaningful, repeats are not.")
+			}
+			seen[member] = true
+		}
 	}
 	if !model.Publishers.IsNull() && !model.Publishers.IsUnknown() &&
 		len(model.Publishers.Elements()) > 0 && !model.Hosted.IsUnknown() && !model.Hosted.ValueBool() {
@@ -319,6 +364,7 @@ func (r *feedResource) write(ctx context.Context, plan *feedModel, action string
 		PublishPolicy:   plan.PublishPolicy.ValueString(),
 		ReplicationMode: plan.ReplicationMode.ValueString(),
 		PeerFallback:    plan.PeerFallback.ValueBool(),
+		Members:         stringsFrom(ctx, plan.Members, diags),
 	}
 	for i, policy := range plan.Policies {
 		entry := client.Policy{Name: policy.Name.ValueString()}
@@ -367,6 +413,10 @@ func feedToModel(ctx context.Context, feed client.Feed, model *feedModel) diag.D
 	publishers, d := stringsOrPrior(ctx, feed.Publishers, model.Publishers)
 	diags.Append(d...)
 	model.Publishers = publishers
+
+	members, d := stringsOrPrior(ctx, feed.Members, model.Members)
+	diags.Append(d...)
+	model.Members = members
 
 	if len(feed.Policies) == 0 {
 		model.Policies = nil

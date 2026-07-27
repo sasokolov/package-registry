@@ -35,6 +35,7 @@ output "central_upstream" {
 - `anonymous` (Boolean)
 - `format` (String)
 - `hosted` (Boolean)
+- `members` (List of String) Group members, in order; empty for a feed that is not a group.
 - `peer_fallback` (Boolean)
 - `policies` (List of String) Policy names in chain order.
 - `publish_policy` (String)

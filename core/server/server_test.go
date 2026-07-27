@@ -33,13 +33,40 @@ func (srvtestModule) Parse(r *http.Request) (api.Intent, error) {
 	if p == "" {
 		return api.Intent{}, api.NotFoundf("empty path")
 	}
+	// Paths ending in /index stand in for the documents that list what a
+	// feed holds — the ones a group has to merge.
+	kind := api.IntentArtifact
+	if strings.HasSuffix(p, "/index") {
+		kind = api.IntentMetadata
+	}
 	return api.Intent{
-		Kind:       api.IntentArtifact,
+		Kind:       kind,
 		Coord:      api.PackageCoordinate{Format: "srvtest", Name: p},
 		RemotePath: p,
 	}, nil
 }
 func (srvtestModule) RewriteMetadata(_ api.Feed, b []byte) ([]byte, error) { return b, nil }
+
+// The group capability: this module's "index" is a list of lines, so
+// merging is the union of the members' lines in member order.
+func (srvtestModule) MergeableIntent(intent api.Intent) bool {
+	return intent.Kind == api.IntentMetadata
+}
+
+func (srvtestModule) Merge(_ api.Feed, _ api.Intent, parts []api.GroupPart) ([]byte, error) {
+	seen := map[string]bool{}
+	var lines []string
+	for _, part := range parts {
+		for _, line := range strings.Split(strings.TrimSpace(string(part.Body)), "\n") {
+			if line == "" || seen[line] {
+				continue
+			}
+			seen[line] = true
+			lines = append(lines, line)
+		}
+	}
+	return []byte(strings.Join(lines, "\n") + "\n"), nil
+}
 
 var registerModule sync.Once
 

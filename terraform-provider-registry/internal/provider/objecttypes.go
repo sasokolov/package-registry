@@ -58,6 +58,10 @@ func feedDataFrom(ctx context.Context, feed client.Feed, model *feedDataModel) d
 	diags.Append(d...)
 	model.Publishers = publishers
 
+	members, d := types.ListValueFrom(ctx, types.StringType, feed.Members)
+	diags.Append(d...)
+	model.Members = members
+
 	names := make([]string, 0, len(feed.Policies))
 	for _, policy := range feed.Policies {
 		names = append(names, policy.Name)

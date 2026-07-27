@@ -94,6 +94,7 @@ services:
       - ./clients/maven/project:/work:ro
       - ./clients/maven/project-live:/work-live:ro
       - ./clients/maven/project-deploy:/work-deploy:ro
+      - ./clients/maven/project-group:/work-group:ro
 
   npm-client:
     image: node:22-alpine
