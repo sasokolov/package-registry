@@ -157,6 +157,32 @@ feeds:
     anonymous: true
     members: [nuget-hosted, nugetorg]
 
+  # Hosted Composer feed and a group over it and the proxy.
+  - name: composer-hosted
+    format: composer
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+
+  - name: composer-public
+    format: composer
+    anonymous: true
+    members: [composer-hosted, packagist]
+
+  # Terraform: private modules plus the proxied registry behind one group.
+  # A module source names a HOST, so a group is the only way a site can
+  # serve both — and service discovery therefore points at the group.
+  - name: tf-hosted
+    format: terraform
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+
+  - name: tf-public
+    format: terraform
+    anonymous: true
+    members: [tf-hosted, tf]
+
   # Redirect mode: cached tarballs are answered with a 302 to a pre-signed
   # MinIO URL instead of being streamed through the registry.
   - name: npm-redirect

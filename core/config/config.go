@@ -289,7 +289,7 @@ type PolicyConfig struct {
 func (f FeedConfig) API() api.Feed {
 	return api.Feed{
 		Name: f.Name, Format: f.Format, Upstream: f.Upstream,
-		Anonymous: f.Anonymous, Hosted: f.Hosted,
+		Anonymous: f.Anonymous, Hosted: f.Hosted, Group: f.IsGroup(),
 	}
 }
 

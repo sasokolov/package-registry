@@ -83,6 +83,9 @@ services:
     image: curlimages/curl:8.12.1
     profiles: ["tools"]
     entrypoint: ["curl"]
+    volumes:
+      # Some scenarios upload a fixture archive rather than building one.
+      - ./fixtures:/fixtures:ro
 
   # Real package-manager clients (profile "tools", started per scenario).
   maven-client:

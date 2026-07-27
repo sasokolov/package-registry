@@ -100,6 +100,31 @@ for version in 9.9.9 1.2.3; do
   " 2>&1)" || { echo "restoring $version through the group failed:" >&2; echo "$out" | tail -30; exit 1; }
 done
 
+echo "--> search finds what the hosted feed holds"
+results="$(client_curl -fsS "$HOSTED/v3/query?q=conformance")"
+grep -q '"conformance.lib"' <<<"$results" || {
+  echo "search did not find the pushed package:" >&2; echo "$results" >&2; exit 1; }
+grep -q '"version": "9.9.9"' <<<"$results" || { echo "$results" >&2; exit 1; }
+grep -q '"totalHits": 1' <<<"$results" || { echo "$results" >&2; exit 1; }
+
+echo "--> a term that matches nothing is an empty answer, not an error"
+results="$(client_curl -fsS "$HOSTED/v3/query?q=nothingliketh1s")"
+grep -q '"totalHits": 0' <<<"$results" || { echo "$results" >&2; exit 1; }
+
+echo "--> the query reaches the feed: two searches are two answers"
+one="$(client_curl -fsS "$HOSTED/v3/query?q=conformance")"
+two="$(client_curl -fsS "$HOSTED/v3/query?q=nothingliketh1s")"
+[[ "$one" != "$two" ]] || {
+  echo "two different searches returned the same answer; the query is being dropped" >&2
+  exit 1; }
+
+echo "--> and the group's search covers its members"
+results="$(client_curl -fsS "$GROUP/v3/query?q=conformance")"
+grep -q '"conformance.lib"' <<<"$results" || { echo "$results" >&2; exit 1; }
+headers="$(client_curl -sS -o /dev/null -D - "$GROUP/v3/query?q=conformance")"
+grep -qi '^x-registry-merged:' <<<"$headers" || {
+  echo "the group answered a search from one member only:" >&2; echo "$headers" >&2; exit 1; }
+
 echo "--> publishing to the group is refused, naming the hosted member"
 body="$(client_curl -sS -w '\n%{http_code}' -X PUT \
   -H "Authorization: Bearer $ci" --data-binary 'x' "$GROUP/api/v2/package")"

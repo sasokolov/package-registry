@@ -93,6 +93,9 @@ func (s *Server) feedHandler(rt *runtime, fr *feedRuntime) http.HandlerFunc {
 			s.serveSynthetic(w, fr, intent)
 			return
 		}
+		if s.serveSearch(ctx, w, fr, intent) {
+			return
+		}
 
 		res, err := s.pipe.Serve(ctx, pipeline.Request{
 			Feed:         fr.feed,
@@ -236,6 +239,32 @@ func (s *Server) updateBreakerGauge(fr *feedRuntime) {
 	}
 }
 
+// serveSearch answers a search from what the feed hosts, and reports whether
+// it did.
+//
+// Only a hosting feed answers its own searches: a proxy has an upstream that
+// implements search properly, and a registry inventing a ranking over a
+// cache it happens to hold would be worse than passing the question on. A
+// feed that both hosts and proxies asks its upstream too — the local answer
+// alone would silently hide everything the upstream knows.
+func (s *Server) serveSearch(ctx context.Context, w http.ResponseWriter,
+	fr *feedRuntime, intent api.Intent) bool {
+	if intent.Kind != api.IntentSearch || !fr.hosted || fr.upstream != nil {
+		return false
+	}
+	searcher, ok := fr.module.(api.Searcher)
+	if !ok {
+		return false
+	}
+	res, err := searcher.Search(ctx, fr.feed, intent, s.publisher)
+	if err != nil {
+		s.writeError(w, err, "")
+		return true
+	}
+	writeSynthetic(w, s.site, res)
+	return true
+}
+
 // serveSynthetic answers protocol-level endpoints from the module alone
 // (no cache, no upstream); labeled X-Registry-Source: local.
 func (s *Server) serveSynthetic(w http.ResponseWriter, fr *feedRuntime, intent api.Intent) {
@@ -251,11 +280,16 @@ func (s *Server) serveSynthetic(w http.ResponseWriter, fr *feedRuntime, intent a
 		s.writeErrorText(w, err, err.Error())
 		return
 	}
+	writeSynthetic(w, s.site, resp)
+}
+
+// writeSynthetic emits a response the registry produced itself.
+func writeSynthetic(w http.ResponseWriter, site string, resp api.SyntheticResponse) {
 	for k, v := range resp.Header {
 		w.Header().Set(k, v)
 	}
 	w.Header().Set(api.SourceHeader, string(api.SourceLocal))
-	w.Header().Set(api.SiteHeader, s.site)
+	w.Header().Set(api.SiteHeader, site)
 	status := resp.Status
 	if status == 0 {
 		status = http.StatusOK

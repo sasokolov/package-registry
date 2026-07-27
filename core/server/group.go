@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -225,13 +226,7 @@ func (s *Server) askMember(ctx context.Context, member *feedRuntime,
 		return memberResult{member: member, outcome: memberBlocked, reason: d.Reason}
 	}
 
-	res, err := s.pipe.Serve(ctx, pipeline.Request{
-		Feed:         member.feed,
-		Intent:       intent,
-		Module:       member.module,
-		Upstream:     member.upstream,
-		PeerFallback: member.peerFallback,
-	})
+	res, err := s.answerFromMember(ctx, member, intent)
 	s.updateBreakerGauge(member)
 	if err != nil {
 		if errors.Is(err, api.ErrNotFound) {
@@ -255,6 +250,35 @@ func (s *Server) askMember(ctx context.Context, member *feedRuntime,
 		return memberResult{member: member, outcome: memberBlocked, reason: d.Reason}
 	}
 	return memberResult{member: member, outcome: memberAnswered, result: res}
+}
+
+// answerFromMember gets one member's answer, by the same route a direct
+// request to that member would take. A hosted member answers its own
+// searches; everything else goes through the pipeline.
+func (s *Server) answerFromMember(ctx context.Context, member *feedRuntime,
+	intent api.Intent) (*pipeline.Result, error) {
+	if intent.Kind == api.IntentSearch && member.hosted && member.upstream == nil {
+		searcher, ok := member.module.(api.Searcher)
+		if !ok {
+			return nil, api.NotFoundf("feed %s cannot answer a search", member.feed.Name)
+		}
+		resp, err := searcher.Search(ctx, member.feed, intent, s.publisher)
+		if err != nil {
+			return nil, err
+		}
+		return &pipeline.Result{
+			Body:   io.NopCloser(bytes.NewReader(resp.Body)),
+			Size:   int64(len(resp.Body)),
+			Source: api.SourceLocal,
+		}, nil
+	}
+	return s.pipe.Serve(ctx, pipeline.Request{
+		Feed:         member.feed,
+		Intent:       intent,
+		Module:       member.module,
+		Upstream:     member.upstream,
+		PeerFallback: member.peerFallback,
+	})
 }
 
 // answerEmptyGroup decides what "no member had it" means. The distinction

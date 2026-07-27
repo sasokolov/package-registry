@@ -175,12 +175,44 @@ func TestValidateFeeds(t *testing.T) {
 	if err := m.ValidateFeeds([]api.Feed{{Name: "tf"}}); err != nil {
 		t.Errorf("single feed rejected: %v", err)
 	}
+
+	// Two feeds and nothing to say which one discovery means.
 	err := m.ValidateFeeds([]api.Feed{{Name: "tf"}, {Name: "other"}})
 	if err == nil {
-		t.Fatal("two terraform feeds accepted; discovery is host-wide")
+		t.Fatal("two terraform feeds accepted; discovery names exactly one registry")
 	}
-	if !strings.Contains(err.Error(), "one feed per site") {
-		t.Errorf("error = %v", err)
+	if !strings.Contains(err.Error(), "combine them into a group") {
+		t.Errorf("the error does not say what to do about it: %v", err)
+	}
+
+	// A group answers the question: it is what discovery points at, and the
+	// others are its members.
+	if err := m.ValidateFeeds([]api.Feed{
+		{Name: "hosted"}, {Name: "proxy"}, {Name: "public", Group: true},
+	}); err != nil {
+		t.Errorf("a group of terraform feeds was rejected: %v", err)
+	}
+
+	// Two groups put the question back.
+	err = m.ValidateFeeds([]api.Feed{{Name: "a", Group: true}, {Name: "b", Group: true}})
+	if err == nil {
+		t.Fatal("two groups accepted; discovery still names one registry")
+	}
+}
+
+// With a group configured, discovery must send clients to the group: its
+// members exist to be combined, not addressed.
+func TestServeRootDiscoveryPrefersTheGroup(t *testing.T) {
+	rec := httptest.NewRecorder()
+	Module{}.ServeRoot(rec, httptest.NewRequest("GET", "/.well-known/terraform.json", nil), []api.Feed{
+		{Name: "aaa-hosted", Format: "terraform"},
+		{Name: "public", Format: "terraform", Group: true},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "/terraform/public/v1/modules/") {
+		t.Errorf("discovery does not point at the group: %s", rec.Body.String())
 	}
 }
 

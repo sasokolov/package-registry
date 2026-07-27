@@ -487,3 +487,149 @@ func indexPaths(core *fakeCore) []string {
 	sort.Strings(out)
 	return out
 }
+
+// ---------------------------------------------------------------------------
+// Search
+
+func search(t *testing.T, core *fakeCore, feed api.Feed, query string) map[string]any {
+	t.Helper()
+	resp, err := Module{}.Search(t.Context(), feed,
+		api.Intent{Kind: api.IntentSearch, RemoteQuery: query}, core)
+	if err != nil {
+		t.Fatalf("Search(%q): %v", query, err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(resp.Body, &doc); err != nil {
+		t.Fatalf("parse search results: %v\n%s", err, resp.Body)
+	}
+	return doc
+}
+
+func ids(doc map[string]any) []string {
+	data, _ := doc["data"].([]any)
+	out := make([]string, 0, len(data))
+	for _, entry := range data {
+		id, _ := entry.(map[string]any)["id"].(string)
+		out = append(out, id)
+	}
+	return out
+}
+
+func TestSearchFindsWhatTheFeedHosts(t *testing.T) {
+	core := newFakeCore()
+	feed := hostedFeed()
+	for _, id := range []string{"Acme.Logging", "Acme.Http", "Other.Thing"} {
+		if err := push(t, core, feed, nupkg(t, id, "1.0.0", "")); err != nil {
+			t.Fatalf("push %s: %v", id, err)
+		}
+	}
+
+	tests := []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		{name: "no term lists everything", query: "", want: []string{"Acme.Http", "Acme.Logging", "Other.Thing"}},
+		{name: "a prefix narrows it", query: "q=acme", want: []string{"Acme.Http", "Acme.Logging"}},
+		{name: "an exact id comes first", query: "q=acme.logging", want: []string{"Acme.Logging"}},
+		{name: "the search is case-insensitive", query: "q=OTHER", want: []string{"Other.Thing"}},
+		{name: "nothing matching is an empty answer, not an error", query: "q=nosuchthing", want: []string{}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := search(t, core, feed, tc.query)
+			got := strings.Join(ids(doc), ",")
+			if want := strings.Join(tc.want, ","); got != want {
+				t.Errorf("ids = %q, want %q", got, want)
+			}
+			if hits, _ := doc["totalHits"].(float64); int(hits) != len(tc.want) {
+				t.Errorf("totalHits = %v, want %d", doc["totalHits"], len(tc.want))
+			}
+		})
+	}
+}
+
+// A search answer must agree with what a restore would get, so it reports
+// the newest version and lists the rest.
+func TestSearchReportsTheNewestVersionAndListsTheRest(t *testing.T) {
+	core := newFakeCore()
+	feed := hostedFeed()
+	for _, v := range []string{"1.9.0", "1.10.0", "2.0.0-rc.1"} {
+		if err := push(t, core, feed, nupkg(t, "pkg", v, "")); err != nil {
+			t.Fatalf("push %s: %v", v, err)
+		}
+	}
+
+	doc := search(t, core, feed, "q=pkg")
+	entry := doc["data"].([]any)[0].(map[string]any)
+	if entry["version"] != "1.10.0" {
+		t.Errorf("version = %v, want 1.10.0 (the newest release, compared as a version)", entry["version"])
+	}
+	if got := len(entry["versions"].([]any)); got != 3 {
+		t.Errorf("versions listed = %d, want 3", got)
+	}
+
+	// A pre-release is only the answer when it was asked for.
+	doc = search(t, core, feed, "q=pkg&prerelease=true")
+	entry = doc["data"].([]any)[0].(map[string]any)
+	if entry["version"] != "2.0.0-rc.1" {
+		t.Errorf("with prerelease=true version = %v, want the pre-release", entry["version"])
+	}
+}
+
+// A package whose only version is a pre-release must not appear in a search
+// that did not ask for pre-releases: a restore would not take it either.
+func TestSearchHidesPreReleaseOnlyPackagesByDefault(t *testing.T) {
+	core := newFakeCore()
+	feed := hostedFeed()
+	if err := push(t, core, feed, nupkg(t, "preview.only", "0.1.0-alpha", "")); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	if got := ids(search(t, core, feed, "")); len(got) != 0 {
+		t.Errorf("ids = %v, want none", got)
+	}
+	if got := ids(search(t, core, feed, "prerelease=true")); len(got) != 1 {
+		t.Errorf("ids = %v, want the pre-release package", got)
+	}
+}
+
+func TestSearchPaginates(t *testing.T) {
+	core := newFakeCore()
+	feed := hostedFeed()
+	for _, id := range []string{"a.one", "a.two", "a.three"} {
+		if err := push(t, core, feed, nupkg(t, id, "1.0.0", "")); err != nil {
+			t.Fatalf("push %s: %v", id, err)
+		}
+	}
+	doc := search(t, core, feed, "take=2")
+	if got := len(ids(doc)); got != 2 {
+		t.Errorf("take=2 returned %d", got)
+	}
+	if hits, _ := doc["totalHits"].(float64); int(hits) != 3 {
+		t.Errorf("totalHits = %v, want the full count regardless of the page", doc["totalHits"])
+	}
+	doc = search(t, core, feed, "skip=2")
+	if got := len(ids(doc)); got != 1 {
+		t.Errorf("skip=2 returned %d", got)
+	}
+	// Skipping past the end is an empty page, not a panic.
+	if got := len(ids(search(t, core, feed, "skip=99"))); got != 0 {
+		t.Errorf("skip past the end returned %d", got)
+	}
+}
+
+// The query has to reach the module, or a proxy asks its upstream nothing
+// and caches that one answer for every search anybody runs.
+func TestSearchIntentCarriesTheQuery(t *testing.T) {
+	r := httptest.NewRequest("GET", "/v3/query?q=acme&take=5", nil)
+	intent, err := Module{}.Parse(r)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if intent.Kind != api.IntentSearch {
+		t.Errorf("kind = %v, want search", intent.Kind)
+	}
+	if intent.RemoteQuery != "q=acme&take=5" {
+		t.Errorf("RemoteQuery = %q", intent.RemoteQuery)
+	}
+}

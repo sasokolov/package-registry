@@ -16,12 +16,17 @@ import (
 // hold, which for a package that exists both internally and upstream is
 // exactly the case a group is built for.
 //
-// Search is not merged: it is a ranked query answer, and concatenating two
-// rankings produces a third that means nothing. It goes to the first member
-// that answers, and the response says which one that was.
+// Search is merged too, though for a different reason. Concatenating two
+// rankings does produce a third that means less than either — but the
+// alternative is worse: the hosted member can always answer a search, so
+// first-hit would mean upstream results never appear at all. Losing the
+// ranking beats losing the results.
 
 // MergeableIntent implements api.GroupMerger.
 func (Module) MergeableIntent(intent api.Intent) bool {
+	if intent.Kind == api.IntentSearch {
+		return true
+	}
 	if intent.Kind != api.IntentMetadata {
 		return false
 	}
@@ -39,10 +44,53 @@ func (Module) MergeableIntent(intent api.Intent) bool {
 
 // Merge implements api.GroupMerger.
 func (Module) Merge(_ api.Feed, intent api.Intent, parts []api.GroupPart) ([]byte, error) {
-	if strings.HasPrefix(intent.RemotePath, upstreamFlatPrefix) {
+	switch {
+	case intent.Kind == api.IntentSearch:
+		return mergeSearch(parts)
+	case strings.HasPrefix(intent.RemotePath, upstreamFlatPrefix):
 		return mergeFlatIndex(parts)
+	default:
+		return mergeRegistrationIndex(parts)
 	}
-	return mergeRegistrationIndex(parts)
+}
+
+// mergeSearch concatenates members' results, earlier members first, keeping
+// one entry per package id — the same precedence rule the rest of the group
+// follows, so what search shows is what a restore will actually get.
+func mergeSearch(parts []api.GroupPart) ([]byte, error) {
+	seen := map[string]bool{}
+	data := []any{}
+
+	for _, part := range parts {
+		var doc struct {
+			Data []map[string]any `json:"data"`
+		}
+		if err := json.Unmarshal(part.Body, &doc); err != nil {
+			return nil, fmt.Errorf("parse search results from %s: %w", part.Feed, err)
+		}
+		for _, entry := range doc.Data {
+			id, _ := entry["id"].(string)
+			key := strings.ToLower(id)
+			if key != "" && seen[key] {
+				continue
+			}
+			seen[key] = true
+			data = append(data, entry)
+		}
+	}
+
+	// totalHits describes what is in this answer. Summing the members'
+	// counts would promise pages that do not exist once duplicates are
+	// removed.
+	out, err := json.Marshal(map[string]any{
+		"@context":  map[string]any{"@vocab": "http://schema.nuget.org/schema#"},
+		"totalHits": len(data),
+		"data":      data,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode merged search results: %w", err)
+	}
+	return out, nil
 }
 
 // mergeFlatIndex unions the version lists of one package id.

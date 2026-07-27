@@ -80,6 +80,20 @@ func (Module) Parse(r *http.Request) (api.Intent, error) {
 			ContentType: "application/json",
 		}, nil
 
+	case strings.HasPrefix(p, hostedDistPrefix):
+		vendor, name, version, err := parseUploadPath(p)
+		if err != nil {
+			return api.Intent{}, api.NotFoundf("not a hosted package path: %q", p)
+		}
+		return api.Intent{
+			Kind: api.IntentArtifact,
+			Coord: api.PackageCoordinate{
+				Format: "composer", Name: vendor + "/" + name, Version: version,
+			},
+			RemotePath:  p,
+			ContentType: "application/zip",
+		}, nil
+
 	case strings.HasPrefix(p, distPrefix):
 		rest := strings.TrimPrefix(p, distPrefix)
 		encoded, file, ok := strings.Cut(rest, "/")

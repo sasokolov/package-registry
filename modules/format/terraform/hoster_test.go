@@ -201,3 +201,34 @@ func TestTerraformReindexIsDeterministic(t *testing.T) {
 		t.Error("Reindex is not deterministic")
 	}
 }
+
+// A published archive has to land on the path a GET for it resolves to.
+// They are not the same string — Terraform downloads through an indirection
+// — and when they drifted apart, every hosted module was a 404 while
+// publishing reported success.
+func TestPublishedArchiveIsWhereARequestLooksForIt(t *testing.T) {
+	const requestPath = "/v1/modules/testns/mymod/generic/1.0.0/archive.tar.gz"
+
+	core := newFakeCore()
+	r := httptest.NewRequest("PUT", requestPath, bytes.NewReader(gzipBytes(t, "module")))
+	if err := (Module{}).HandlePublish(t.Context(),
+		api.Feed{Name: "hosted", Format: "terraform"}, r, core); err != nil {
+		t.Fatalf("HandlePublish: %v", err)
+	}
+
+	intent, err := Module{}.Parse(httptest.NewRequest("GET", requestPath, nil))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	for _, m := range core.manifests {
+		if m.Path == intent.RemotePath {
+			return
+		}
+	}
+	published := make([]string, 0, len(core.manifests))
+	for _, m := range core.manifests {
+		published = append(published, m.Path)
+	}
+	t.Fatalf("a GET resolves to %q, but publishing stored %v", intent.RemotePath, published)
+}

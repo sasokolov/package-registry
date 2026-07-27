@@ -91,10 +91,14 @@ func (Module) Parse(r *http.Request) (api.Intent, error) {
 
 	case strings.HasPrefix(p, "v3/query"):
 		return api.Intent{
-			Kind:        api.IntentMetadata,
-			Coord:       api.PackageCoordinate{Format: "nuget", Name: "search"},
-			CacheTTL:    time.Minute,
+			Kind:     api.IntentSearch,
+			Coord:    api.PackageCoordinate{Format: "nuget", Name: "search"},
+			CacheTTL: time.Minute,
+			// The query is the question. Without it a proxy would ask its
+			// upstream for nothing and cache that one answer for every
+			// search anybody ever runs.
 			RemotePath:  p,
+			RemoteQuery: r.URL.RawQuery,
 			ContentType: "application/json",
 		}, nil
 

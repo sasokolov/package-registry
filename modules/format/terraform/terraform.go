@@ -81,17 +81,27 @@ func (Module) Parse(r *http.Request) (api.Intent, error) {
 			RemotePath: p,
 		}, nil
 	case len(rest) == 5 && rest[4] == archiveFile:
-		downloadPath := strings.TrimSuffix(p, archiveFile) + "download"
 		return api.Intent{
 			Kind:        api.IntentArtifact,
 			Coord:       coord(rest, rest[3]),
-			RemotePath:  downloadPath,
+			RemotePath:  archiveIntentPath(p),
 			Indirect:    true,
 			ContentType: "application/gzip",
 		}, nil
 	default:
 		return api.Intent{}, api.NotFoundf("unsupported module registry path: %q", p)
 	}
+}
+
+// archiveIntentPath is what an archive request resolves to: the upstream's
+// download endpoint, which is the indirection that names the real archive.
+//
+// It is also the cache and manifest key, so a hosted feed must publish under
+// exactly this path — a request resolves to one path regardless of which
+// feed answers it, and storing an archive anywhere else means storing an
+// archive nobody can download.
+func archiveIntentPath(requestPath string) string {
+	return strings.TrimSuffix(requestPath, archiveFile) + "download"
 }
 
 func coord(rest []string, version string) api.PackageCoordinate {
@@ -133,19 +143,48 @@ func (Module) Synthesize(feed api.Feed, intent api.Intent) (api.SyntheticRespons
 }
 
 // ValidateFeeds implements api.FeedSetValidator: root-level service
-// discovery can expose only one module registry per site, so a second
-// terraform feed would silently repoint every client.
+// discovery names exactly one module registry per site, so the site has to
+// be unambiguous about which one that is.
+//
+// One feed is the simple case. More than one is allowed only through a
+// group: the group is what discovery points at, and its members exist to be
+// combined rather than to be reached directly — which is the only way a
+// site can serve both its own modules and a proxied registry, since a
+// Terraform module source names a host, not a path.
 func (Module) ValidateFeeds(feeds []api.Feed) error {
-	if len(feeds) > 1 {
-		names := make([]string, 0, len(feeds))
-		for _, f := range feeds {
-			names = append(names, f.Name)
-		}
-		sort.Strings(names)
-		return fmt.Errorf("terraform supports one feed per site (service discovery at /.well-known/terraform.json is host-wide), got %d: %s",
-			len(feeds), strings.Join(names, ", "))
+	if len(feeds) <= 1 {
+		return nil
 	}
-	return nil
+	groups := make([]string, 0, 1)
+	for _, f := range feeds {
+		if f.Group {
+			groups = append(groups, f.Name)
+		}
+	}
+	sort.Strings(groups)
+	switch len(groups) {
+	case 1:
+		return nil
+	case 0:
+		return fmt.Errorf(
+			"terraform service discovery at /.well-known/terraform.json names one registry, "+
+				"but %d terraform feeds are configured (%s): combine them into a group, "+
+				"which is what discovery will then point at",
+			len(feeds), strings.Join(names(feeds), ", "))
+	default:
+		return fmt.Errorf(
+			"terraform service discovery names one registry, but %d groups are configured (%s)",
+			len(groups), strings.Join(groups, ", "))
+	}
+}
+
+func names(feeds []api.Feed) []string {
+	out := make([]string, 0, len(feeds))
+	for _, f := range feeds {
+		out = append(out, f.Name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ResolveIndirect implements api.IndirectResolver: extract the module
@@ -225,14 +264,18 @@ func (Module) ServeRoot(w http.ResponseWriter, _ *http.Request, feeds []api.Feed
 		http.Error(w, "no terraform feeds configured", http.StatusNotFound)
 		return
 	}
-	names := make([]string, 0, len(feeds))
+	// With a group configured it is the group clients are meant to reach:
+	// its members are there to be combined, not addressed.
+	target := names(feeds)[0]
 	for _, f := range feeds {
-		names = append(names, f.Name)
+		if f.Group {
+			target = f.Name
+			break
+		}
 	}
-	sort.Strings(names)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{
-		"modules.v1": "/terraform/" + names[0] + "/v1/modules/",
+		"modules.v1": "/terraform/" + target + "/v1/modules/",
 	})
 }
 

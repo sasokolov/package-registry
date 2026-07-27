@@ -78,6 +78,11 @@ type Feed struct {
 	Format    string
 	Upstream  string // upstream base URL; empty for hosted-only feeds
 	Anonymous bool   // whether unauthenticated reads are allowed
+	// Group reports whether this feed is a read-only view over other feeds.
+	// A protocol whose service discovery can name only one feed per site
+	// needs it: with a group configured, the group is the one clients are
+	// meant to reach and its members exist to be combined.
+	Group bool
 	// Hosted reports whether this feed accepts locally published packages.
 	// Protocols whose discovery document advertises a publish endpoint need
 	// it: announcing one on a feed that cannot accept writes sends clients
@@ -102,6 +107,12 @@ const (
 	// knowledge alone (no cache, no upstream) via the Synthesizer
 	// capability; e.g. Terraform's 204 + X-Terraform-Get indirection.
 	IntentSynthetic IntentKind = "synthetic"
+	// IntentSearch is a query rather than a document: its answer depends on
+	// what is asked, so it cannot be generated ahead of time the way an
+	// index can. A feed that hosts answers it from its own content through
+	// the Searcher capability; a proxy passes it upstream as mutable
+	// metadata, keyed by the query.
+	IntentSearch IntentKind = "search"
 )
 
 // PackageCoordinate canonically identifies a package (or its metadata) inside
@@ -175,6 +186,11 @@ type Intent struct {
 	RemoteURL string
 	// ContentType, when set, is used for the response Content-Type.
 	ContentType string
+	// RemoteQuery is the query string sent upstream, for endpoints that are
+	// queries rather than documents. It also takes part in the cache key:
+	// two different searches are two different answers, and sharing one
+	// cache entry between them would answer every search with the first.
+	RemoteQuery string
 }
 
 // Source labels where a response body came from; every response carries it
@@ -314,6 +330,18 @@ type SyntheticResponse struct {
 // labels such responses X-Registry-Source: local.
 type Synthesizer interface {
 	Synthesize(feed Feed, intent Intent) (SyntheticResponse, error)
+}
+
+// Searcher is an optional FormatModule capability: answering a protocol's
+// search endpoint from what a feed hosts.
+//
+// Search is the one read that cannot be an index. An index enumerates what
+// exists and can be generated when the content changes; a search depends on
+// what was asked, so it is answered per request from the published
+// manifests. Only a hosting feed uses this — a proxy has an upstream that
+// already implements search far better than a registry could.
+type Searcher interface {
+	Search(ctx context.Context, feed Feed, intent Intent, deps CoreServices) (SyntheticResponse, error)
 }
 
 // IndirectTarget is the real artifact location named by a protocol

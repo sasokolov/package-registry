@@ -158,6 +158,11 @@ func (p *Pipeline) Serve(ctx context.Context, req Request) (*Result, error) {
 		res, err = p.serveArtifact(ctx, req)
 	case api.IntentMetadata:
 		res, err = p.serveMetadata(ctx, req)
+	case api.IntentSearch:
+		// A proxy answers a search by asking its upstream: mutable, keyed
+		// by the query, and served stale when the upstream is down like any
+		// other mutable document.
+		res, err = p.serveMetadata(ctx, req)
 	default:
 		return nil, fmt.Errorf("unknown intent kind %q", req.Intent.Kind)
 	}
@@ -197,7 +202,16 @@ func manifestKey(feed api.Feed, intent api.Intent) string {
 }
 
 func metaKey(feed api.Feed, intent api.Intent) string {
-	return "meta/" + feed.Name + "/" + intent.RemotePath
+	key := "meta/" + feed.Name + "/" + intent.RemotePath
+	if intent.RemoteQuery == "" {
+		return key
+	}
+	// A query is part of what was asked, so it is part of what is cached.
+	// It is hashed rather than appended: a query string is arbitrary text,
+	// and object keys are not the place to find out which characters a
+	// storage backend dislikes.
+	sum := sha256.Sum256([]byte(intent.RemoteQuery))
+	return key + "@" + hex.EncodeToString(sum[:8])
 }
 
 func blobKey(sha string) string { return "blobs/sha256/" + sha }
@@ -718,7 +732,7 @@ func (p *Pipeline) serveMetadataBody(ctx context.Context, req Request) (*Result,
 }
 
 func (p *Pipeline) refreshMetadata(ctx context.Context, req Request, key string) error {
-	body, err := req.Upstream.FetchAll(ctx, req.Intent.RemotePath)
+	body, err := req.Upstream.FetchAllQuery(ctx, req.Intent.RemotePath, req.Intent.RemoteQuery)
 	if err != nil {
 		return err
 	}

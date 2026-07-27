@@ -58,9 +58,13 @@ func (Module) HandlePublish(ctx context.Context, feed api.Feed, r *http.Request,
 	}
 
 	_, err = deps.Publish(ctx, api.PublishRequest{
-		Feed:      feed,
-		Coord:     coord(rest, rest[3]),
-		Path:      p,
+		Feed:  feed,
+		Coord: coord(rest, rest[3]),
+		// Not the upload path: the path a GET for this archive resolves
+		// to. They differ because Terraform downloads through an
+		// indirection, and publishing under the upload path would store an
+		// archive that no request can reach.
+		Path:      archiveIntentPath(p),
 		SHA256:    digest,
 		Size:      int64(len(body)),
 		Checksums: map[string]string{"sha256": digest},

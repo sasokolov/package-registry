@@ -100,9 +100,11 @@ func NewUpstream(o UpstreamOptions) (*Upstream, error) {
 // BreakerState exposes the circuit state for metrics scraping.
 func (u *Upstream) BreakerState() int { return u.breaker.State() }
 
-func (u *Upstream) buildURL(remotePath string) string {
+func (u *Upstream) buildURL(remotePath, query string) string {
 	joined := *u.base
 	joined.Path = strings.TrimSuffix(u.base.Path, "/") + "/" + strings.TrimPrefix(remotePath, "/")
+	// A search is a query, and the upstream cannot answer it without one.
+	joined.RawQuery = query
 	return joined.String()
 }
 
@@ -110,7 +112,12 @@ func (u *Upstream) buildURL(remotePath string) string {
 // errors only), jittered backoff, rate limiting and the circuit breaker.
 // The caller owns the returned body.
 func (u *Upstream) Fetch(ctx context.Context, remotePath string) (*http.Response, error) {
-	return u.fetchTarget(ctx, u.buildURL(remotePath))
+	return u.FetchQuery(ctx, remotePath, "")
+}
+
+// FetchQuery is Fetch with a query string appended.
+func (u *Upstream) FetchQuery(ctx context.Context, remotePath, query string) (*http.Response, error) {
+	return u.fetchTarget(ctx, u.buildURL(remotePath, query))
 }
 
 // FetchURL is Fetch for an absolute URL — indirect artifact locations may
@@ -195,7 +202,7 @@ func (u *Upstream) ResolveReference(remotePath, loc string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("upstream %s: invalid location %q: %w", u.feed, loc, err)
 	}
-	base, err := url.Parse(u.buildURL(remotePath))
+	base, err := url.Parse(u.buildURL(remotePath, ""))
 	if err != nil {
 		return "", fmt.Errorf("upstream %s: resolve base: %w", u.feed, err)
 	}
@@ -257,7 +264,12 @@ func (u *Upstream) fetchTarget(ctx context.Context, target string) (*http.Respon
 
 // FetchAll fetches a complete (metadata) body into memory.
 func (u *Upstream) FetchAll(ctx context.Context, remotePath string) ([]byte, error) {
-	resp, err := u.Fetch(ctx, remotePath)
+	return u.FetchAllQuery(ctx, remotePath, "")
+}
+
+// FetchAllQuery is FetchAll with a query string appended.
+func (u *Upstream) FetchAllQuery(ctx context.Context, remotePath, query string) ([]byte, error) {
+	resp, err := u.FetchQuery(ctx, remotePath, query)
 	if err != nil {
 		return nil, err
 	}
