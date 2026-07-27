@@ -50,19 +50,23 @@ func (s *Server) feedHandler(rt *runtime, fr *feedRuntime) http.HandlerFunc {
 			s.writeError(w, err, "")
 			return
 		}
-		if id.IsAnonymous() && !fr.feed.Anonymous {
-			s.audit.Warn("anonymous access denied",
-				"feed", fr.feed.Name, "path", r.URL.Path, "remote", r.RemoteAddr)
-			s.writeError(w, api.ErrUnauthorized, "authentication required")
-			return
-		}
-
 		intent, err := fr.module.Parse(r)
 		if err != nil {
 			// Parse errors are module-authored and client-safe by contract:
 			// they explain protocol-level rejections (e.g. Maven SNAPSHOTs
 			// not being proxied yet).
 			s.writeErrorText(w, err, err.Error())
+			return
+		}
+
+		// Access is decided on the coordinate, not on the feed: a rule can
+		// grant a namespace inside a feed and deny the rest.
+		if d := rt.mayServe(id, fr.feed.Name, intent); !d.Allowed {
+			s.audit.Warn("access denied",
+				"feed", fr.feed.Name, "identity", id.String(),
+				"coordinate", intent.Coord.String(), "reason", d.Reason,
+				"policies", strings.Join(d.Policies, ","))
+			s.writeAccessError(w, id, d)
 			return
 		}
 

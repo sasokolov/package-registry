@@ -49,12 +49,17 @@ func (s *Server) publishHandler(rt *runtime, fr *feedRuntime, hoster api.Hoster)
 				"the token backend is unavailable, so this credential cannot be verified for a write")
 			return
 		}
-		if !fr.publishers.Allowed(id) {
-			s.audit.Warn("publish denied: identity has no publish permission",
+		// The coordinate is not known until the module has parsed the
+		// upload, so the feed-wide question is asked first and the
+		// coordinate-level one inside CoreServices.Publish, where the
+		// coordinate exists. Both go through the same engine.
+		if !rt.mayPublishSomething(id, fr.feed.Name) {
+			d := rt.mayPublish(id, fr.feed.Name, "")
+			s.audit.Warn("publish denied",
 				"feed", fr.feed.Name, "identity", id.String(),
 				"project_path", id.ProjectPath, "path", r.URL.Path,
-				"allowed", fr.publishers.Describe())
-			s.writeError(w, api.ErrForbidden, "identity may not publish to this feed")
+				"reason", d.Reason, "policies", strings.Join(d.Policies, ","))
+			s.writeAccessError(w, id, d)
 			return
 		}
 		// Write-affinity: a feed homed at another site is published there,
@@ -72,6 +77,7 @@ func (s *Server) publishHandler(rt *runtime, fr *feedRuntime, hoster api.Hoster)
 		deps := &publishDeps{
 			CoreServices: s.publisher,
 			server:       s,
+			runtime:      rt,
 			feed:         fr,
 			identity:     id,
 		}
@@ -100,6 +106,7 @@ func (s *Server) publishHandler(rt *runtime, fr *feedRuntime, hoster api.Hoster)
 type publishDeps struct {
 	api.CoreServices
 	server   *Server
+	runtime  *runtime
 	feed     *feedRuntime
 	identity api.Identity
 }
@@ -107,6 +114,17 @@ type publishDeps struct {
 // Publish enforces the feed's policy chain (OnPublish) before committing.
 func (d *publishDeps) Publish(ctx context.Context, req api.PublishRequest) (api.PublishResult, error) {
 	req.Identity = d.identity
+
+	// The binding access check. Only here is the coordinate known, so only
+	// here can "may publish com.example, and nothing else" be enforced —
+	// the gate before the upload was read could not have known.
+	if decision := d.runtime.mayPublish(d.identity, d.feed.feed.Name, req.Coord.String()); !decision.Allowed {
+		d.server.audit.Warn("publish denied for this coordinate",
+			"feed", d.feed.feed.Name, "identity", d.identity.String(),
+			"coordinate", req.Coord.String(), "reason", decision.Reason)
+		return api.PublishResult{}, fmt.Errorf("%s: %w", decision.Reason, api.ErrForbidden)
+	}
+
 	artifact := api.Artifact{
 		Coord:    req.Coord,
 		Size:     req.Size,
@@ -207,11 +225,12 @@ func (s *Server) ApplyForwardedPublish(ctx context.Context, feed, path, method s
 			"feed", feed, "path", path, "identity", identity, "forwarded_by", peer)
 		return http.StatusForbidden, []byte("forwarded identity is not a token or OIDC subject\n"), nil
 	}
-	if !fr.publishers.Allowed(id) {
-		s.audit.Warn("forwarded publish denied: identity has no publish permission",
+	if !rt.mayPublishSomething(id, feed) {
+		d := rt.mayPublish(id, feed, "")
+		s.audit.Warn("forwarded publish denied",
 			"feed", feed, "path", path, "identity", identity, "peer", peer,
-			"allowed", fr.publishers.Describe())
-		return http.StatusForbidden, []byte("identity may not publish to this feed\n"), nil
+			"reason", d.Reason)
+		return http.StatusForbidden, []byte(d.Reason + "\n"), nil
 	}
 
 	if method == "" {
@@ -227,6 +246,7 @@ func (s *Server) ApplyForwardedPublish(ctx context.Context, feed, path, method s
 	deps := &publishDeps{
 		CoreServices: s.publisher,
 		server:       s,
+		runtime:      rt,
 		feed:         fr,
 		identity:     id,
 	}

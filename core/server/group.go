@@ -71,16 +71,19 @@ func (s *Server) groupHandler(rt *runtime, gr *feedRuntime) http.HandlerFunc {
 			s.writeError(w, err, "")
 			return
 		}
-		if id.IsAnonymous() && !gr.feed.Anonymous {
-			s.audit.Warn("anonymous access denied",
-				"group", gr.feed.Name, "path", r.URL.Path, "remote", r.RemoteAddr)
-			s.writeError(w, api.ErrUnauthorized, "authentication required")
-			return
-		}
-
 		intent, err := gr.module.Parse(r)
 		if err != nil {
 			s.writeErrorText(w, err, err.Error())
+			return
+		}
+
+		// The group's own rules apply to every request through it, before
+		// any member is asked.
+		if d := rt.mayServe(id, gr.feed.Name, intent); !d.Allowed {
+			s.audit.Warn("access denied",
+				"group", gr.feed.Name, "identity", id.String(),
+				"coordinate", intent.Coord.String(), "reason", d.Reason)
+			s.writeAccessError(w, id, d)
 			return
 		}
 
@@ -107,21 +110,21 @@ func (s *Server) groupHandler(rt *runtime, gr *feedRuntime) http.HandlerFunc {
 		}
 
 		if merger, ok := gr.module.(api.GroupMerger); ok && merger.MergeableIntent(intent) {
-			s.serveMerged(ctx, w, gr, merger, id, intent)
+			s.serveMerged(ctx, rt, w, gr, merger, id, intent)
 			return
 		}
-		s.serveFirstHit(ctx, w, r, gr, id, intent)
+		s.serveFirstHit(ctx, rt, w, r, gr, id, intent)
 	}
 }
 
 // serveFirstHit answers from the first member that has the thing.
-func (s *Server) serveFirstHit(ctx context.Context, w http.ResponseWriter, r *http.Request,
+func (s *Server) serveFirstHit(ctx context.Context, rt *runtime, w http.ResponseWriter, r *http.Request,
 	gr *feedRuntime, id api.Identity, intent api.Intent) {
 	var blocked []memberResult
 	var failures []error
 
 	for _, member := range gr.members {
-		res := s.askMember(ctx, member, id, intent)
+		res := s.askMember(ctx, rt, member, id, intent)
 		switch res.outcome {
 		case memberAnswered:
 			defer func() { _ = res.result.Body.Close() }()
@@ -144,7 +147,7 @@ func (s *Server) serveFirstHit(ctx context.Context, w http.ResponseWriter, r *ht
 }
 
 // serveMerged asks every member and hands the answers to the format module.
-func (s *Server) serveMerged(ctx context.Context, w http.ResponseWriter,
+func (s *Server) serveMerged(ctx context.Context, rt *runtime, w http.ResponseWriter,
 	gr *feedRuntime, merger api.GroupMerger, id api.Identity, intent api.Intent) {
 	var (
 		parts    []api.GroupPart
@@ -154,7 +157,7 @@ func (s *Server) serveMerged(ctx context.Context, w http.ResponseWriter,
 	)
 
 	for _, member := range gr.members {
-		res := s.askMember(ctx, member, id, intent)
+		res := s.askMember(ctx, rt, member, id, intent)
 		switch res.outcome {
 		case memberAnswered:
 			body, err := readPart(res.result)
@@ -209,12 +212,12 @@ func (s *Server) serveMerged(ctx context.Context, w http.ResponseWriter,
 // askMember runs one member's own chain for this intent: its access rule,
 // its quarantine, its policies, its pipeline. A member never loses a rule by
 // being inside a group.
-func (s *Server) askMember(ctx context.Context, member *feedRuntime,
+func (s *Server) askMember(ctx context.Context, rt *runtime, member *feedRuntime,
 	id api.Identity, intent api.Intent) memberResult {
 	// A member that this caller could not read directly is not readable
 	// through a group either. Skipping rather than refusing is deliberate:
 	// the group is a view, and you see the part of it you are entitled to.
-	if id.IsAnonymous() && !member.feed.Anonymous {
+	if d := rt.mayServe(id, member.feed.Name, intent); !d.Allowed {
 		return memberResult{member: member, outcome: memberMissing}
 	}
 

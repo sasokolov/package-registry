@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/sasokolov/package-registry/core/access"
+	"github.com/sasokolov/package-registry/core/config"
 )
 
 // The read surface the console needs. It answers questions an operator
@@ -64,9 +67,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	// header anyway, so hiding it here would only be theatre.
 	out := SiteStatus{Site: cfg.Site.Name}
 
-	if s.identity(r).IsAnonymous() {
+	if !s.allows(s.identity(r), config.SysStatus, access.CapRead).Allowed {
+		// A caller who may not read the deployment still gets the site name
+		// and how many feeds are open to them.
 		for _, f := range cfg.Feeds {
-			if f.Anonymous {
+			if s.allows(s.identity(r), config.FeedPath(f.Name, ""), access.CapList).Allowed {
 				out.Feeds++
 			}
 		}
@@ -143,7 +148,9 @@ func (s *Server) handleFeeds(w http.ResponseWriter, r *http.Request) {
 // including the existence of feeds they cannot open.
 func (s *Server) feedSummaries(r *http.Request) []FeedSummary {
 	cfg := s.manager.Current()
-	anonymous := s.identity(r).IsAnonymous()
+	// "May this caller see how the site is configured" is one question, and
+	// the answer decides how much of each feed is described.
+	anonymous := !s.allows(s.identity(r), config.SysFeeds, access.CapRead).Allowed
 
 	counts := map[string]int{}
 	if s.db != nil && !anonymous {
@@ -157,7 +164,7 @@ func (s *Server) feedSummaries(r *http.Request) []FeedSummary {
 	out := make([]FeedSummary, 0, len(cfg.Feeds))
 	for _, f := range cfg.Feeds {
 		if anonymous {
-			if !f.Anonymous {
+			if !s.allows(s.identity(r), config.FeedPath(f.Name, ""), access.CapList).Allowed {
 				continue
 			}
 			out = append(out, FeedSummary{
@@ -312,19 +319,11 @@ func (s *Server) feedExists(name string) bool {
 	return false
 }
 
-// mayRead reports whether the caller may browse a feed: anonymous feeds are
-// open, the rest need an identity, exactly as the download path decides.
+// mayRead reports whether the caller may browse a feed, by the same rules
+// the download path uses: one engine, so browsing can never show what
+// downloading would refuse.
 func (s *Server) mayRead(r *http.Request, feed string) bool {
-	for _, f := range s.manager.Current().Feeds {
-		if f.Name != feed {
-			continue
-		}
-		if f.Anonymous {
-			return true
-		}
-		return !s.identity(r).IsAnonymous()
-	}
-	return false
+	return s.allows(s.identity(r), config.FeedPath(feed, ""), access.CapList).Allowed
 }
 
 func intParam(r *http.Request, name string, def, upperBound int) int {

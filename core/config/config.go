@@ -46,6 +46,13 @@ type Config struct {
 	Admins []string `yaml:"admins"`
 	// ConfigSource declares where the configuration document lives.
 	ConfigSource SourceConfig `yaml:"config_source"`
+	// AccessPolicies and Bindings are the declarative access rules: named
+	// policies of path capabilities, and the mapping from what
+	// authentication established to which policies apply. The older
+	// anonymous/publishers/admins fields are compiled into the same engine
+	// (see access.go), so there is one set of semantics rather than two.
+	AccessPolicies []AccessPolicyConfig `yaml:"access_policies,omitempty" json:"access_policies,omitempty"`
+	Bindings       []BindingConfig      `yaml:"bindings,omitempty" json:"bindings,omitempty"`
 }
 
 // SiteConfig identifies this geo-site (docs/geo-replication.md). Single-site
@@ -613,6 +620,13 @@ func (c *Config) Validate() error {
 	}
 
 	errs = append(errs, c.validateGroups()...)
+	errs = append(errs, c.validateAccess()...)
+
+	// The rules have to compile, or a document that validates would still
+	// refuse every request at runtime.
+	if _, err := c.AccessEngine(); err != nil {
+		errs = append(errs, fmt.Errorf("access rules: %w", err))
+	}
 
 	return errors.Join(errs...)
 }

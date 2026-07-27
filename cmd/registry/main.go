@@ -176,6 +176,7 @@ func serveCmd(args []string, logOut io.Writer) error {
 		Deps: adminapi.Deps{
 			Identify:   srv.Identify,
 			CanPublish: srv.PublishableFeeds,
+			Access:     srv.Access,
 			Reindex:    srv.ReindexFeed,
 			Projection: srv.Publisher(),
 		},

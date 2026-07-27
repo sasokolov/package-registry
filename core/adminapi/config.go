@@ -22,8 +22,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/sasokolov/package-registry/core/access"
 	"github.com/sasokolov/package-registry/core/api"
-	"github.com/sasokolov/package-registry/core/auth"
 	"github.com/sasokolov/package-registry/core/config"
 	"github.com/sasokolov/package-registry/core/repl"
 	"github.com/sasokolov/package-registry/core/state"
@@ -65,6 +65,10 @@ type Deps struct {
 	// CanPublish lists the feeds an identity may publish to, so the console
 	// can hide actions instead of offering ones that will be refused.
 	CanPublish func(id api.Identity) []string
+	// Access returns the current access engine. It is a function because a
+	// configuration reload replaces the engine, and a captured pointer
+	// would keep answering with the rules that were in force at startup.
+	Access func() *access.Engine
 	// Projection writes the blob-store view of a coordinate, needed when
 	// an operator resolves a conflict.
 	Projection repl.ProjectionWriter
@@ -131,24 +135,51 @@ func (s *Server) identityOrRefusal(r *http.Request) (api.Identity, string) {
 	return api.Anonymous(), err.Error()
 }
 
-// isAdmin reports whether an identity may change the configuration. The
-// patterns are the same shape as a feed's publishers, so there is one
-// mental model for "who may do what" (invariant 14: nothing widens this
-// except an explicit config change).
+// isAdmin reports whether an identity may change the configuration. It is
+// the same question the access engine answers for sys/config, asked once so
+// the console can show or hide what it would otherwise offer and then refuse.
 func (s *Server) isAdmin(id api.Identity) bool {
-	cfg := s.manager.Current()
-	if len(cfg.Admins) == 0 {
-		// No administrators configured means no write path at all. A
-		// registry that shipped with an open config endpoint would be
-		// worse than one with none.
-		return false
+	return s.allows(id, config.SysConfig, access.CapUpdate).Allowed
+}
+
+// allows asks the access engine. Every authorization decision in this API
+// goes through here, so "why was this refused" has exactly one answer and
+// one place to read it from.
+func (s *Server) allows(id api.Identity, path string, want access.Capability) access.Decision {
+	engine := s.deps.Access()
+	if engine == nil {
+		return access.Decision{Reason: "access rules are not loaded"}
 	}
-	admins, err := auth.NewPublishers(cfg.Admins)
-	if err != nil {
-		s.logger.Error("admins patterns are invalid; refusing every admin request", "error", err)
-		return false
+	return engine.Explain(access.Identity{
+		Kind:        string(id.Kind),
+		Subject:     id.Subject,
+		Issuer:      id.Issuer,
+		ProjectPath: id.ProjectPath,
+		Ref:         id.Ref,
+	}, path, want)
+}
+
+// require answers the request itself when the caller may not do this.
+func (s *Server) require(w http.ResponseWriter, r *http.Request,
+	path string, want access.Capability) (api.Identity, bool) {
+	id, refusal := s.identityOrRefusal(r)
+	d := s.allows(id, path, want)
+	if d.Allowed {
+		return id, true
 	}
-	return admins.Allowed(id)
+	if id.IsAnonymous() {
+		reason := d.Reason
+		if refusal != "" {
+			reason = "the credential you offered was not accepted: " + refusal
+		}
+		s.writeError(w, http.StatusUnauthorized, reason)
+		return id, false
+	}
+	s.audit.Warn("request denied",
+		"identity", id.String(), "method", r.Method, "path", r.URL.Path,
+		"access_path", path, "capability", string(want), "reason", d.Reason, "site", s.site)
+	s.writeError(w, http.StatusForbidden, d.Reason)
+	return id, false
 }
 
 // requireIdentity answers the request itself when the caller is a stranger.
@@ -157,33 +188,15 @@ func (s *Server) isAdmin(id api.Identity) bool {
 // quarantine. None of it is a secret from the people who run the registry,
 // but all of it describes the deployment rather than the packages, and a
 // client that only downloads public artifacts never needs to see it.
-func (s *Server) requireIdentity(w http.ResponseWriter, r *http.Request) bool {
-	id, refusal := s.identityOrRefusal(r)
-	if !id.IsAnonymous() {
-		return true
-	}
-	if refusal != "" {
-		s.writeError(w, http.StatusUnauthorized, "the credential you offered was not accepted: "+refusal)
-		return false
-	}
-	s.writeError(w, http.StatusUnauthorized, "this endpoint needs an identity")
-	return false
+func (s *Server) requireIdentity(w http.ResponseWriter, r *http.Request, path string) bool {
+	_, ok := s.require(w, r, path, access.CapRead)
+	return ok
 }
 
-// requireAdmin answers the request itself when the caller may not write.
+// requireAdmin is require for the configuration document, which is what
+// "administrator" has always meant here.
 func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (api.Identity, bool) {
-	id := s.identity(r)
-	if s.isAdmin(id) {
-		return id, true
-	}
-	if id.Kind == api.IdentityAnonymous {
-		s.writeError(w, http.StatusUnauthorized, "authentication required")
-		return id, false
-	}
-	s.audit.Warn("admin request denied",
-		"identity", id.String(), "method", r.Method, "path", r.URL.Path, "site", s.site)
-	s.writeError(w, http.StatusForbidden, "identity is not an administrator")
-	return id, false
+	return s.require(w, r, config.SysConfig, access.CapUpdate)
 }
 
 // ---------------------------------------------------------------------------

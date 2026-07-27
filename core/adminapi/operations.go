@@ -7,8 +7,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sasokolov/package-registry/core/access"
 	"github.com/sasokolov/package-registry/core/api"
 	"github.com/sasokolov/package-registry/core/auth"
+	"github.com/sasokolov/package-registry/core/config"
 	"github.com/sasokolov/package-registry/core/repl"
 	"github.com/sasokolov/package-registry/core/state"
 )
@@ -27,7 +29,7 @@ type TokenInfo struct {
 }
 
 func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
+	if _, ok := s.require(w, r, config.SysTokens, access.CapRead); !ok {
 		return
 	}
 	if s.db == nil {
@@ -67,7 +69,7 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 // handleCreateToken issues a token. The secret is in the response and
 // nowhere else — it is never stored, logged or retrievable afterwards.
 func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
-	id, ok := s.requireAdmin(w, r)
+	id, ok := s.require(w, r, config.SysTokens, access.CapCreate)
 	if !ok {
 		return
 	}
@@ -103,7 +105,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 
 // handleRevokeToken revokes a token everywhere.
 func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
-	id, ok := s.requireAdmin(w, r)
+	id, ok := s.require(w, r, config.SysTokens, access.CapDelete)
 	if !ok {
 		return
 	}
@@ -154,7 +156,7 @@ type QuarantineEntry struct {
 }
 
 func (s *Server) handleListQuarantine(w http.ResponseWriter, r *http.Request) {
-	if !s.requireIdentity(w, r) {
+	if !s.requireIdentity(w, r, config.SysQuarantine) {
 		return
 	}
 	if s.db == nil {
@@ -190,7 +192,7 @@ func (s *Server) handleListQuarantine(w http.ResponseWriter, r *http.Request) {
 // handleQuarantine blocks or releases a coordinate, through the same
 // journalled path the CLI uses.
 func (s *Server) handleQuarantine(w http.ResponseWriter, r *http.Request) {
-	id, ok := s.requireAdmin(w, r)
+	id, ok := s.require(w, r, config.SysQuarantine, access.CapUpdate)
 	if !ok {
 		return
 	}
@@ -294,7 +296,7 @@ type ConflictEntry struct {
 }
 
 func (s *Server) handleListConflicts(w http.ResponseWriter, r *http.Request) {
-	if !s.requireIdentity(w, r) {
+	if !s.requireIdentity(w, r, config.SysConflicts) {
 		return
 	}
 	if s.db == nil {
@@ -322,7 +324,7 @@ func (s *Server) handleListConflicts(w http.ResponseWriter, r *http.Request) {
 // handleResolveConflict applies an operator's decision, through the same
 // shared operation the CLI calls.
 func (s *Server) handleResolveConflict(w http.ResponseWriter, r *http.Request) {
-	id, ok := s.requireAdmin(w, r)
+	id, ok := s.require(w, r, config.SysConflicts, access.CapUpdate)
 	if !ok {
 		return
 	}
@@ -405,7 +407,7 @@ type PeerIdentity struct {
 }
 
 func (s *Server) handleReplication(w http.ResponseWriter, r *http.Request) {
-	if !s.requireIdentity(w, r) {
+	if !s.requireIdentity(w, r, config.SysReplication) {
 		return
 	}
 	cfg := s.manager.Current()

@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sasokolov/package-registry/core/access"
 	"github.com/sasokolov/package-registry/core/adminapi"
 	"github.com/sasokolov/package-registry/core/api"
 	"github.com/sasokolov/package-registry/core/auth"
@@ -74,6 +75,9 @@ type Server struct {
 type runtime struct {
 	router chi.Router
 	authn  *auth.Authenticator
+	// access decides who may do what. It is built once per configuration
+	// snapshot, so a reload swaps the whole engine rather than mutating one.
+	access *access.Engine
 	feeds  map[string]*feedRuntime
 	// stop tears down this runtime's background work (the revocation
 	// sweeper and the OIDC key cache). Config reloads build a new runtime,
@@ -266,8 +270,8 @@ func (s *Server) PublishableFeeds(id api.Identity) []string {
 		return nil
 	}
 	var out []string
-	for name, fr := range rt.feeds {
-		if fr.hosted && fr.publishers.Allowed(id) {
+	for name := range rt.feeds {
+		if rt.mayPublishSomething(id, name) {
 			out = append(out, name)
 		}
 	}
@@ -303,6 +307,16 @@ func (s *Server) FeedDigests(ctx context.Context) map[string]string {
 		out[fc.Name] = repl.FeedDigest(rows)
 	}
 	return out
+}
+
+// Access exposes the current access engine, so the registry's own API asks
+// the same question the serving path does.
+func (s *Server) Access() *access.Engine {
+	rt := s.rt.Load()
+	if rt == nil {
+		return nil
+	}
+	return rt.access
 }
 
 // SetAPI mounts the registry's own API under its reserved prefix. It is
@@ -347,9 +361,15 @@ func (s *Server) buildRuntime(cfg *config.Config) (*runtime, error) {
 			cfg.Auth.RevocationSweepOrDefault(), s.logger)
 	}
 	oidc := auth.NewOIDC(runtimeCtx, cfg.Auth.OIDC, nil)
+	engine, err := cfg.AccessEngine()
+	if err != nil {
+		stopRuntime()
+		return nil, fmt.Errorf("access rules: %w", err)
+	}
 	rt := &runtime{
 		router: chi.NewRouter(),
 		authn:  auth.NewAuthenticator(verifier, oidc),
+		access: engine,
 		feeds:  map[string]*feedRuntime{},
 		stop:   stopRuntime,
 	}

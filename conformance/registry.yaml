@@ -26,9 +26,54 @@ storage:
 config_source:
   type: store
 
-# Who may change the configuration. Same identity patterns as publishers.
+# Who may change the configuration. Same identity patterns as publishers;
+# compiled into the same access policies as everything else.
 admins:
   - "token:ops-*"
+
+# Access control in the declarative form. These add to the policies compiled
+# from anonymous/publishers/admins above — one engine, one semantics.
+access_policies:
+  # A team that may publish only inside its own coordinate namespace, and is
+  # explicitly kept out of another. Neither half was expressible before.
+  - name: team-example
+    rules:
+      - path: "feed/hosted/maven:com.example:*"
+        capabilities: [read, list, publish]
+      - path: "feed/hosted/maven:com.forbidden:*"
+        capabilities: [deny]
+
+  # Deny a whole feed, then allow exactly one artifact inside it. Every
+  # authenticated identity is granted read on every feed by the policies
+  # compiled from anonymous/publishers, so this deny has something real to
+  # override — and the narrower grant has something real to except.
+  - name: guarded-reader
+    rules:
+      - path: "feed/private/*"
+        capabilities: [deny]
+      - path: "feed/private/maven:com.example:liba@*"
+        capabilities: [read, list]
+
+  # Quarantine without configuration: an on-call right that does not carry
+  # the ability to rewrite the site.
+  - name: oncall
+    rules:
+      - path: "sys/quarantine"
+        capabilities: [read, update]
+
+bindings:
+  - policies: [team-example]
+    match:
+      kind: token
+      subject: "team-*"
+  - policies: [guarded-reader]
+    match:
+      kind: token
+      subject: "guarded-*"
+  - policies: [oncall]
+    match:
+      kind: token
+      subject: "oncall-*"
 
 database:
   dsn: postgres://registry:registry@postgres:5432/registry

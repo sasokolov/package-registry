@@ -38,6 +38,10 @@ func (s *Server) Handler() http.Handler {
 	r.Post("/tokens", s.handleCreateToken)
 	r.Delete("/tokens/{name}", s.handleRevokeToken)
 
+	// Access control: what the rules are, and what they would decide.
+	r.Get("/access", s.handleAccess)
+	r.Get("/access/explain", s.handleExplain)
+
 	// Configuration as a resource.
 	r.Get("/config", s.handleGetConfig)
 	r.Put("/config", s.handlePutConfig)

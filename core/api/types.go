@@ -480,6 +480,10 @@ type Identity struct {
 	// Subject uniquely identifies the principal: the token name for static
 	// tokens, the "sub" claim for OIDC, "anonymous" otherwise.
 	Subject string
+	// Issuer is the OIDC issuer that vouched for this identity. Access
+	// bindings can require it: "this project path, but only as attested by
+	// our GitLab" is a different statement from "this project path".
+	Issuer string
 	// ProjectPath and Ref carry GitLab CI OIDC claims when Kind is oidc.
 	ProjectPath string
 	Ref         string

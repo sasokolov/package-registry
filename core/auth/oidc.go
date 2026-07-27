@@ -83,7 +83,7 @@ func (o *OIDC) Authenticate(ctx context.Context, raw string) (api.Identity, erro
 		return api.Identity{}, fmt.Errorf("JWT rejected: %v: %w", err, api.ErrUnauthorized)
 	}
 
-	id := api.Identity{Kind: api.IdentityOIDC, Subject: tok.Subject()}
+	id := api.Identity{Kind: api.IdentityOIDC, Subject: tok.Subject(), Issuer: v.cfg.Issuer}
 	if s, ok := stringClaim(tok, "project_path"); ok {
 		id.ProjectPath = s
 	}
