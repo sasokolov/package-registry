@@ -616,9 +616,14 @@ func (m *Manager) applySnapshotRestrictions(ctx context.Context, peer string, sn
 		if len(hash) != 64 {
 			continue
 		}
+		// Same tombstone as the journal path: a revocation must survive
+		// arriving before the token it revokes.
 		if _, err := tx.Exec(ctx, `
-			UPDATE tokens SET revoked_at = COALESCE(revoked_at, now()), updated_at = now()
-			 WHERE hash = $1`, hash); err != nil {
+			INSERT INTO tokens (name, hash, revoked_at)
+			VALUES ($1, $2, now())
+			ON CONFLICT (hash) DO UPDATE
+			   SET revoked_at = COALESCE(tokens.revoked_at, now()), updated_at = now()`,
+			"revoked:"+hash[:16], hash); err != nil {
 			return fmt.Errorf("apply revocation from snapshot: %w", err)
 		}
 	}

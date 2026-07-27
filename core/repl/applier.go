@@ -481,9 +481,16 @@ func (a *Applier) applyTokenRevoke(ctx context.Context, tx pgxTx, e state.Journa
 	if len(p.Hash) != 64 {
 		return parkf("token_revoke carries an implausible hash")
 	}
-	if _, err := tx.Exec(ctx,
-		"UPDATE tokens SET revoked_at = COALESCE(revoked_at, now()), updated_at = now() WHERE hash = $1",
-		p.Hash); err != nil {
+	// A tombstone, not an update: a hash this site has never seen must stay
+	// revoked if the token ever arrives here (a restore, a re-issued
+	// secret). Replication can only ever REMOVE access, and this is the
+	// removal outliving the row it applies to.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO tokens (name, hash, revoked_at)
+		VALUES ($1, $2, now())
+		ON CONFLICT (hash) DO UPDATE
+		   SET revoked_at = COALESCE(tokens.revoked_at, now()), updated_at = now()`,
+		"revoked:"+p.Hash[:16], p.Hash); err != nil {
 		return fmt.Errorf("apply token revoke: %w", err)
 	}
 	a.audit.Warn("token revoked by replication", "hash_prefix", p.Hash[:8], "origin", e.OriginSite)

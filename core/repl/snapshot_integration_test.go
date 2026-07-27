@@ -9,6 +9,8 @@ import (
 	"io"
 	"log/slog"
 	"math/rand/v2"
+	"net/url"
+	"os"
 	"testing"
 	"time"
 
@@ -18,9 +20,61 @@ import (
 // A site can reach the same state two ways: by replaying the journal, or by
 // bootstrapping from a peer's snapshot. Nothing tested the second path, and
 // that is how a resolution arrived without its size and got served as an
-// empty 200. This test builds a state the journal way, snapshots it exactly
-// as the internal API does, applies it the bootstrap way to a fresh site,
-// and asserts the two agree.
+// empty 200.
+//
+// The receiving site gets its OWN database. Sharing one would share
+// hlc_state, which is exactly the difference that hid a bootstrapped site
+// stamping its later writes below the state it had just imported.
+
+// freshSiteDB creates and migrates a separate database, so the importing
+// site has its own clock, journal and cursors.
+func freshSiteDB(ctx context.Context, t *testing.T) *state.DB {
+	t.Helper()
+	dsn := os.Getenv("PG_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PG_TEST_DSN not set; run via make test-integration")
+	}
+	name := fmt.Sprintf("fresh_site_%d", time.Now().UnixNano())
+
+	admin, err := state.Open(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Pool().Exec(ctx, "CREATE DATABASE "+name); err != nil {
+		admin.Close()
+		t.Fatalf("create database: %v", err)
+	}
+	admin.Close()
+
+	freshDSN := replaceDatabase(dsn, name)
+	db, err := state.Open(ctx, freshDSN, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		db.Close()
+		cleanup, err := state.Open(context.Background(), dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		if err != nil {
+			return
+		}
+		defer cleanup.Close()
+		_, _ = cleanup.Pool().Exec(context.Background(), "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)")
+	})
+	return db
+}
+
+// replaceDatabase swaps the database name in a postgres DSN.
+func replaceDatabase(dsn, name string) string {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return dsn
+	}
+	u.Path = "/" + name
+	return u.String()
+}
 
 // buildSnapshot mirrors handleSnapshot: the same reads, in one transaction.
 func buildSnapshot(ctx context.Context, t *testing.T, db *state.DB, site, uuid string) SnapshotResponse {
@@ -134,6 +188,11 @@ func applySnapshot(ctx context.Context, t *testing.T, db *state.DB, snap Snapsho
 			t.Fatal(err)
 		}
 	}
+
+	// Mirror the last thing bootstrap does: adopt the snapshot's clock.
+	if err := m.advanceClockPastSnapshot(ctx, snap); err != nil {
+		t.Fatalf("advance clock: %v", err)
+	}
 }
 
 // TestBootstrapReachesTheSameStateAsTheJournal is the cross-check between
@@ -155,23 +214,10 @@ func TestBootstrapReachesTheSameStateAsTheJournal(t *testing.T) {
 		// Snapshot it exactly as a peer would serve it.
 		snap := buildSnapshot(ctx, t, db, "source-site", "11111111-1111-1111-1111-111111111111")
 
-		// Wipe every trace of that feed and rebuild it from the snapshot,
-		// which is what a fresh or rebuilt site does.
-		if _, err := db.Pool().Exec(ctx, "DELETE FROM hosted_manifests WHERE feed=$1", sourceFeed); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.Pool().Exec(ctx, "DELETE FROM quarantine WHERE feed=$1", sourceFeed); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.Pool().Exec(ctx, "DELETE FROM publish_conflicts WHERE feed=$1", sourceFeed); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.Pool().Exec(ctx, "DELETE FROM conflict_resolutions WHERE feed=$1", sourceFeed); err != nil {
-			t.Fatal(err)
-		}
-
-		applySnapshot(ctx, t, db, snap)
-		bootstrapped := applierFingerprint(ctx, t, db, sourceFeed)
+		// Import into a site with its own database and its own clock.
+		fresh := freshSiteDB(ctx, t)
+		applySnapshot(ctx, t, fresh, snap)
+		bootstrapped := applierFingerprint(ctx, t, fresh, sourceFeed)
 
 		if bootstrapped != reference {
 			t.Fatalf("seed %d: bootstrap and journal disagree\n--- journal ---\n%s\n--- bootstrap ---\n%s",
@@ -220,21 +266,12 @@ func TestBootstrapCarriesResolutionSizes(t *testing.T) {
 
 	snap := buildSnapshot(ctx, t, db, "source-site", "22222222-2222-2222-2222-222222222222")
 
-	for _, stmt := range []string{
-		"DELETE FROM hosted_manifests WHERE feed=$1",
-		"DELETE FROM quarantine WHERE feed=$1",
-		"DELETE FROM publish_conflicts WHERE feed=$1",
-		"DELETE FROM conflict_resolutions WHERE feed=$1",
-	} {
-		if _, err := db.Pool().Exec(ctx, stmt, feed); err != nil {
-			t.Fatal(err)
-		}
-	}
-	applySnapshot(ctx, t, db, snap)
+	fresh := freshSiteDB(ctx, t)
+	applySnapshot(ctx, t, fresh, snap)
 
 	var gotSize int64
 	var gotSHA, gotChecksums string
-	if err := db.Pool().QueryRow(ctx,
+	if err := fresh.Pool().QueryRow(ctx,
 		"SELECT sha256, size, checksums::text FROM hosted_manifests WHERE feed=$1 AND path=$2",
 		feed, path).Scan(&gotSHA, &gotSize, &gotChecksums); err != nil {
 		t.Fatalf("the bootstrapped site has no row for the resolved coordinate: %v", err)
@@ -248,5 +285,69 @@ func TestBootstrapCarriesResolutionSizes(t *testing.T) {
 	}
 	if gotChecksums != checksums {
 		t.Errorf("bootstrapped checksums = %s, want %s", gotChecksums, checksums)
+	}
+}
+
+// A bootstrapped site must stamp its OWN later writes after the state it
+// imported. Without that the site keeps its write, every peer drops it as
+// older, and nothing reports the divergence.
+func TestBootstrapAdvancesTheLocalClock(t *testing.T) {
+	db := integrationDB(t)
+	ctx := t.Context()
+	feed := fmt.Sprintf("snap-clock-%d", time.Now().UnixNano())
+	resetReplicationState(ctx, t, db, feed)
+
+	// A coordinate stamped well into the future, the way a peer whose clock
+	// legitimately ran ahead (within max_clock_skew) would produce.
+	future := time.Now().Add(4 * time.Minute).UnixMilli()
+	path := "-/hosted/pkg/dist-tags/latest"
+	events := []state.JournalEntry{
+		mkEvent(t, "eu-1", 1, future, 0, KindManifestPut, ManifestPut{
+			Feed: feed, Path: path, Coord: "npm:pkg",
+			SHA256: digestOf("v1"), Size: 2, Mutable: true,
+		}),
+	}
+	applyAll(ctx, t, db, events)
+
+	snap := buildSnapshot(ctx, t, db, "source-site", "33333333-3333-3333-3333-333333333333")
+	fresh := freshSiteDB(ctx, t)
+	applySnapshot(ctx, t, fresh, snap)
+
+	// The importing site's own clock must now be past the imported stamp.
+	var wall int64
+	if err := fresh.Pool().QueryRow(ctx,
+		"SELECT wall_ms FROM hlc_state WHERE id").Scan(&wall); err != nil {
+		t.Fatal(err)
+	}
+	if wall < future {
+		t.Fatalf("the bootstrapped site's clock is %d, behind the imported stamp %d: "+
+			"its next write would be ordered before the state it just adopted", wall, future)
+	}
+
+	// And a local write really does win against the imported state.
+	local, err := fresh.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.InsertHostedTx(ctx, local, state.HostedRow{
+		Feed: feed, Path: path, Coordinate: "npm:pkg",
+		SHA256: digestOf("v2"), Size: 2, Mutable: true, Origin: "publish", Site: "fresh",
+	}); err != nil {
+		_ = local.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err := local.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Replaying the imported event must not undo it.
+	applyAll(ctx, t, fresh, events)
+	var sha string
+	if err := fresh.Pool().QueryRow(ctx,
+		"SELECT sha256 FROM hosted_manifests WHERE feed=$1 AND path=$2", feed, path).Scan(&sha); err != nil {
+		t.Fatal(err)
+	}
+	if sha != digestOf("v2") {
+		t.Error("a write made after the bootstrap lost to the state the bootstrap imported")
 	}
 }

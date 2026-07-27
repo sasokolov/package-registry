@@ -42,6 +42,22 @@ if ! wait_for 60 home_has_it; then
   exit 1
 fi
 
+echo "--> us-1 rebuilds its own index for the forwarded publish"
+# Generated indexes are derived data, rebuilt locally from the replicated
+# manifest set (invariant 15) — they are not themselves replicated, so a
+# client at us-1 sees the version once that rebuild has happened.
+us_lists_it() {
+  local out
+  out="$(compose run --rm -T npm-client sh -c \
+    "wget -qO- http://registry-us:8080/npm/npmhosted/geo-pkg" 2>/dev/null)" || return 1
+  [[ "$out" == *"\"$VERSION\""* ]]
+}
+if ! wait_for 90 us_lists_it; then
+  echo "us-1 never rebuilt its index for the forwarded publish" >&2
+  compose exec -T registry-us registry repl status -config /etc/registry/config.yaml >&2 || true
+  exit 1
+fi
+
 echo "--> npm install from us-1 resolves it (peer fallback or replicated)"
 out="$(compose run --rm -T npm-client sh -c "
   set -e

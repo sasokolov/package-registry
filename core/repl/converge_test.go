@@ -541,3 +541,20 @@ func TestProtocolHasNoAuthorityCreatingEvents(t *testing.T) {
 		}
 	}
 }
+
+// A revocation must survive arriving before the token it revokes: a site
+// that later acquires that secret (a restore, a re-issued token) must not
+// honour a credential the mesh has revoked (invariant 14).
+func TestRevocationSurvivesArrivingFirst(t *testing.T) {
+	hash := digestOf("token-that-does-not-exist-here-yet")
+	m := newModel()
+	m.apply(mkEvent(t, "eu-1", 1, 1000, 0, KindTokenRevoke, TokenRevoke{Hash: hash}), "local")
+	if !m.revoked[hash] {
+		t.Fatal("a revocation for an unknown token left no trace")
+	}
+	// The token arriving afterwards changes nothing.
+	m.apply(mkEvent(t, "us-1", 1, 2000, 0, KindTokenRevoke, TokenRevoke{Hash: hash}), "local")
+	if !m.revoked[hash] {
+		t.Error("revocation was lost")
+	}
+}
