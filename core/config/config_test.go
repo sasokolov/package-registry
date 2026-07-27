@@ -507,3 +507,40 @@ feeds: [{name: f, format: npm, upstream: "https://x"}]
 		t.Errorf("explicit window = %s, want 90s", got)
 	}
 }
+
+func TestConfigSourceValidation(t *testing.T) {
+	base := `
+site: {name: eu-1}
+feeds: [{name: f, format: npm, upstream: "https://x"}]
+`
+	// A filesystem store is per-replica, so it cannot hold the one document
+	// every replica must agree on.
+	_, err := Parse(strings.NewReader(base + `
+storage: {type: fs, fs: {path: /tmp/x}}
+config_source: {type: store}
+`))
+	if err == nil {
+		t.Error("store source accepted with per-replica filesystem storage")
+	}
+
+	// With shared storage it is fine.
+	cfg, err := Parse(strings.NewReader(base + `
+storage: {type: s3, s3: {endpoint: m:9000, bucket: b, access_key: a, secret_key: s}}
+config_source: {type: store}
+`))
+	if err != nil {
+		t.Fatalf("store source with s3: %v", err)
+	}
+	if cfg.ConfigSource.SourceTypeOrDefault() != "store" {
+		t.Error("source type not parsed")
+	}
+
+	// Unset means file.
+	cfg, err = Parse(strings.NewReader(base + "storage: {type: fs, fs: {path: /tmp/x}}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ConfigSource.SourceTypeOrDefault() != "file" {
+		t.Error("default source type is not file")
+	}
+}

@@ -37,3 +37,17 @@ wait_for_chaos() { # <seconds> <command...>
   done
   return 1
 }
+
+# wait_for_conformance retries a command until it succeeds or the deadline
+# passes. Configuration changes reach a replica on the reload interval, so
+# a scenario that asserts their effect has to wait for it.
+wait_for_conformance() { # <seconds> <command...>
+  local deadline=$((SECONDS + $1)); shift
+  while (( SECONDS < deadline )); do
+    if "$@"; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}

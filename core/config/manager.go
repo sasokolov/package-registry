@@ -1,8 +1,8 @@
 package config
 
 import (
+	"bytes"
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"log/slog"
 	"os"
@@ -19,14 +19,14 @@ import (
 // Current() per request. An invalid new file is rejected with a log record
 // and the previous snapshot stays active.
 type Manager struct {
-	path     string
+	source   Source
 	logger   *slog.Logger
 	validate func(*Config) error
 
-	mu       sync.Mutex // serializes reloads and subscription
-	subs     []func(*Config)
-	lastHash [32]byte // content hash of the active snapshot
-	cur      atomic.Pointer[Config]
+	mu      sync.Mutex // serializes reloads, updates and subscription
+	subs    []func(*Config)
+	version string // version of the active snapshot
+	cur     atomic.Pointer[Config]
 }
 
 // NewManager loads the initial config from path (failing hard on error —
@@ -34,21 +34,84 @@ type Manager struct {
 // validate, if non-nil, adds semantic checks beyond Config.Validate (e.g.
 // "are all referenced formats and policies registered").
 func NewManager(path string, logger *slog.Logger, validate func(*Config) error) (*Manager, error) {
-	m := &Manager{path: path, logger: logger, validate: validate}
-	cfg, err := Load(path)
+	return NewSourceManager(context.Background(), NewFileSource(path), logger, validate)
+}
+
+// NewSourceManager loads the initial document from any source.
+func NewSourceManager(ctx context.Context, source Source, logger *slog.Logger,
+	validate func(*Config) error) (*Manager, error) {
+	m := &Manager{source: source, logger: logger, validate: validate}
+
+	raw, version, err := source.Read(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if raw, err := os.ReadFile(path); err == nil {
-		m.lastHash = sha256.Sum256(raw)
+	cfg, err := Parse(bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("config %s: %w", source.Describe(), err)
 	}
 	if validate != nil {
 		if err := validate(cfg); err != nil {
-			return nil, fmt.Errorf("config %s: %w", path, err)
+			return nil, fmt.Errorf("config %s: %w", source.Describe(), err)
 		}
 	}
+	m.version = version
 	m.cur.Store(cfg)
 	return m, nil
+}
+
+// Version is the content hash of the active document. It is the ETag the
+// admin API hands out and the precondition it requires back.
+func (m *Manager) Version() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.version
+}
+
+// Document returns the raw active document together with its version.
+func (m *Manager) Document(ctx context.Context) ([]byte, string, error) {
+	return m.source.Read(ctx)
+}
+
+// Source describes where the document lives, for diagnostics.
+func (m *Manager) Source() Source { return m.source }
+
+// Update validates a replacement document, writes it to the source and
+// swaps the snapshot in. The document is always replaced whole: a config
+// that half-applied would be a configuration nobody can reason about.
+//
+// ifMatch, when non-empty, must match the current version — that is what
+// stops two operators (or an operator and Terraform) overwriting each
+// other. Validation happens BEFORE the write, so an invalid document is
+// never persisted and never seen by another replica.
+func (m *Manager) Update(ctx context.Context, raw []byte, ifMatch string) (*Config, string, error) {
+	cfg, err := Parse(bytes.NewReader(raw))
+	if err != nil {
+		return nil, "", err
+	}
+	if m.validate != nil {
+		if err := m.validate(cfg); err != nil {
+			return nil, "", err
+		}
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	version, err := m.source.Write(ctx, raw, ifMatch)
+	if err != nil {
+		return nil, "", err
+	}
+	m.version = version
+	old := m.cur.Load()
+	m.warnImmutableChanges(old, cfg)
+	m.cur.Store(cfg)
+	m.logger.Info("configuration updated", "source", m.source.Describe(),
+		"version", version, "feeds", len(cfg.Feeds))
+	for _, fn := range m.subs {
+		fn(cfg)
+	}
+	return cfg, version, nil
 }
 
 // Current returns the active immutable snapshot.
@@ -69,16 +132,22 @@ func (m *Manager) Reload() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	raw, readErr := os.ReadFile(m.path)
-	if readErr == nil && sha256.Sum256(raw) == m.lastHash {
-		// Unchanged file: nothing to swap, and no log line every interval.
+	raw, version, readErr := m.source.Read(context.Background())
+	if readErr == nil && version == m.version {
+		// Unchanged document: nothing to swap, and no log line every
+		// interval.
 		return nil
 	}
+	if readErr != nil {
+		m.logger.Error("config reload failed, keeping previous snapshot",
+			"source", m.source.Describe(), "error", readErr)
+		return readErr
+	}
 
-	cfg, err := Load(m.path)
+	cfg, err := Parse(bytes.NewReader(raw))
 	if err == nil && m.validate != nil {
 		if verr := m.validate(cfg); verr != nil {
-			err = fmt.Errorf("config %s: %w", m.path, verr)
+			err = fmt.Errorf("config %s: %w", m.source.Describe(), verr)
 		}
 	}
 	if err != nil {
@@ -89,10 +158,8 @@ func (m *Manager) Reload() error {
 	old := m.cur.Load()
 	m.warnImmutableChanges(old, cfg)
 	m.cur.Store(cfg)
-	if readErr == nil {
-		m.lastHash = sha256.Sum256(raw)
-	}
-	m.logger.Info("config reloaded", "path", m.path, "feeds", len(cfg.Feeds))
+	m.version = version
+	m.logger.Info("config reloaded", "source", m.source.Describe(), "feeds", len(cfg.Feeds))
 	for _, fn := range m.subs {
 		fn(cfg)
 	}

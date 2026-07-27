@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -23,6 +24,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/sasokolov/package-registry/core/adminapi"
 	"github.com/sasokolov/package-registry/core/api"
 	"github.com/sasokolov/package-registry/core/config"
 	"github.com/sasokolov/package-registry/core/pipeline"
@@ -69,24 +71,43 @@ func serveCmd(args []string, logOut io.Writer) error {
 	}
 	logger := slog.New(slog.NewJSONHandler(logOut, &slog.HandlerOptions{Level: level}))
 
-	manager, err := config.NewManager(*configPath, logger, server.ValidateConfig)
+	// The document source is itself declared in the document, so the file
+	// is read first and then, if it asks for it, the store takes over as
+	// the source of truth (invariant 8).
+	bootstrap, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	store, err := api.NewStorage(bootstrap.Storage.Type, bootstrap.Storage.Options())
+	if err != nil {
+		return err
+	}
+	if init, ok := store.(api.Initializer); ok {
+		// The store must exist before it can hold the configuration, so
+		// this one is synchronous when the store IS the source.
+		if bootstrap.ConfigSource.SourceTypeOrDefault() == "store" {
+			if err := init.Init(ctx); err != nil {
+				return fmt.Errorf("initialize storage for the configuration source: %w", err)
+			}
+		} else {
+			go initLoop(ctx, init, logger)
+		}
+	}
+
+	source, err := configSource(ctx, bootstrap, *configPath, store, logger)
+	if err != nil {
+		return err
+	}
+	manager, err := config.NewSourceManager(ctx, source, logger, server.ValidateConfig)
 	if err != nil {
 		return err
 	}
 	cfg := manager.Current()
 	// Site identity in every log record (audit included) — geo groundwork.
 	logger = logger.With("site", cfg.Site.Name)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	store, err := api.NewStorage(cfg.Storage.Type, cfg.Storage.Options())
-	if err != nil {
-		return err
-	}
-	if init, ok := store.(api.Initializer); ok {
-		go initLoop(ctx, init, logger)
-	}
 
 	var db *state.DB
 	if cfg.Database.DSN != "" {
@@ -133,6 +154,23 @@ func serveCmd(args []string, logOut io.Writer) error {
 			cfg.Server.ProjectionRepairOrDefault(), pipeline.NewRepairMetrics(promReg))
 		go repair.Run(ctx)
 	}
+
+	// The registry's own API: the console's read surface and the write path
+	// that makes configuration manageable as code.
+	srv.SetAPI(adminapi.New(adminapi.Options{
+		Manager: manager,
+		DB:      db,
+		Store:   store,
+		Logger:  logger,
+		Audit:   logger.With("log", "audit"),
+		Site:    cfg.Site.Name,
+		Deps: adminapi.Deps{
+			Identify:   srv.Identify,
+			CanPublish: srv.PublishableFeeds,
+			Reindex:    srv.ReindexFeed,
+			Projection: srv.Publisher(),
+		},
+	}).Handler())
 
 	replication, err := setupReplication(ctx, cfg, db, store, srv, promReg, logger, manager.Subscribe)
 	if err != nil {
@@ -276,5 +314,40 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 				slog.String("remote", r.RemoteAddr),
 			)
 		})
+	}
+}
+
+// configSource resolves where the configuration document lives. With
+// `config_source.type: store` the document moves into the blob store, which
+// is what lets an admin API work across N stateless replicas; the file the
+// process was started with then seeds it once and stays as a fallback for
+// bootstrapping a brand new deployment.
+func configSource(ctx context.Context, bootstrap *config.Config, path string,
+	store api.BlobStore, logger *slog.Logger) (config.Source, error) {
+	if bootstrap.ConfigSource.SourceTypeOrDefault() != "store" {
+		return config.NewFileSource(path), nil
+	}
+
+	source := config.NewBlobStoreSource(store, bootstrap.ConfigSource.Key)
+	_, version, err := source.Read(ctx)
+	switch {
+	case err == nil:
+		logger.Info("configuration read from the blob store",
+			"source", source.Describe(), "version", version)
+		return source, nil
+	case errors.Is(err, config.ErrNoDocument):
+		raw, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil, fmt.Errorf("no configuration in the store and none to seed it with: %w", readErr)
+		}
+		seeded, writeErr := source.Write(ctx, raw, "")
+		if writeErr != nil {
+			return nil, fmt.Errorf("seed the configuration store from %s: %w", path, writeErr)
+		}
+		logger.Info("configuration seeded into the blob store from the local file",
+			"file", path, "source", source.Describe(), "version", seeded)
+		return source, nil
+	default:
+		return nil, err
 	}
 }

@@ -39,6 +39,13 @@ type Config struct {
 	Feeds    []FeedConfig   `yaml:"feeds"`
 	// Replication configures geo federation (docs/geo-replication.md).
 	Replication ReplicationConfig `yaml:"replication"`
+	// Admins may change the configuration through the admin API. Identity
+	// patterns, exactly like a feed's publishers. Empty means the API is
+	// read-only: a registry that ships with an open config endpoint would
+	// be worse than one with none.
+	Admins []string `yaml:"admins"`
+	// ConfigSource declares where the configuration document lives.
+	ConfigSource SourceConfig `yaml:"config_source"`
 }
 
 // SiteConfig identifies this geo-site (docs/geo-replication.md). Single-site
@@ -158,6 +165,27 @@ type StorageConfig struct {
 // FSConfig configures filesystem blob storage.
 type FSConfig struct {
 	Path string `yaml:"path"`
+}
+
+// SourceConfig declares where the one configuration document lives.
+// The document is always replaced whole; the source only decides who can
+// read and write it (invariant 8).
+type SourceConfig struct {
+	// Type is "file" (the default: the path the process was started with,
+	// which is what a GitOps-delivered ConfigMap looks like) or "store"
+	// (an object in the blob store, which every replica can read and any
+	// replica can write — what the admin API needs).
+	Type string `yaml:"type"`
+	// Key is the object key when Type is "store".
+	Key string `yaml:"key"`
+}
+
+// SourceTypeOrDefault is the effective source type.
+func (c SourceConfig) SourceTypeOrDefault() string {
+	if c.Type == "" {
+		return "file"
+	}
+	return c.Type
 }
 
 // S3Config configures S3-compatible blob storage.
@@ -440,6 +468,23 @@ func (c *Config) Validate() error {
 
 	if err := c.Replication.Validate(c.Site.Name); err != nil {
 		errs = append(errs, err)
+	}
+	switch c.ConfigSource.SourceTypeOrDefault() {
+	case "file", "store":
+	default:
+		errs = append(errs, fmt.Errorf(
+			"config_source.type %q is not supported (want \"file\" or \"store\")", c.ConfigSource.Type))
+	}
+	if c.ConfigSource.SourceTypeOrDefault() == "store" && c.Storage.Type == StorageFS {
+		// A filesystem store is per-replica, so the document would differ
+		// between them — the one thing a single source of truth must not do.
+		errs = append(errs, errors.New(
+			"config_source.type: store requires shared storage (s3); a filesystem store is per-replica"))
+	}
+	for i, pattern := range c.Admins {
+		if strings.TrimSpace(pattern) == "" {
+			errs = append(errs, fmt.Errorf("admins[%d]: empty pattern", i))
+		}
 	}
 	// A feed homed elsewhere can only be published if we know where to
 	// forward writes to.

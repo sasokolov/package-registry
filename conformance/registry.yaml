@@ -21,6 +21,15 @@ storage:
     secret_key: registry-secret
     use_ssl: false
 
+# The configuration document lives in the blob store, which is what lets the
+# admin API work across replicas (invariant 8).
+config_source:
+  type: store
+
+# Who may change the configuration. Same identity patterns as publishers.
+admins:
+  - "token:ops-*"
+
 database:
   dsn: postgres://registry:registry@postgres:5432/registry
 

@@ -11,12 +11,14 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sasokolov/package-registry/core/adminapi"
 	"github.com/sasokolov/package-registry/core/api"
 	"github.com/sasokolov/package-registry/core/auth"
 	"github.com/sasokolov/package-registry/core/config"
@@ -53,7 +55,10 @@ type Server struct {
 	// forward proxies publishes to a feed's home site (write-affinity). It
 	// is installed after construction because the replication manager needs
 	// the server, so the request path reads it atomically.
-	forward    atomic.Pointer[ForwardFunc]
+	forward atomic.Pointer[ForwardFunc]
+	// apiHandler serves the registry's own API, mounted ahead of the feed
+	// routes so a package path can never shadow it.
+	apiHandler atomic.Pointer[http.Handler]
 	pipe       *pipeline.Pipeline
 	publisher  *pipeline.Publisher
 	quarantine *quarantineCache
@@ -148,6 +153,14 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	return s, nil
 }
 
+// reservedPrefixes are path segments the registry serves itself. A feed or
+// format claiming one would shadow the console and its API — and would do
+// it silently, because both are just paths.
+var reservedPrefixes = map[string]string{
+	"api": "the registry API",
+	"ui":  "the web console",
+}
+
 // ValidateConfig is the manager's semantic validation hook: every feed's
 // format must be registered, its policy chain constructible, and the whole
 // per-format feed set acceptable to modules that constrain it
@@ -156,6 +169,18 @@ func ValidateConfig(cfg *config.Config) error {
 	var errs []error
 	byFormat := make(map[string][]api.Feed)
 	for _, fc := range cfg.Feeds {
+		if what, reserved := reservedPrefixes[fc.Format]; reserved {
+			errs = append(errs, fmt.Errorf(
+				"feed %s: format %q is reserved for %s", fc.Name, fc.Format, what))
+		}
+		if what, reserved := reservedPrefixes[fc.Name]; reserved && len(cfg.Feeds) > 0 {
+			// Only a first-segment collision matters, and a feed is always
+			// mounted under its format, so this is defensive rather than
+			// load-bearing — but a name that reads like a reserved word is
+			// worth refusing before it confuses someone.
+			errs = append(errs, fmt.Errorf(
+				"feed name %q is reserved for %s", fc.Name, what))
+		}
 		if _, ok := api.Format(fc.Format); !ok {
 			errs = append(errs, fmt.Errorf("feed %s: format %q is not registered (have %v)",
 				fc.Name, fc.Format, api.Formats()))
@@ -217,6 +242,33 @@ func (s *Server) ReindexFeed(ctx context.Context, feedName string) error {
 	return s.publisher.Reindex(ctx, fr.feed, fr.module)
 }
 
+// Identify resolves a request's credentials with the active runtime's
+// authenticator — the same one the feed routes use, so the API and the
+// download path never disagree about who is calling.
+func (s *Server) Identify(r *http.Request) (api.Identity, error) {
+	rt := s.rt.Load()
+	if rt == nil || rt.authn == nil {
+		return api.Anonymous(), nil
+	}
+	return rt.authn.Identify(r.Context(), r)
+}
+
+// PublishableFeeds lists the feeds an identity may publish to.
+func (s *Server) PublishableFeeds(id api.Identity) []string {
+	rt := s.rt.Load()
+	if rt == nil {
+		return nil
+	}
+	var out []string
+	for name, fr := range rt.feeds {
+		if fr.hosted && fr.publishers.Allowed(id) {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // EagerFeed reports whether a feed replicates blobs ahead of demand.
 func (s *Server) EagerFeed(feedName string) bool {
 	for _, fc := range s.manager.Current().Feeds {
@@ -247,9 +299,21 @@ func (s *Server) FeedDigests(ctx context.Context) map[string]string {
 	return out
 }
 
+// SetAPI mounts the registry's own API under its reserved prefix. It is
+// installed after construction because the API needs the server (for feed
+// summaries and permissions) as much as the server needs it.
+func (s *Server) SetAPI(h http.Handler) { s.apiHandler.Store(&h) }
+
 // Handler returns the dynamic feed handler; the caller mounts it under /.
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The API answers first: its prefix is reserved, and letting the
+		// feed router see those paths would make a package name able to
+		// shadow the console.
+		if api := s.apiHandler.Load(); api != nil && strings.HasPrefix(r.URL.Path, adminapi.APIPrefix) {
+			http.StripPrefix(adminapi.APIPrefix, *api).ServeHTTP(w, r)
+			return
+		}
 		s.rt.Load().router.ServeHTTP(w, r)
 	})
 }
