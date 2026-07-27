@@ -26,6 +26,14 @@ import (
 // metadataTTL bounds package metadata freshness (SWR beyond it).
 const metadataTTL = 5 * time.Minute
 
+// searchPath is Packagist's search endpoint, and searchTTL bounds a proxied
+// search: results move, and a stale answer to "what exists" is cheap to
+// refresh.
+const (
+	searchPath = "search.json"
+	searchTTL  = time.Minute
+)
+
 // distPrefix is the registry-side path prefix for rewritten dist URLs; the
 // remainder is the upstream dist path, so Parse maps it straight back.
 const distPrefix = "dists/"
@@ -56,6 +64,18 @@ func (Module) Parse(r *http.Request) (api.Intent, error) {
 	}
 
 	switch {
+	case p == searchPath:
+		return api.Intent{
+			Kind:     api.IntentSearch,
+			Coord:    api.PackageCoordinate{Format: "composer", Name: "search"},
+			CacheTTL: searchTTL,
+			// The query is the question; without it a proxy would ask its
+			// upstream for nothing at all.
+			RemotePath:  searchPath,
+			RemoteQuery: r.URL.RawQuery,
+			ContentType: "application/json",
+		}, nil
+
 	case p == "packages.json":
 		return api.Intent{
 			Kind:        api.IntentMetadata,
@@ -163,11 +183,15 @@ func (Module) RewriteMetadata(feed api.Feed, body []byte) ([]byte, error) {
 			doc["metadata-url"] = base + "/p2/%package%.json"
 		}
 		// A root manifest must not advertise upstream-only endpoints the
-		// registry does not serve.
+		// registry does not serve. Search it does serve — proxied with the
+		// query, or answered locally by a hosting feed — so it is pointed
+		// here rather than removed.
 		delete(doc, "providers-url")
 		delete(doc, "provider-includes")
-		delete(doc, "search")
 		delete(doc, "list")
+		if _, ok := doc["search"]; ok {
+			doc["search"] = base + "/" + searchPath + "?q=%query%&type=%type%"
+		}
 	}
 
 	if packages, ok := doc["packages"].(map[string]any); ok {

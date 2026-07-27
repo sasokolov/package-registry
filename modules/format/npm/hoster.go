@@ -178,11 +178,13 @@ func putMutable(ctx context.Context, feed api.Feed, deps api.CoreServices,
 // Storage layout of a hosted npm feed. Tarballs keep the protocol path so
 // they are served directly; the rest lives under a reserved prefix that no
 // npm request can address (the "-" segment is protocol-reserved).
+const hostedPrefix = "-/hosted/"
+
 func tarballPath(pkg, filename string) string { return pkg + "/-/" + filename }
 func versionDocPath(pkg, version string) string {
-	return "-/hosted/" + pkg + "/versions/" + version + ".json"
+	return hostedPrefix + pkg + "/versions/" + version + ".json"
 }
-func distTagPath(pkg, tag string) string { return "-/hosted/" + pkg + "/dist-tags/" + tag }
+func distTagPath(pkg, tag string) string { return hostedPrefix + pkg + "/dist-tags/" + tag }
 
 func digestsOf(body []byte) map[string]string {
 	sha1sum := sha1.Sum(body) //nolint:gosec // npm's legacy dist.shasum
@@ -223,13 +225,13 @@ func (Module) Reindex(ctx context.Context, feed api.Feed, deps api.CoreServices)
 
 	for _, m := range manifests {
 		switch {
-		case strings.HasPrefix(m.Path, "-/hosted/") && strings.Contains(m.Path, "/versions/"):
+		case strings.HasPrefix(m.Path, hostedPrefix) && strings.Contains(m.Path, "/versions/"):
 			body, err := readBlob(ctx, deps, m.SHA256)
 			if err != nil {
 				return err
 			}
 			state(m.Coord.Name).versions[m.Coord.Version] = body
-		case strings.HasPrefix(m.Path, "-/hosted/") && strings.Contains(m.Path, "/dist-tags/"):
+		case strings.HasPrefix(m.Path, hostedPrefix) && strings.Contains(m.Path, "/dist-tags/"):
 			body, err := readBlob(ctx, deps, m.SHA256)
 			if err != nil {
 				return err

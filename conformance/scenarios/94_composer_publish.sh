@@ -106,6 +106,41 @@ JSON
   " 2>&1)" || { echo "installing $version through the group failed:" >&2; echo "$out" | tail -30; exit 1; }
 done
 
+echo "--> the root manifest tells Composer that search exists"
+root="$(client_curl -fsS "$HOSTED/packages.json")"
+grep -q 'registry:8080/composer/composer-hosted/search.json' <<<"$root" || {
+  echo "the root manifest does not advertise search:" >&2; echo "$root" >&2; exit 1; }
+
+echo "--> search finds what the hosted feed holds"
+results="$(client_curl -fsS "$HOSTED/search.json?q=lib-a")"
+grep -q '"acme/lib-a"' <<<"$results" || {
+  echo "search did not find the uploaded package:" >&2; echo "$results" >&2; exit 1; }
+grep -q '"total": 1' <<<"$results" || { echo "$results" >&2; exit 1; }
+
+echo "--> a term that matches nothing is an empty answer, not an error"
+results="$(client_curl -fsS "$HOSTED/search.json?q=nothingliketh1s")"
+grep -q '"total": 0' <<<"$results" || { echo "$results" >&2; exit 1; }
+
+echo "--> and composer search finds it too"
+out="$(compose run --rm -T composer-client sh -c "
+  set -e
+  rm -rf /tmp/s && mkdir -p /tmp/s && cd /tmp/s
+  cat > composer.json <<'JSON'
+{
+  \"repositories\": [{\"type\": \"composer\", \"url\": \"$HOSTED\"}],
+  \"config\": {\"secure-http\": false}
+}
+JSON
+  composer search lib-a --no-interaction 2>&1
+" 2>&1)" || { echo "$out" | tail -20; exit 1; }
+grep -q "acme/lib-a" <<<"$out" || {
+  echo "composer search found nothing:" >&2; echo "$out" | tail -20 >&2; exit 1; }
+
+echo "--> the group's search covers its members"
+headers="$(client_curl -sS -o /dev/null -D - "$GROUP/search.json?q=lib-a")"
+grep -qi '^x-registry-merged:' <<<"$headers" || {
+  echo "the group answered a search from one member only:" >&2; echo "$headers" >&2; exit 1; }
+
 echo "--> publishing to the group is refused, naming the hosted member"
 body="$(client_curl -sS -w '\n%{http_code}' -X PUT \
   -H "Authorization: Bearer $ci" --data-binary 'x' \

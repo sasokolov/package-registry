@@ -129,9 +129,16 @@ func hostedFeed() api.Feed {
 // manifest inside it.
 func dist(t *testing.T, manifest string) []byte {
 	t.Helper()
+	return distNamed(t, "acme/lib", manifest)
+}
+
+// distNamed builds an archive for a given package name, wrapped in one
+// directory the way `composer archive` produces.
+func distNamed(t *testing.T, name, manifest string) []byte {
+	t.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
-	const root = "acme-lib/"
+	root := strings.ReplaceAll(name, "/", "-") + "/"
 	writeEntry(t, zw, root+"composer.json", manifest)
 	writeEntry(t, zw, root+"src/thing.php", "<?php // a package")
 	// A vendored dependency's manifest, deeper in: it must not be mistaken
@@ -423,4 +430,152 @@ func indexPaths(core *fakeCore) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// ---------------------------------------------------------------------------
+// Search
+
+func composerSearch(t *testing.T, core *fakeCore, feed api.Feed, query string) map[string]any {
+	t.Helper()
+	resp, err := Module{}.Search(t.Context(), feed,
+		api.Intent{Kind: api.IntentSearch, RemoteQuery: query}, core)
+	if err != nil {
+		t.Fatalf("Search(%q): %v", query, err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(resp.Body, &doc); err != nil {
+		t.Fatalf("parse search results: %v\n%s", err, resp.Body)
+	}
+	return doc
+}
+
+func resultNames(doc map[string]any) []string {
+	results, _ := doc["results"].([]any)
+	out := make([]string, 0, len(results))
+	for _, r := range results {
+		name, _ := r.(map[string]any)["name"].(string)
+		out = append(out, name)
+	}
+	return out
+}
+
+func manifestFor(name, description, packageType string) string {
+	return `{
+  "name": "` + name + `",
+  "type": "` + packageType + `",
+  "description": "` + description + `",
+  "license": "MIT"
+}`
+}
+
+func TestSearchFindsWhatTheFeedHosts(t *testing.T) {
+	core := newFakeCore()
+	feed := hostedFeed()
+	packages := []struct{ vendor, name, description, kind string }{
+		{"acme", "logger", "structured logging", "library"},
+		{"acme", "http", "an http client", "library"},
+		{"other", "tool", "a build plugin", "composer-plugin"},
+	}
+	for _, p := range packages {
+		full := p.vendor + "/" + p.name
+		archive := distNamed(t, full, manifestFor(full, p.description, p.kind))
+		if err := upload(t, core, feed, p.vendor, p.name, "1.0.0", archive); err != nil {
+			t.Fatalf("upload %s: %v", full, err)
+		}
+	}
+
+	tests := []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		{name: "no term lists everything", query: "", want: []string{"acme/http", "acme/logger", "other/tool"}},
+		{name: "a prefix narrows it", query: "q=acme", want: []string{"acme/http", "acme/logger"}},
+		{name: "an exact name comes first", query: "q=acme/logger", want: []string{"acme/logger"}},
+		{name: "the description is searched too", query: "q=logging", want: []string{"acme/logger"}},
+		{name: "type filters", query: "type=composer-plugin", want: []string{"other/tool"}},
+		{name: "nothing matching is an empty answer", query: "q=nosuchthing", want: []string{}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := composerSearch(t, core, feed, tc.query)
+			got := strings.Join(resultNames(doc), ",")
+			if want := strings.Join(tc.want, ","); got != want {
+				t.Errorf("names = %q, want %q", got, want)
+			}
+			if total, _ := doc["total"].(float64); int(total) != len(tc.want) {
+				t.Errorf("total = %v, want %d", doc["total"], len(tc.want))
+			}
+		})
+	}
+}
+
+// Every result must point at a document the client can actually fetch.
+func TestSearchResultsPointAtTheirMetadata(t *testing.T) {
+	core := newFakeCore()
+	feed := hostedFeed()
+	if err := upload(t, core, feed, "acme", "lib", "1.0.0", dist(t, libManifest)); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	result := composerSearch(t, core, feed, "q=acme")["results"].([]any)[0].(map[string]any)
+	const want = "http://registry.example/composer/internal/p2/acme/lib.json"
+	if result["url"] != want {
+		t.Errorf("url = %v, want %v", result["url"], want)
+	}
+	// A private registry measures neither, and saying zero beats inventing.
+	if result["downloads"].(float64) != 0 || result["favers"].(float64) != 0 {
+		t.Errorf("downloads/favers = %v/%v, want zeroes", result["downloads"], result["favers"])
+	}
+}
+
+func TestSearchPaginates(t *testing.T) {
+	core := newFakeCore()
+	feed := hostedFeed()
+	for _, name := range []string{"one", "two", "three"} {
+		full := "acme/" + name
+		if err := upload(t, core, feed, "acme", name, "1.0.0",
+			distNamed(t, full, manifestFor(full, "x", "library"))); err != nil {
+			t.Fatalf("upload %s: %v", full, err)
+		}
+	}
+	doc := composerSearch(t, core, feed, "per_page=2")
+	if got := len(resultNames(doc)); got != 2 {
+		t.Errorf("per_page=2 returned %d", got)
+	}
+	if total, _ := doc["total"].(float64); int(total) != 3 {
+		t.Errorf("total = %v, want the full count regardless of the page", doc["total"])
+	}
+	if got := len(resultNames(composerSearch(t, core, feed, "page=99"))); got != 0 {
+		t.Errorf("paging past the end returned %d", got)
+	}
+}
+
+func TestSearchIntentCarriesTheQuery(t *testing.T) {
+	r := httptest.NewRequest("GET", "/search.json?q=acme&type=library", nil)
+	intent, err := Module{}.Parse(r)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if intent.Kind != api.IntentSearch {
+		t.Errorf("kind = %v, want search", intent.Kind)
+	}
+	if intent.RemoteQuery != "q=acme&type=library" {
+		t.Errorf("RemoteQuery = %q", intent.RemoteQuery)
+	}
+}
+
+// The root manifest has to tell Composer that search exists, or the client
+// reports "no repository supports search" and never asks.
+func TestHostedRootManifestAdvertisesSearch(t *testing.T) {
+	core := newFakeCore()
+	reindex(t, core, hostedFeed())
+
+	var root map[string]any
+	if err := json.Unmarshal(core.indexes["packages.json"], &root); err != nil {
+		t.Fatalf("parse root manifest: %v", err)
+	}
+	const want = "http://registry.example/composer/internal/search.json?q=%query%&type=%type%"
+	if root["search"] != want {
+		t.Errorf("search = %v, want %v", root["search"], want)
+	}
 }

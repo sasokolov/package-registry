@@ -15,15 +15,56 @@ import (
 
 // MergeableIntent implements api.GroupMerger.
 func (Module) MergeableIntent(intent api.Intent) bool {
-	return intent.Kind == api.IntentMetadata
+	return intent.Kind == api.IntentMetadata || intent.Kind == api.IntentSearch
 }
 
 // Merge implements api.GroupMerger.
 func (m Module) Merge(feed api.Feed, intent api.Intent, parts []api.GroupPart) ([]byte, error) {
-	if intent.Coord.Name == "packages.json" {
+	switch {
+	case intent.Kind == api.IntentSearch:
+		return mergeSearch(parts)
+	case intent.Coord.Name == "packages.json":
 		return m.mergeRoot(feed, parts)
+	default:
+		return m.mergePackage(feed, parts)
 	}
-	return m.mergePackage(feed, parts)
+}
+
+// mergeSearch concatenates members' results, earlier members first, keeping
+// one entry per package name — the same precedence the rest of the group
+// follows, so what search shows is what an install will actually get.
+//
+// Two rankings do not compose into a third that means anything, but the
+// alternative is worse: the hosted member answers every search, so first-hit
+// would mean upstream results never appear at all.
+func mergeSearch(parts []api.GroupPart) ([]byte, error) {
+	seen := map[string]bool{}
+	results := []any{}
+
+	for _, part := range parts {
+		var doc struct {
+			Results []map[string]any `json:"results"`
+		}
+		if err := json.Unmarshal(part.Body, &doc); err != nil {
+			return nil, fmt.Errorf("parse search results from %s: %w", part.Feed, err)
+		}
+		for _, result := range doc.Results {
+			name, _ := result["name"].(string)
+			if name != "" && seen[name] {
+				continue
+			}
+			seen[name] = true
+			results = append(results, result)
+		}
+	}
+
+	// total describes this answer. Summing the members' counts would promise
+	// pages that do not exist once duplicates are removed.
+	out, err := json.Marshal(map[string]any{"results": results, "total": len(results)})
+	if err != nil {
+		return nil, fmt.Errorf("encode merged search results: %w", err)
+	}
+	return out, nil
 }
 
 // mergeRoot answers discovery for the group itself. The members' root

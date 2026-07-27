@@ -136,9 +136,17 @@ func TestRewriteRootManifest(t *testing.T) {
 	if doc["metadata-url"] != "https://registry.local/composer/packagist/p2/%package%.json" {
 		t.Errorf("metadata-url = %v", doc["metadata-url"])
 	}
-	for _, gone := range []string{"providers-url", "provider-includes", "search", "list"} {
+	for _, gone := range []string{"providers-url", "provider-includes", "list"} {
 		if _, ok := doc[gone]; ok {
 			t.Errorf("root manifest still advertises %q, which this registry does not serve", gone)
+		}
+	}
+	// Search IS served — proxied with the query, or answered locally by a
+	// hosting feed — so it is pointed here rather than removed. Left as the
+	// upstream wrote it, the client would search past the registry.
+	if search, ok := doc["search"]; ok {
+		if search != "https://registry.local/composer/packagist/search.json?q=%query%&type=%type%" {
+			t.Errorf("search = %v, want it pointed at the registry", search)
 		}
 	}
 }

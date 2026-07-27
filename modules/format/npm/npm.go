@@ -24,6 +24,14 @@ import (
 // metadataTTL bounds package-root freshness (SWR beyond it).
 const metadataTTL = 5 * time.Minute
 
+// searchPath is npm's search endpoint, and searchTTL bounds a proxied
+// search: results move, and a stale answer to "what exists" is cheap to
+// refresh.
+const (
+	searchPath = "-/v1/search"
+	searchTTL  = time.Minute
+)
+
 func init() {
 	api.RegisterFormat(Module{})
 }
@@ -56,6 +64,20 @@ func (Module) Parse(r *http.Request) (api.Intent, error) {
 	}
 	if strings.Contains(decoded, "..") {
 		return api.Intent{}, api.NotFoundf("invalid path %q", decoded)
+	}
+
+	// Search: /-/v1/search?text=...
+	if raw == searchPath {
+		return api.Intent{
+			Kind:     api.IntentSearch,
+			Coord:    api.PackageCoordinate{Format: "npm", Name: "search"},
+			CacheTTL: searchTTL,
+			// The query is the question; without it a proxy would ask its
+			// upstream for nothing at all.
+			RemotePath:  searchPath,
+			RemoteQuery: r.URL.RawQuery,
+			ContentType: "application/json",
+		}, nil
 	}
 
 	// dist-tags: /-/package/{pkg}/dist-tags

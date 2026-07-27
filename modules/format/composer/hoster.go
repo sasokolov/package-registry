@@ -353,6 +353,7 @@ func (Module) Reindex(ctx context.Context, feed api.Feed, deps api.CoreServices)
 	// looks broken, and an empty one is a truthful answer.
 	root, err := json.MarshalIndent(map[string]any{
 		"metadata-url":       base + "/p2/%package%.json",
+		"search":             base + "/" + searchPath + "?q=%query%&type=%type%",
 		"available-packages": names,
 		"packages":           map[string]any{},
 	}, "", "  ")
