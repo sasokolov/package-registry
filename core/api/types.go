@@ -78,6 +78,11 @@ type Feed struct {
 	Format    string
 	Upstream  string // upstream base URL; empty for hosted-only feeds
 	Anonymous bool   // whether unauthenticated reads are allowed
+	// Hosted reports whether this feed accepts locally published packages.
+	// Protocols whose discovery document advertises a publish endpoint need
+	// it: announcing one on a feed that cannot accept writes sends clients
+	// to a 405 they cannot interpret.
+	Hosted bool
 	// ExternalURL is the public base URL of this registry site (from
 	// site.external_url) for protocols that must emit absolute self-URLs
 	// (e.g. Terraform's X-Terraform-Get). Empty when not configured.
@@ -404,6 +409,19 @@ type GroupMerger interface {
 // startup and on reload instead of silently misrouting clients.
 type FeedSetValidator interface {
 	ValidateFeeds(feeds []Feed) error
+}
+
+// CredentialHeader is an optional FormatModule capability for protocols that
+// carry their credential somewhere other than the Authorization header —
+// NuGet's X-NuGet-ApiKey is the case that exists.
+//
+// The core does not know these header names; the module does (invariant 1).
+// A value found there is treated exactly as a Bearer credential would be,
+// and an explicit Authorization header always wins, so nothing about
+// authentication is weakened: the same token, verified the same way.
+type CredentialHeader interface {
+	// CredentialHeaders lists header names, most preferred first.
+	CredentialHeaders() []string
 }
 
 // RootRouter is an optional FormatModule capability for protocol endpoints

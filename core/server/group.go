@@ -62,6 +62,7 @@ func (s *Server) groupHandler(rt *runtime, gr *feedRuntime) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
+		adoptDeclaredCredential(gr.module, r)
 		id, err := rt.authn.Identify(ctx, r)
 		if err != nil {
 			s.audit.Warn("authentication rejected",

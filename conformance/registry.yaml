@@ -132,6 +132,13 @@ feeds:
     anonymous: true
     publishers: ["token:ci-*"]
 
+  # Hosted NuGet feed: `dotnet nuget push` lands here.
+  - name: nuget-hosted
+    format: nuget
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+
   # Groups: one URL over local and proxied content. The hosted member comes
   # first, so an internally published coordinate wins over an upstream one of
   # the same name.
@@ -144,6 +151,11 @@ feeds:
     format: npm
     anonymous: true
     members: [npm-hosted, npmjs]
+
+  - name: nuget-public
+    format: nuget
+    anonymous: true
+    members: [nuget-hosted, nugetorg]
 
   # Redirect mode: cached tarballs are answered with a 302 to a pre-signed
   # MinIO URL instead of being streamed through the registry.

@@ -30,6 +30,7 @@ func (s *Server) publishHandler(rt *runtime, fr *feedRuntime, hoster api.Hoster)
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
+		adoptDeclaredCredential(fr.module, r)
 		id, err := rt.authn.Identify(ctx, r)
 		if err != nil {
 			s.audit.Warn("publish authentication rejected",

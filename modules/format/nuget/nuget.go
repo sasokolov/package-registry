@@ -171,6 +171,15 @@ func (Module) Synthesize(feed api.Feed, intent api.Intent) (api.SyntheticRespons
 			{ID: base + "/v3/query", Type: "SearchQueryService"},
 		},
 	}
+	if feed.Hosted {
+		// Only a feed that accepts writes advertises where to send them.
+		// Announcing the endpoint everywhere would send `dotnet nuget push`
+		// at a proxy and leave it to interpret a 405.
+		doc.Resources = append(doc.Resources, serviceResource{
+			ID: base + publishPath, Type: "PackagePublish/2.0.0",
+			Comment: "Push endpoint of this hosted feed",
+		})
+	}
 	body, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return api.SyntheticResponse{}, fmt.Errorf("encode service index: %w", err)

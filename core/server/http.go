@@ -12,12 +12,37 @@ import (
 	"github.com/sasokolov/package-registry/core/pipeline"
 )
 
+// adoptDeclaredCredential lets a protocol that carries its credential
+// outside the Authorization header still authenticate.
+//
+// The header names come from the module, because the core has no business
+// knowing that NuGet calls its credential an API key. An Authorization
+// header that is already present always wins; what is adopted is verified
+// exactly like any other bearer credential, so this widens where a token
+// may be written, never what it may do.
+func adoptDeclaredCredential(module api.FormatModule, r *http.Request) {
+	if r.Header.Get("Authorization") != "" {
+		return
+	}
+	carrier, ok := module.(api.CredentialHeader)
+	if !ok {
+		return
+	}
+	for _, name := range carrier.CredentialHeaders() {
+		if value := strings.TrimSpace(r.Header.Get(name)); value != "" {
+			r.Header.Set("Authorization", "Bearer "+value)
+			return
+		}
+	}
+}
+
 // feedHandler runs the full chain for one feed: auth → policy(OnResolve) →
 // pipeline → policy(OnServe) → stream, with the source header on success.
 func (s *Server) feedHandler(rt *runtime, fr *feedRuntime) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
+		adoptDeclaredCredential(fr.module, r)
 		id, err := rt.authn.Identify(ctx, r)
 		if err != nil {
 			s.audit.Warn("authentication rejected",

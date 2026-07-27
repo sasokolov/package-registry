@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <!-- The id deliberately collides with the fixture the fake upstream
+         serves: a group over [hosted, proxy] must then show BOTH versions. -->
+    <PackageId>conformance.lib</PackageId>
+    <Version>9.9.9</Version>
+    <Authors>conformance</Authors>
+    <Description>Locally published version of the conformance fixture</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <IncludeBuildOutput>true</IncludeBuildOutput>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+</Project>

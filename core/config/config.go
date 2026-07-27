@@ -287,7 +287,10 @@ type PolicyConfig struct {
 // API converts the feed declaration to the canonical api.Feed passed to
 // modules.
 func (f FeedConfig) API() api.Feed {
-	return api.Feed{Name: f.Name, Format: f.Format, Upstream: f.Upstream, Anonymous: f.Anonymous}
+	return api.Feed{
+		Name: f.Name, Format: f.Format, Upstream: f.Upstream,
+		Anonymous: f.Anonymous, Hosted: f.Hosted,
+	}
 }
 
 // RedirectTTLOrDefault is the pre-signed URL lifetime for this feed.

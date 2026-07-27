@@ -119,6 +119,8 @@ services:
       DOTNET_NOLOGO: "1"
     volumes:
       - ./clients/dotnet/project:/src:ro
+      - ./clients/dotnet/project-lib:/src-lib:ro
+      - ./clients/dotnet/project-app:/src-app:ro
 
   k6:
     image: grafana/k6:0.55.0
