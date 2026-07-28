@@ -32,10 +32,15 @@ type AccessRuleView struct {
 	Capabilities []string `json:"capabilities"`
 }
 
-// BindingView is one binding.
+// BindingView is one binding. The name is what makes it addressable — in the
+// API, in a Terraform configuration, and in the sentence someone writes when
+// they ask why a binding exists. The ones compiled from anonymous/publishers
+// have none, and are marked instead.
 type BindingView struct {
-	Policies []string          `json:"policies"`
-	Match    map[string]string `json:"match,omitempty"`
+	Name      string            `json:"name,omitempty"`
+	Generated bool              `json:"generated,omitempty"`
+	Policies  []string          `json:"policies"`
+	Match     map[string]string `json:"match,omitempty"`
 }
 
 // handleAccess reports the compiled rules — hand-written and generated
@@ -70,7 +75,12 @@ func (s *Server) handleAccess(w http.ResponseWriter, r *http.Request) {
 
 	bindings := make([]BindingView, 0)
 	for _, b := range engine.Bindings() {
-		bindings = append(bindings, BindingView{Policies: b.Policies, Match: matchView(b.Match)})
+		bindings = append(bindings, BindingView{
+			Name:      b.Name,
+			Generated: b.Name == "",
+			Policies:  b.Policies,
+			Match:     matchView(b.Match),
+		})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -90,6 +100,7 @@ type ExplainResponse struct {
 	Policy       string   `json:"policy,omitempty"`
 	Rule         string   `json:"rule,omitempty"`
 	Policies     []string `json:"policies,omitempty"`
+	Bindings     []string `json:"bindings,omitempty"`
 	Capabilities []string `json:"effective_capabilities,omitempty"`
 }
 
@@ -152,6 +163,7 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 		Policy:     d.Policy,
 		Rule:       d.Rule,
 		Policies:   d.Policies,
+		Bindings:   d.Bindings,
 	}
 	for _, c := range d.Capabilities {
 		out.Capabilities = append(out.Capabilities, string(c))
@@ -188,4 +200,19 @@ func capabilityNames() []string {
 		out = append(out, string(c))
 	}
 	return out
+}
+
+// handleAuthMethods says how this site can be signed in to.
+//
+// It is anonymous on purpose: a login form has to read it before anybody has
+// logged in. Nothing here is a secret — it is the list of doors, not the
+// keys — and a console that had to guess would offer methods the site
+// cannot honour.
+func (s *Server) handleAuthMethods(w http.ResponseWriter, r *http.Request) {
+	_ = r
+	methods := s.manager.Current().AuthMethods()
+	if methods == nil {
+		methods = []config.AuthMethodConfig{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"methods": methods})
 }

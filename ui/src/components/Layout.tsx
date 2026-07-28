@@ -30,6 +30,7 @@ export function Layout({ status, who, onSignOut }: Props) {
             </>
           ) : null}
           {who?.admin ? <NavLink to="/ui/tokens">Tokens</NavLink> : null}
+          {who?.admin ? <NavLink to="/ui/access">Access</NavLink> : null}
           {who?.admin ? <NavLink to="/ui/config">Configuration</NavLink> : null}
         </nav>
         <div className="spacer" />

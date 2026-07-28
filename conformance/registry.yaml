@@ -62,15 +62,18 @@ access_policies:
         capabilities: [read, update]
 
 bindings:
-  - policies: [team-example]
+  - name: team-example
+    policies: [team-example]
     match:
       kind: token
       subject: "team-*"
-  - policies: [guarded-reader]
+  - name: guarded-reader
+    policies: [guarded-reader]
     match:
       kind: token
       subject: "guarded-*"
-  - policies: [oncall]
+  - name: oncall
+    policies: [oncall]
     match:
       kind: token
       subject: "oncall-*"

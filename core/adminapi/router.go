@@ -38,6 +38,10 @@ func (s *Server) Handler() http.Handler {
 	r.Post("/tokens", s.handleCreateToken)
 	r.Delete("/tokens/{name}", s.handleRevokeToken)
 
+	// How to sign in. Anonymous by necessity: it is what the login form
+	// reads before anyone has signed in.
+	r.Get("/auth/methods", s.handleAuthMethods)
+
 	// Access control: what the rules are, and what they would decide.
 	r.Get("/access", s.handleAccess)
 	r.Get("/access/explain", s.handleExplain)
@@ -61,6 +65,14 @@ func (s *Server) Handler() http.Handler {
 	r.Get("/config/oidc/issuer", s.handleGetOIDCIssuer)
 	r.Put("/config/oidc/issuer", s.handlePutOIDCIssuer)
 	r.Delete("/config/oidc/issuer", s.handleDeleteOIDCIssuer)
+	r.Get("/config/access/policies", s.handleListAccessPolicies)
+	r.Get("/config/access/policies/{policy}", s.handleGetAccessPolicy)
+	r.Put("/config/access/policies/{policy}", s.handlePutAccessPolicy)
+	r.Delete("/config/access/policies/{policy}", s.handleDeleteAccessPolicy)
+	r.Get("/config/access/bindings", s.handleListBindings)
+	r.Get("/config/access/bindings/{binding}", s.handleGetBinding)
+	r.Put("/config/access/bindings/{binding}", s.handlePutBinding)
+	r.Delete("/config/access/bindings/{binding}", s.handleDeleteBinding)
 	r.Get("/config/peers", s.handleGetPeers)
 	r.Get("/config/peers/{peer}", s.handleGetPeer)
 	r.Put("/config/peers/{peer}", s.handlePutPeer)

@@ -64,6 +64,8 @@ access along with everything else's.
 | `registry_replication_peer` | One geo-replication partner |
 | `registry_token` | A static token — the secret is returned once and lands in state |
 | `registry_quarantine` | A blocked coordinate; destroying the resource releases it |
+| `registry_access_policy` | A named set of path capabilities |
+| `registry_binding` | Which identities a set of policies applies to |
 
 | Data source | Reads |
 | --- | --- |
@@ -71,8 +73,41 @@ access along with everything else's.
 | `registry_feed` | One feed as configured, managed here or not |
 | `registry_feeds` | Every configured feed |
 | `registry_replication_status` | Applied and durable watermarks per stream, parked events |
+| `registry_access_explain` | What the registry would decide for an identity, path and capability |
 
 Full reference, generated from the schemas: [`docs/`](docs/).
+
+## Access as code
+
+A `registry_access_policy` says what may be done on which paths; a
+`registry_binding` says whose identity it applies to. Nothing is permitted
+until a policy says so, the most specific matching rule decides, and a `deny`
+beats every other capability at that specificity — so a narrow rule can be a
+deliberate exception to a broad one, in either direction. The model and the
+path namespaces are described in [`docs/access-control.md`](../docs/access-control.md).
+
+The part worth building a habit around is `registry_access_explain`. It asks
+the same engine that answers real requests what it would decide, which makes
+an access change testable in the same plan that makes it:
+
+```hcl
+data "registry_access_explain" "ci_internal" {
+  path         = "feed/releases/maven:com.acme.internal:secret@1.0.0"
+  capability   = "publish"
+  kind         = "oidc"
+  project_path = "acme/widget"
+}
+
+check "nothing_widened" {
+  assert {
+    condition     = !data.registry_access_explain.ci_internal.allowed
+    error_message = "CI gained publish on the internal namespace"
+  }
+}
+```
+
+Assert both directions. That a grant works is usually noticed within the hour;
+that a deny quietly stopped applying is not noticed at all.
 
 ## The token caveat
 

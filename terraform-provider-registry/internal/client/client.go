@@ -197,6 +197,9 @@ func messageOf(raw []byte) string {
 	return strings.TrimSpace(string(raw))
 }
 
+// Escape percent-encodes one query parameter value.
+func Escape(value string) string { return url.QueryEscape(value) }
+
 // Query builds a path with one query parameter, used for the resources whose
 // identity is a URL or an identity pattern and therefore cannot be a path
 // segment.

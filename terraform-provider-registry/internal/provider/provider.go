@@ -164,6 +164,8 @@ func (p *registryProvider) Resources(context.Context) []func() resource.Resource
 		NewReplicationPeerResource,
 		NewTokenResource,
 		NewQuarantineResource,
+		NewAccessPolicyResource,
+		NewBindingResource,
 	}
 }
 
@@ -173,5 +175,6 @@ func (p *registryProvider) DataSources(context.Context) []func() datasource.Data
 		NewFeedDataSource,
 		NewFeedsDataSource,
 		NewReplicationStatusDataSource,
+		NewAccessDataSource,
 	}
 }

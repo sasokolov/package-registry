@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"gopkg.in/yaml.v3"
@@ -704,4 +705,233 @@ func mappingField(node *yaml.Node, field string) string {
 		return ""
 	}
 	return value.Value
+}
+
+// ---------------------------------------------------------------------------
+// Access rules as resources
+//
+// One policy or binding at a time, so a tool that owns one does not have to
+// read, merge and rewrite a list it does not own. Each write is still a
+// read-modify-write of the whole document under the same lock and the same
+// validation; only the interface is finer.
+
+// handleListAccessPolicies returns the written policies.
+//
+// The generated ones — compiled from anonymous, publishers and admins — are
+// not here: they are not editable, and offering them for editing would
+// invite a change that the next configuration load silently discards. They
+// are visible at /access, where everything in force is listed together.
+func (s *Server) handleListAccessPolicies(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"version":  s.manager.Version(),
+		"policies": s.manager.Current().AccessPolicies,
+	})
+}
+
+// handleGetAccessPolicy returns one written policy.
+func (s *Server) handleGetAccessPolicy(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	name := chi.URLParam(r, "policy")
+	for _, p := range s.manager.Current().AccessPolicies {
+		if p.Name == name {
+			w.Header().Set("ETag", `"`+s.manager.Version()+`"`)
+			writeJSON(w, http.StatusOK, p)
+			return
+		}
+	}
+	s.writeError(w, http.StatusNotFound, "no access policy named "+name)
+}
+
+// handlePutAccessPolicy creates or replaces one policy.
+func (s *Server) handlePutAccessPolicy(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	name := chi.URLParam(r, "policy")
+
+	var policy config.AccessPolicyConfig
+	if err := decodeBody(r, &policy); err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if policy.Name == "" {
+		policy.Name = name
+	}
+	if policy.Name != name {
+		s.writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("policy name in the body (%q) does not match the path (%q)", policy.Name, name))
+		return
+	}
+
+	var created bool
+	version, err := s.mutateDocument(r.Context(), trimETag(r.Header.Get("If-Match")),
+		func(doc *yaml.Node) error {
+			var err error
+			created, err = upsertSequenceItem(doc, "access_policies", "name", name, policy)
+			return err
+		})
+	if err != nil {
+		s.writeConfigError(w, err)
+		return
+	}
+
+	s.audit.Warn("access policy written",
+		"identity", id.String(), "policy", name, "created", created,
+		"version", version, "site", s.site)
+	w.Header().Set("ETag", `"`+version+`"`)
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, map[string]any{"version": version, "created": created})
+}
+
+// handleDeleteAccessPolicy removes one policy.
+//
+// A policy still named by a binding cannot go: the document would not load,
+// and refusing here says which binding to fix instead of leaving that to be
+// discovered from a validation error.
+func (s *Server) handleDeleteAccessPolicy(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	name := chi.URLParam(r, "policy")
+
+	for _, b := range s.manager.Current().Bindings {
+		for _, p := range b.Policies {
+			if p == name {
+				s.writeError(w, http.StatusConflict,
+					"binding "+b.Name+" still attaches policy "+name+"; remove it from the binding first")
+				return
+			}
+		}
+	}
+
+	var found bool
+	version, err := s.mutateDocument(r.Context(), trimETag(r.Header.Get("If-Match")),
+		func(doc *yaml.Node) error {
+			var err error
+			found, err = removeSequenceItem(doc, "access_policies", "name", name)
+			return err
+		})
+	if err != nil {
+		s.writeConfigError(w, err)
+		return
+	}
+	if !found {
+		s.writeError(w, http.StatusNotFound, "no access policy named "+name)
+		return
+	}
+	s.audit.Warn("access policy removed",
+		"identity", id.String(), "policy", name, "version", version, "site", s.site)
+	w.Header().Set("ETag", `"`+version+`"`)
+	writeJSON(w, http.StatusOK, map[string]any{"version": version})
+}
+
+// handleListBindings returns the written bindings.
+func (s *Server) handleListBindings(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"version":  s.manager.Version(),
+		"bindings": s.manager.Current().Bindings,
+	})
+}
+
+// handleGetBinding returns one binding.
+func (s *Server) handleGetBinding(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	name := chi.URLParam(r, "binding")
+	for _, b := range s.manager.Current().Bindings {
+		if b.Name == name {
+			w.Header().Set("ETag", `"`+s.manager.Version()+`"`)
+			writeJSON(w, http.StatusOK, b)
+			return
+		}
+	}
+	s.writeError(w, http.StatusNotFound, "no binding named "+name)
+}
+
+// handlePutBinding creates or replaces one binding.
+func (s *Server) handlePutBinding(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	name := chi.URLParam(r, "binding")
+
+	var binding config.BindingConfig
+	if err := decodeBody(r, &binding); err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if binding.Name == "" {
+		binding.Name = name
+	}
+	if binding.Name != name {
+		s.writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("binding name in the body (%q) does not match the path (%q)", binding.Name, name))
+		return
+	}
+
+	var created bool
+	version, err := s.mutateDocument(r.Context(), trimETag(r.Header.Get("If-Match")),
+		func(doc *yaml.Node) error {
+			var err error
+			created, err = upsertSequenceItem(doc, "bindings", "name", name, binding)
+			return err
+		})
+	if err != nil {
+		s.writeConfigError(w, err)
+		return
+	}
+
+	s.audit.Warn("access binding written",
+		"identity", id.String(), "binding", name, "policies", strings.Join(binding.Policies, ","),
+		"created", created, "version", version, "site", s.site)
+	w.Header().Set("ETag", `"`+version+`"`)
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, map[string]any{"version": version, "created": created})
+}
+
+// handleDeleteBinding removes one binding.
+func (s *Server) handleDeleteBinding(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	name := chi.URLParam(r, "binding")
+
+	var found bool
+	version, err := s.mutateDocument(r.Context(), trimETag(r.Header.Get("If-Match")),
+		func(doc *yaml.Node) error {
+			var err error
+			found, err = removeSequenceItem(doc, "bindings", "name", name)
+			return err
+		})
+	if err != nil {
+		s.writeConfigError(w, err)
+		return
+	}
+	if !found {
+		s.writeError(w, http.StatusNotFound, "no binding named "+name)
+		return
+	}
+	s.audit.Warn("access binding removed",
+		"identity", id.String(), "binding", name, "version", version, "site", s.site)
+	w.Header().Set("ETag", `"`+version+`"`)
+	writeJSON(w, http.StatusOK, map[string]any{"version": version})
 }

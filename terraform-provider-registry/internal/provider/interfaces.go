@@ -34,6 +34,15 @@ var (
 	_ resource.ResourceWithValidateConfig = (*quarantineResource)(nil)
 	_ resource.ResourceWithImportState    = (*quarantineResource)(nil)
 
+	_ resource.ResourceWithConfigure      = (*accessPolicyResource)(nil)
+	_ resource.ResourceWithValidateConfig = (*accessPolicyResource)(nil)
+	_ resource.ResourceWithImportState    = (*accessPolicyResource)(nil)
+
+	_ resource.ResourceWithConfigure      = (*bindingResource)(nil)
+	_ resource.ResourceWithValidateConfig = (*bindingResource)(nil)
+	_ resource.ResourceWithImportState    = (*bindingResource)(nil)
+
+	_ datasource.DataSourceWithConfigure = (*accessDataSource)(nil)
 	_ datasource.DataSourceWithConfigure = (*siteDataSource)(nil)
 	_ datasource.DataSourceWithConfigure = (*feedDataSource)(nil)
 	_ datasource.DataSourceWithConfigure = (*feedsDataSource)(nil)

@@ -159,3 +159,58 @@ type PeerIdentity struct {
 	UUID     string `json:"uuid"`
 	LastSeen string `json:"last_seen"`
 }
+
+// AccessPolicy is a named set of access rules.
+type AccessPolicy struct {
+	Name  string       `json:"name"`
+	Rules []AccessRule `json:"rules"`
+}
+
+// AccessRule grants capabilities on a path.
+type AccessRule struct {
+	Path         string   `json:"path"`
+	Capabilities []string `json:"capabilities"`
+}
+
+// AccessPolicyList is the response of GET /config/access/policies.
+type AccessPolicyList struct {
+	Version  string         `json:"version"`
+	Policies []AccessPolicy `json:"policies"`
+}
+
+// Binding attaches policies to the identities a match selects.
+type Binding struct {
+	Name     string       `json:"name"`
+	Policies []string     `json:"policies"`
+	Match    BindingMatch `json:"match"`
+}
+
+// BindingMatch selects identities by what authentication established.
+type BindingMatch struct {
+	Kind          string `json:"kind,omitempty"`
+	Issuer        string `json:"issuer,omitempty"`
+	Subject       string `json:"subject,omitempty"`
+	ProjectPath   string `json:"project_path,omitempty"`
+	Ref           string `json:"ref,omitempty"`
+	Authenticated bool   `json:"authenticated,omitempty"`
+}
+
+// BindingList is the response of GET /config/access/bindings.
+type BindingList struct {
+	Version  string    `json:"version"`
+	Bindings []Binding `json:"bindings"`
+}
+
+// Explanation is the response of GET /access/explain.
+type Explanation struct {
+	Path         string   `json:"path"`
+	Capability   string   `json:"capability"`
+	Identity     string   `json:"identity"`
+	Allowed      bool     `json:"allowed"`
+	Reason       string   `json:"reason"`
+	Policy       string   `json:"policy,omitempty"`
+	Rule         string   `json:"rule,omitempty"`
+	Policies     []string `json:"policies,omitempty"`
+	Bindings     []string `json:"bindings,omitempty"`
+	Capabilities []string `json:"effective_capabilities,omitempty"`
+}

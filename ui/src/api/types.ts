@@ -122,3 +122,49 @@ export interface ConfigDocument {
   writable: boolean;
   document: string;
 }
+
+/** One way of signing in, as the site says the form should present it. */
+export interface AuthMethod {
+  type: "token" | "oidc";
+  label?: string;
+  issuer?: string;
+  help?: string;
+}
+
+export interface AccessRule {
+  path: string;
+  capabilities: string[];
+}
+
+export interface AccessPolicy {
+  name: string;
+  /** Compiled from a feed's anonymous/publishers or the site's admins. */
+  generated?: boolean;
+  rules: AccessRule[];
+}
+
+export interface AccessBinding {
+  name?: string;
+  generated?: boolean;
+  policies: string[];
+  match?: Record<string, string>;
+}
+
+export interface AccessRules {
+  policies: AccessPolicy[];
+  bindings: AccessBinding[];
+  capabilities: string[];
+}
+
+export interface Explanation {
+  path: string;
+  capability: string;
+  identity: string;
+  allowed: boolean;
+  reason: string;
+  policy?: string;
+  rule?: string;
+  policies?: string[];
+  effective_capabilities?: string[];
+  bindings?: string[];
+}

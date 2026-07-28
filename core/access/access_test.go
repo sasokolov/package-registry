@@ -297,3 +297,71 @@ func TestConfigurationMistakesAreRefusedAtCompileTime(t *testing.T) {
 		})
 	}
 }
+
+// "No policy applies to you" and "the policy that applies grants too little"
+// are different faults with different fixes, and the second one is the only
+// one people think to look for. Naming the bindings that matched separates
+// them at a glance.
+func TestExplanationsNameTheBindingsThatMatched(t *testing.T) {
+	e := engine(t,
+		[]Policy{
+			{Name: "team", Rules: []Rule{
+				{Path: "feed/releases/*", Capabilities: Capabilities{CapRead}},
+			}},
+			{Name: "oncall", Rules: []Rule{
+				{Path: "sys/quarantine", Capabilities: Capabilities{CapUpdate}},
+			}},
+		},
+		[]Binding{
+			{Name: "frontend-ci", Policies: []string{"team"}, Match: Match{Subject: "ci-*"}},
+			{Name: "rotation", Policies: []string{"oncall"}, Match: Match{Subject: "ci-frontend"}},
+			{Name: "someone-else", Policies: []string{"team"}, Match: Match{Subject: "release-bot"}},
+		},
+	)
+
+	d := e.Explain(ci(), "feed/releases/maven:a", CapRead)
+	if len(d.Bindings) != 2 || d.Bindings[0] != "frontend-ci" || d.Bindings[1] != "rotation" {
+		t.Errorf("bindings = %v, want the two that matched, in order", d.Bindings)
+	}
+
+	// A binding that did not match must not appear, or the field would be a
+	// list of everything and worth nothing.
+	for _, name := range d.Bindings {
+		if name == "someone-else" {
+			t.Errorf("a binding that does not match this identity was reported: %v", d.Bindings)
+		}
+	}
+
+	// Nothing bound at all is the case the field exists for.
+	stranger := e.Explain(Identity{Kind: "token", Subject: "nobody"},
+		"feed/releases/maven:a", CapRead)
+	if len(stranger.Bindings) != 0 {
+		t.Errorf("bindings = %v, want none", stranger.Bindings)
+	}
+	if !strings.Contains(stranger.Reason, "no policy is bound") {
+		t.Errorf("reason = %q", stranger.Reason)
+	}
+}
+
+// The compiled-in bindings have no name; reporting them as an empty string
+// would put a nameless entry in the list and make "matched nothing" and
+// "matched the generated one" indistinguishable.
+func TestGeneratedBindingsAreNotNamed(t *testing.T) {
+	e := engine(t,
+		[]Policy{{Name: "public", Rules: []Rule{
+			{Path: "feed/central/*", Capabilities: Capabilities{CapRead}},
+		}}},
+		[]Binding{{Policies: []string{"public"}}},
+	)
+
+	d := e.Explain(anonymous(), "feed/central/maven:a", CapRead)
+	if !d.Allowed {
+		t.Fatalf("anonymous read was refused: %+v", d)
+	}
+	if len(d.Bindings) != 0 {
+		t.Errorf("bindings = %v, want none for a binding with no name", d.Bindings)
+	}
+	if len(d.Policies) != 1 || d.Policies[0] != "public" {
+		t.Errorf("policies = %v", d.Policies)
+	}
+}

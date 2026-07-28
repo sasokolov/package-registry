@@ -147,6 +147,9 @@ type AuthConfig struct {
 	// (invariant 7). Default 5m.
 	TokenCacheTTL Duration     `yaml:"token_cache_ttl"`
 	OIDC          []OIDCIssuer `yaml:"oidc_issuers"`
+	// Methods is what the console's sign-in form offers, in order. Empty
+	// means "derive it from what this site can actually accept".
+	Methods []AuthMethodConfig `yaml:"methods,omitempty" json:"methods,omitempty"`
 }
 
 // OIDCIssuer declares a trusted OIDC issuer (e.g. a GitLab instance) whose
@@ -621,6 +624,7 @@ func (c *Config) Validate() error {
 
 	errs = append(errs, c.validateGroups()...)
 	errs = append(errs, c.validateAccess()...)
+	errs = append(errs, c.validateAuthMethods()...)
 
 	// The rules have to compile, or a document that validates would still
 	// refuse every request at runtime.

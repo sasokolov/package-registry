@@ -4,6 +4,7 @@ import { useResource } from "./api/hooks";
 import type { SiteStatus, WhoAmI } from "./api/types";
 import { Layout } from "./components/Layout";
 import { SignIn } from "./components/SignIn";
+import { Access } from "./pages/Access";
 import { Configuration } from "./pages/Configuration";
 import { Conflicts } from "./pages/Conflicts";
 import { FeedDetail } from "./pages/FeedDetail";
@@ -36,6 +37,7 @@ export function App() {
           <Route path="/ui/conflicts" element={<Conflicts who={who.data} />} />
           <Route path="/ui/quarantine" element={<Quarantine who={who.data} />} />
           <Route path="/ui/tokens" element={<Tokens />} />
+          <Route path="/ui/access" element={<Access />} />
           <Route path="/ui/config" element={<Configuration />} />
           <Route path="/ui/signin" element={<SignIn onSignedIn={refresh} />} />
           <Route path="*" element={<Navigate to="/ui/" replace />} />

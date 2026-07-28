@@ -34,6 +34,11 @@ type AccessRuleConfig struct {
 
 // BindingConfig attaches policies to the identities a match selects.
 type BindingConfig struct {
+	// Name identifies the binding. It exists so a binding can be addressed:
+	// managed one at a time through the API, named in a Terraform
+	// configuration, and pointed at in an explanation. A binding nobody can
+	// name is a binding nobody can discuss.
+	Name     string      `yaml:"name" json:"name"`
 	Policies []string    `yaml:"policies" json:"policies"`
 	Match    MatchConfig `yaml:"match" json:"match"`
 }
@@ -99,6 +104,7 @@ func (c *Config) AccessEngine() (*access.Engine, error) {
 	}
 	for _, b := range c.Bindings {
 		bindings = append(bindings, access.Binding{
+			Name:     b.Name,
 			Policies: b.Policies,
 			Match: access.Match{
 				Kind:          b.Match.Kind,
@@ -291,8 +297,22 @@ func (c *Config) validateAccess() []error {
 		}
 	}
 
+	bindingNames := map[string]bool{}
 	for i, b := range c.Bindings {
 		at := fmt.Sprintf("bindings[%d]", i)
+		if b.Name != "" {
+			at = fmt.Sprintf("bindings[%d] (%s)", i, b.Name)
+		}
+		switch {
+		case b.Name == "":
+			errs = append(errs, fmt.Errorf(
+				"%s: name is required — it is how a binding is addressed by the API, by "+
+					"Terraform and in an explanation of a refusal", at))
+		case bindingNames[b.Name]:
+			errs = append(errs, fmt.Errorf("%s: duplicate binding name", at))
+		default:
+			bindingNames[b.Name] = true
+		}
 		if len(b.Policies) == 0 {
 			errs = append(errs, fmt.Errorf("%s: names no policies", at))
 		}

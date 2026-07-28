@@ -107,6 +107,9 @@ type Match struct {
 
 // Binding attaches policies to the identities a Match selects.
 type Binding struct {
+	// Name identifies the binding, so an explanation can say which one
+	// brought a policy into play.
+	Name     string
 	Policies []string
 	Match    Match
 }
@@ -213,6 +216,10 @@ type Decision struct {
 	Allowed bool
 	// Policies that were attached to this identity, in binding order.
 	Policies []string
+	// Bindings that attached them, in the order they matched. When this is
+	// empty and nothing was allowed, the mistake is in a binding's match and
+	// not in any policy — which is the first thing worth knowing.
+	Bindings []string
 	// Rule is the path of the rule that decided, empty when nothing matched.
 	Rule string
 	// Policy names the policy that rule came from.
@@ -226,21 +233,32 @@ type Decision struct {
 // PoliciesFor lists the policies bound to an identity, in binding order and
 // without repeats.
 func (e *Engine) PoliciesFor(id Identity) []string {
-	var out []string
+	policies, _ := e.boundVia(id)
+	return policies
+}
+
+// boundVia lists the policies bound to an identity and the bindings that
+// bound them. The bindings are worth carrying: "no policy is bound to you"
+// and "the binding you expected did not match" look identical from the
+// policy list alone, and they are fixed in different places.
+func (e *Engine) boundVia(id Identity) (policies, bindings []string) {
 	seen := map[string]bool{}
 	for _, b := range e.bindings {
 		if !b.Match.matches(id) {
 			continue
+		}
+		if b.Name != "" {
+			bindings = append(bindings, b.Name)
 		}
 		for _, name := range b.Policies {
 			if seen[name] {
 				continue
 			}
 			seen[name] = true
-			out = append(out, name)
+			policies = append(policies, name)
 		}
 	}
-	return out
+	return policies, bindings
 }
 
 // Allowed reports whether id may exercise want on path.
@@ -257,8 +275,8 @@ func (e *Engine) Allowed(id Identity, path string, want Capability) bool {
 // exception, not an oversight. An absolute deny would forbid expressing
 // exceptions at all, which is how people end up with no denies.
 func (e *Engine) Explain(id Identity, path string, want Capability) Decision {
-	names := e.PoliciesFor(id)
-	decision := Decision{Policies: names}
+	names, via := e.boundVia(id)
+	decision := Decision{Policies: names, Bindings: via}
 
 	var best []Rule
 	bestScore := specificity{}

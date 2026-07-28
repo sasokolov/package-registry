@@ -175,3 +175,23 @@ label > span { display: block; font-size: 12px; color: var(--text-dim); margin-b
 }
 
 .sidebar .refused { color: var(--bad); font-weight: 500; }
+
+/* Sign-in method picker: one tab per way the site says it can be signed
+   in to. */
+.methods { display: flex; gap: 6px; flex-wrap: wrap; }
+.method {
+  font-size: 13px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-raised);
+  color: var(--text-dim);
+}
+.method.selected {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+select { appearance: auto; }
+details summary { list-style: revert; }

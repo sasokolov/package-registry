@@ -1,16 +1,22 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ApiError, api, tokenStore } from "../api/client";
-import type { WhoAmI } from "../api/types";
+import { useResource } from "../api/hooks";
+import type { AuthMethod, WhoAmI } from "../api/types";
 
 /**
- * Signing in is pasting a credential. There is no session cookie and no login
- * endpoint on purpose: the console authenticates exactly the way every other
- * client does — one Authorization header — so a credential that works here
- * works with npm and maven too, and revoking it revokes all of them at once.
- * That is also why both credential kinds land in one field: the registry
- * tells a static token from an OIDC id_token by its shape, and so the
- * console does not have to ask.
+ * Signing in is presenting a credential. There is no session cookie and no
+ * login endpoint on purpose: the console authenticates exactly the way every
+ * other client does — one Authorization header — so a credential that works
+ * here works with npm and maven too, and revoking it revokes all of them at
+ * once.
+ *
+ * Which credentials this site accepts is the site's answer, not the
+ * console's guess. A registry with no database issues no static tokens; one
+ * with no trusted issuer accepts no id_tokens; and an operator may want to
+ * offer only one of the two even where both would work. So the form is built
+ * from what /auth/methods reports, and a method the site does not advertise
+ * simply is not on it.
  *
  * The credential is checked before it is kept. Storing first would mean a
  * truncated paste — easy with a token this long — is saved, the console
@@ -18,12 +24,24 @@ import type { WhoAmI } from "../api/types";
  * to explain why.
  */
 export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
+  const methods = useResource<{ methods: AuthMethod[] | null }>("/auth/methods");
+  const available = methods.data?.methods ?? [];
+
+  const [selected, setSelected] = useState(0);
   const [token, setToken] = useState("");
   const [remember, setRemember] = useState(false);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string>();
   const field = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
+
+  // Selecting a method that has since disappeared would leave the form with
+  // no labels at all.
+  useEffect(() => {
+    if (selected >= available.length) setSelected(0);
+  }, [available.length, selected]);
+
+  const method = available[selected];
 
   async function submit() {
     // The field is controlled, but a password manager or a middle-click
@@ -78,59 +96,101 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
       <div>
         <h2>Sign in</h2>
         <p className="muted">
-          Paste a registry token or an OIDC id_token from a configured issuer. It is the same
-          credential your CI uses; the console has no separate login.
+          The console has no separate login: it presents the same credential your clients do.
         </p>
       </div>
 
+      {methods.loading && !methods.data ? <p className="muted">Loading sign-in methods…</p> : null}
+
+      {!methods.loading && available.length === 0 ? (
+        <div className="notice">
+          This site advertises no sign-in method. Static tokens need a database, and id_tokens
+          need a trusted issuer in <code>auth.oidc_issuers</code>; a site with neither can only
+          be browsed anonymously.
+        </div>
+      ) : null}
+
+      {available.length > 1 ? (
+        <div className="methods" role="tablist" aria-label="Sign-in method">
+          {available.map((m, index) => (
+            <button
+              key={`${m.type}:${m.issuer ?? ""}`}
+              role="tab"
+              aria-selected={index === selected}
+              className={index === selected ? "method selected" : "method"}
+              onClick={() => {
+                setSelected(index);
+                setProblem(undefined);
+              }}
+            >
+              {m.label ?? m.type}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
       {problem ? <div className="notice bad">{problem}</div> : null}
 
-      <form
-        className="stack"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void submit();
-        }}
-      >
-        <label>
-          <span>Token or id_token</span>
-          <input
-            ref={field}
-            type="password"
-            value={token}
-            autoComplete="off"
-            placeholder="reg_… or eyJ…"
-            onChange={(event) => {
-              setToken(event.target.value);
-              setProblem(undefined);
-            }}
-          />
-        </label>
-        <div className="stack" style={{ gap: 4 }}>
-          <label className="row" style={{ gap: 6, flexWrap: "nowrap" }}>
+      {method ? (
+        <form
+          className="stack"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submit();
+          }}
+        >
+          <label>
+            <span>{method.label ?? method.type}</span>
             <input
-              type="checkbox"
-              checked={remember}
-              style={{ width: "auto" }}
-              onChange={(event) => setRemember(event.target.checked)}
+              ref={field}
+              type="password"
+              value={token}
+              autoComplete="off"
+              placeholder={method.type === "oidc" ? "eyJ…" : "reg_…"}
+              onChange={(event) => {
+                setToken(event.target.value);
+                setProblem(undefined);
+              }}
             />
-            <span style={{ margin: 0, fontSize: 14, color: "inherit" }}>
-              Keep me signed in on this browser
-            </span>
           </label>
-          <p className="muted" style={{ margin: 0, fontSize: 12 }}>
-            Otherwise the token is forgotten when the tab closes.
-          </p>
-        </div>
-        <div className="row">
-          {/* Never disabled on an empty field: a button that silently does
-              nothing is indistinguishable from a broken one. */}
-          <button className="primary" type="submit" disabled={busy}>
-            {busy ? "Checking…" : "Sign in"}
-          </button>
-          <span className="muted">Anonymous browsing works for feeds that allow it.</span>
-        </div>
-      </form>
+          {method.help ? (
+            <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+              {method.help}
+            </p>
+          ) : null}
+          {method.issuer ? (
+            <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+              Issuer: <code>{method.issuer}</code>
+            </p>
+          ) : null}
+
+          <div className="stack" style={{ gap: 4 }}>
+            <label className="row" style={{ gap: 6, flexWrap: "nowrap" }}>
+              <input
+                type="checkbox"
+                checked={remember}
+                style={{ width: "auto" }}
+                onChange={(event) => setRemember(event.target.checked)}
+              />
+              <span style={{ margin: 0, fontSize: 14, color: "inherit" }}>
+                Keep me signed in on this browser
+              </span>
+            </label>
+            <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+              Otherwise the credential is forgotten when the tab closes.
+            </p>
+          </div>
+
+          <div className="row">
+            {/* Never disabled on an empty field: a button that silently does
+                nothing is indistinguishable from a broken one. */}
+            <button className="primary" type="submit" disabled={busy}>
+              {busy ? "Checking…" : "Sign in"}
+            </button>
+            <span className="muted">Anonymous browsing works for feeds that allow it.</span>
+          </div>
+        </form>
+      ) : null}
     </div>
   );
 }

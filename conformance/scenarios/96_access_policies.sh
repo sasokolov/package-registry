@@ -124,6 +124,16 @@ grep -q 'maven:com.forbidden' <<<"$explain" || { echo "$explain" >&2; exit 1; }
 explain="$(client_curl -fsS -H "Authorization: Bearer $team" \
   "$API/access/explain?path=feed/hosted/maven:com.example:x@1.0.0&capability=publish")"
 grep -q '"allowed":true' <<<"$explain" || { echo "$explain" >&2; exit 1; }
+# And it says which binding brought the policy in: "no policy applies to you"
+# and "the policy applies but grants too little" are fixed in different files.
+grep -q '"bindings":\["team-example"' <<<"$explain" || {
+  echo "the explanation does not name the binding that matched:" >&2; echo "$explain" >&2; exit 1; }
+
+explain="$(client_curl -fsS -H "Authorization: Bearer $nobody" \
+  "$API/access/explain?path=feed/hosted/maven:com.example:x@1.0.0&capability=publish")"
+if grep -q '"bindings"' <<<"$explain"; then
+  echo "an unbound identity was reported as bound:" >&2; echo "$explain" >&2; exit 1
+fi
 
 echo "--> an administrator can ask what somebody else would be allowed"
 explain="$(client_curl -fsS -H "Authorization: Bearer $admin" \

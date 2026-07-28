@@ -132,6 +132,11 @@ type Policy interface {
 - Postgres: `pgx/v5`, миграции — `goose`, embedded в бинарь.
 - Auth: статические токены (хэш в БД) + OIDC-валидация GitLab CI id_tokens по
   JWKS (`lestrrat-go/jwx` или `golang-jwt` + свой JWKS-кэш). Issuer'ы — в YAML.
+- Authz: модель Vault — именованные политики путей с capabilities и явными
+  `deny`, привязки к claim'ам аутентификации; по умолчанию не разрешено ничего,
+  решает самое специфичное правило, `deny` бьёт grant'ы на своём уровне.
+  Старые поля `anonymous`/`publishers`/`admins` компилируются в те же политики —
+  движок один. Подробности: `docs/access-control.md`.
 - Observability: `log/slog` (JSON), `prometheus/client_golang`, `/healthz`,
   `/readyz`, аудит-лог отдельным slog-логгером.
 - Тесты: stdlib `testing`, golden-файлы для RewriteMetadata, `docker compose`
@@ -145,6 +150,7 @@ core/api/              — интерфейсы и канонические ти
 core/server/           — HTTP, роутинг фидов, middleware
 core/pipeline/         — generic read-path: cache, singleflight, upstream, SWR
 core/auth/             — token store, OIDC/JWKS, Identity
+core/access/           — RBAC: политики путей, capabilities, привязки, explain
 core/policy/           — движок цепочки политик
 core/config/           — YAML-схема фидов, загрузка, валидация, hot-reload
 core/state/            — pgx, миграции, advisory locks
@@ -163,6 +169,7 @@ conformance/           — docker compose, fake-upstream fixtures, сценар�
 deploy/helm/
 docs/decisions.md      — журнал мелких решений (одна строка на решение)
 docs/geo-replication.md — ADR гео-репликации (журнальная федерация, правило K1)
+docs/access-control.md — модель доступа: пути, capabilities, политики, привязки
 ```
 
 ## Конвенции кода
