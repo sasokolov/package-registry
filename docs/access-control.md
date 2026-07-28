@@ -247,27 +247,97 @@ DELETE /api/v1/config/access/bindings/{name}
 ## Способы входа
 
 Форма входа в консоли строится из `GET /api/v1/auth/methods` — сайт сам
-говорит, что принимает. Методы можно перечислить явно и скрывать ненужные:
+говорит, что принимает, и как именно это получить:
+
+- `flow: token` — у человека уже есть креденшл, он его вставляет;
+- `flow: browser` — консоль отправляет его к провайдеру и получает креденшл
+  обратно.
+
+Флоу не настраивается на форме: он выводится из того, зарегистрирован ли
+реестр клиентом у этого issuer'а. Кнопка, ведущая туда, где реестр никто не
+знает, — это кнопка в страницу ошибки.
 
 ```yaml
 auth:
+  oidc_issuers:
+    # Кнопка «Sign in with …»: у реестра есть client_id у этого провайдера.
+    - issuer: https://sso.example.com
+      audience: package-registry
+      client_id: registry-console
+      # Необязательное: по умолчанию openid и эндпоинты из discovery.
+      scopes: [openid]
+      # authorization_endpoint / token_endpoint — только если discovery
+      # отсутствует или врёт.
+      # client_secret_env: REGISTRY_OIDC_SECRET
+
+    # Только приём id_token'ов из пайплайнов: в форме это поле для вставки.
+    - issuer: https://gitlab.example.com
+      audience: package-registry
+
+  # Необязательно: перечислить и подписать методы явно, скрыть ненужные.
   methods:
-    - type: token
-      label: "Registry token"
-      help: "Выпускается на странице Tokens"
     - type: oidc
-      issuer: https://gitlab.example.com
-      label: "GitLab CI id_token"
-      hidden: false
+      issuer: https://sso.example.com
+      label: "Войти через корпоративный SSO"
+    - type: token
+      hidden: true
 ```
 
 Если `auth.methods` не задан, список выводится из фактического состояния:
 статические токены — если есть БД, OIDC — по одному методу на настроенный
 issuer. Реестр без БД не выпускает токенов и не предлагает их вводить.
 
-Отдельного логина у консоли нет: она предъявляет ровно тот же заголовок
-`Authorization`, что и npm или maven. Учётка, которая работает здесь, работает
-и в клиентах, а отзыв отзывает сразу всё.
+### Браузерный вход: как он устроен
+
+Authorization code + PKCE. Обратный вызов приходит на `/ui/oidc/callback` —
+этот адрес и надо зарегистрировать у провайдера (как **public client** с
+PKCE).
+
+```
+браузер                     реестр                      провайдер
+   │ 1. verifier, state, nonce (sessionStorage)
+   │──2. GET /auth/oidc/authorize (challenge, state, nonce)──▶
+   │◀─────── authorization_url ──────│
+   │───────────── 3. редирект, согласие ─────────────────────▶
+   │◀──────────── 4. code + state ───────────────────────────│
+   │──5. POST /auth/oidc/exchange (code, verifier, nonce)───▶│
+   │                                 │──6. token endpoint ──▶│
+   │◀──────── id_token + expires_at ─│
+```
+
+Что где живёт и почему:
+
+- **Секреты флоу — только в браузере.** Verifier, state и nonce лежат в
+  `sessionStorage` одной вкладки. Реестр их не хранит, поэтому редирект может
+  вернуться на другую реплику (инвариант 3) и всё равно завершится.
+- **Обмен кода — на сервере.** Это не зависит от того, разрешает ли провайдер
+  cross-origin запросы к token endpoint (многие не разрешают), и позволяет
+  работать с confidential-клиентом, не отдавая секрет странице.
+- **Куда редиректить — решает реестр.** `redirect_uri` вычисляется из
+  `site.external_url` (или из origin запроса) в обеих половинах флоу и никогда
+  не берётся из запроса: redirect_uri, который может выбрать запрос, — это то,
+  как authorization code уезжает не туда.
+- **К какому issuer'у идти — тоже решает реестр.** Из запроса берётся только
+  имя; всё остальное — из конфигурации. Иначе `/auth/oidc/exchange` был бы
+  способом заставить реестр отправить креды клиента куда угодно.
+- **state** отсекает чужой редирект (сверяется в браузере), **nonce** привязывает
+  токен к этому входу (сверяется в реестре, при валидации id_token).
+- **Аудиенция.** id_token из браузерного входа адресован `client_id`, а из
+  пайплайна — тому `audience`, что задан в конфиге. Принимаются оба, иначе один
+  issuer не смог бы обслуживать и то и другое.
+- **Секрет клиента — не конфигурация.** `client_secret_env` называет
+  переменную окружения; сам секрет в документ не попадает (инварианты 8 и 12).
+  Public client с PKCE секрета не требует вовсе, и это правильная настройка.
+
+Полученный id_token — обычный креденшл: та же проверка по JWKS, тот же
+заголовок `Authorization`, та же идентичность в аудите. Отдельной сессии у
+консоли нет, поэтому отзыв на стороне провайдера отзывает и её. Консоль знает
+`expires_at` и говорит «вход истёк» вместо экрана из упавших запросов.
+
+Токен лежит в `sessionStorage` (или в `localStorage`, если явно отмечено
+«keep me signed in») — как и вставленный вручную. Refresh-токенов консоль не
+запрашивает и не хранит: когда id_token истекает, повторный вход — это один
+редирект, и при живой сессии у провайдера он проходит без вопросов.
 
 ## Где это в коде
 
@@ -276,7 +346,11 @@ issuer. Реестр без БД не выпускает токенов и не 
 | движок, специфичность, объяснения | `core/access/` |
 | YAML-схема, компиляция старых полей | `core/config/access.go` |
 | способы входа | `core/config/authmethods.go` |
+| браузерный вход: метаданные, обмен кода | `core/auth/oidc_flow.go` |
+| эндпоинты `/auth/oidc/*` | `core/adminapi/oidc.go` |
+| PKCE, state, nonce в браузере | `ui/src/api/oidc.ts`, `ui/src/pages/OidcCallback.tsx` |
 | проверки на read/publish-path | `core/server/access.go` |
 | API `/access`, `/access/explain`, CRUD | `core/adminapi/access.go`, `resources.go` |
 | консоль | `ui/src/pages/Access.tsx`, `ui/src/components/SignIn.tsx` |
-| Terraform | `registry_access_policy`, `registry_binding`, `registry_access_explain` |
+| Terraform | `registry_access_policy`, `registry_binding`, `registry_access_explain`, `registry_oidc_issuer` |
+| фейковый провайдер для тестов | `conformance/fake-oidc/` (и `98_browser_signin.sh`) |

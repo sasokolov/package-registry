@@ -239,3 +239,13 @@ feeds:
     anonymous: true
     redirect: true
     redirect_ttl: 5m
+
+# A trusted identity provider that this registry is also a registered client
+# of, so the console offers a sign-in button rather than a field to paste an
+# id_token into. The endpoints are left to discovery on purpose: resolving
+# them is part of what a conformance run should prove works.
+auth:
+  oidc_issuers:
+    - issuer: http://fake-oidc:9099
+      audience: package-registry
+      client_id: registry-console

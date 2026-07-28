@@ -24,6 +24,10 @@ type fakeIssuer struct {
 	server *httptest.Server
 	key    jwk.Key
 	pubSet jwk.Set
+	flow   *browserFlow
+	// claimsToBe overrides the issuer the discovery document names, so a
+	// test can present a document that belongs to somebody else.
+	claimsToBe string
 }
 
 func newFakeIssuer(t *testing.T) *fakeIssuer {
@@ -54,15 +58,22 @@ func newFakeIssuer(t *testing.T) *fakeIssuer {
 	fi := &fakeIssuer{t: t, key: key, pubSet: pubSet}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		issuer := fi.server.URL
+		if fi.claimsToBe != "" {
+			issuer = fi.claimsToBe
+		}
 		_ = json.NewEncoder(w).Encode(map[string]string{
-			"issuer":   fi.server.URL,
-			"jwks_uri": fi.server.URL + "/oauth/discovery/keys",
+			"issuer":                 issuer,
+			"jwks_uri":               fi.server.URL + "/oauth/discovery/keys",
+			"authorization_endpoint": fi.server.URL + "/oauth/authorize",
+			"token_endpoint":         fi.server.URL + "/oauth/token",
 		})
 	})
 	mux.HandleFunc("/oauth/discovery/keys", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(fi.pubSet)
 	})
+	fi.mountBrowserFlow(mux)
 	fi.server = httptest.NewServer(mux)
 	t.Cleanup(fi.server.Close)
 	return fi

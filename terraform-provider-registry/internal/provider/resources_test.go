@@ -230,3 +230,75 @@ func contains(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// An issuer this registry is a registered client of. The browser fields are
+// what turn the console's sign-in into a button, and they have to survive a
+// round-trip through the configuration document like anything else.
+func TestAccOIDCIssuer_browserSignIn(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+resource "registry_oidc_issuer" "sso" {
+  issuer    = "https://tf-acc-sso.example.com"
+  audience  = "package-registry"
+  client_id = "registry-console"
+  scopes    = ["openid", "email"]
+
+  authorization_endpoint = "https://tf-acc-sso.example.com/authorize"
+  token_endpoint         = "https://tf-acc-sso.example.com/token"
+}
+`,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("registry_oidc_issuer.sso", "client_id", "registry-console"),
+					resource.TestCheckResourceAttr("registry_oidc_issuer.sso", "scopes.1", "email"),
+					resource.TestCheckResourceAttr("registry_oidc_issuer.sso",
+						"token_endpoint", "https://tf-acc-sso.example.com/token"),
+				),
+			},
+			{
+				ResourceName:      "registry_oidc_issuer.sso",
+				ImportState:       true,
+				ImportStateId:     "https://tf-acc-sso.example.com",
+				ImportStateVerify: true,
+			},
+		},
+	})
+}
+
+// The secret is named, never written. Catching the paste at plan time is the
+// difference between a secret in one person's shell history and a secret in
+// the configuration document, in state, and in git.
+func TestAccOIDCIssuer_refusesTheSecretItself(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+resource "registry_oidc_issuer" "bad" {
+  issuer            = "https://tf-acc-secret.example.com"
+  audience          = "package-registry"
+  client_id         = "registry-console"
+  client_secret_env = "hunter2 $ecret"
+}
+`,
+				PlanOnly:    true,
+				ExpectError: regexp.MustCompile(`name of an environment variable`),
+			},
+			{
+				Config: `
+resource "registry_oidc_issuer" "bad" {
+  issuer            = "https://tf-acc-secret.example.com"
+  audience          = "package-registry"
+  client_secret_env = "REGISTRY_OIDC_CLIENT_SECRET"
+}
+`,
+				PlanOnly:    true,
+				ExpectError: regexp.MustCompile(`client secret with no client`),
+			},
+		},
+	})
+}

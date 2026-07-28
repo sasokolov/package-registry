@@ -29,17 +29,23 @@ export class ApiError extends Error {
 }
 
 const TOKEN_KEY = "registry.token";
+const EXPIRY_KEY = "registry.token.expires";
 
 /**
  * The token lives in sessionStorage, not localStorage: a credential that
  * outlives the browser tab is a credential nobody remembers leaving behind.
  * "Remember" is an explicit choice, and it says so in the UI.
+ *
+ * A credential from an identity provider also has an end. Knowing when means
+ * the console can say "your sign-in expired" instead of showing a screen of
+ * failed requests, and can offer the one button that fixes it.
  */
 export const tokenStore = {
   get(): string {
+    if (this.expired()) return "";
     return sessionStorage.getItem(TOKEN_KEY) ?? localStorage.getItem(TOKEN_KEY) ?? "";
   },
-  set(token: string, remember: boolean): void {
+  set(token: string, remember: boolean, expiresAt?: string): void {
     // A browser can refuse to store — private modes, partitioned storage, a
     // full quota. Failing loudly here is the difference between "the console
     // told me why" and "the button does nothing".
@@ -49,10 +55,30 @@ export const tokenStore = {
     } else {
       localStorage.removeItem(TOKEN_KEY);
     }
+
+    sessionStorage.removeItem(EXPIRY_KEY);
+    localStorage.removeItem(EXPIRY_KEY);
+    const expiry = expiresAt ? Date.parse(expiresAt) : NaN;
+    // A credential that is already expired the moment it arrives means this
+    // browser's clock disagrees with the registry's, not that the sign-in
+    // failed. Trusting the clock then would refuse a working credential
+    // forever; ignoring the expiry only costs one failed request later.
+    if (!Number.isNaN(expiry) && expiry > Date.now()) {
+      sessionStorage.setItem(EXPIRY_KEY, String(expiry));
+      if (remember) localStorage.setItem(EXPIRY_KEY, String(expiry));
+    }
+  },
+  /** Whether the stored credential has passed its own expiry. */
+  expired(): boolean {
+    const raw = sessionStorage.getItem(EXPIRY_KEY) ?? localStorage.getItem(EXPIRY_KEY);
+    if (!raw) return false;
+    return Number(raw) <= Date.now();
   },
   clear(): void {
     sessionStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(EXPIRY_KEY);
+    localStorage.removeItem(EXPIRY_KEY);
   },
 };
 

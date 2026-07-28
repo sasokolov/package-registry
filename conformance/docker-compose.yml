@@ -16,6 +16,8 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      fake-oidc:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/readyz"]
       interval: 2s
@@ -61,6 +63,20 @@ services:
       retries: 15
 
   # TLS gateway: terraform requires HTTPS for the registry protocol.
+  # An identity provider, so the console's browser sign-in can be driven end
+  # to end rather than mocked at the edges.
+  fake-oidc:
+    build:
+      context: ..
+      dockerfile: conformance/fake-oidc/Dockerfile
+    environment:
+      ISSUER: http://fake-oidc:9099
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9099/.well-known/openid-configuration"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
   gateway:
     image: nginx:1.28-alpine
     volumes:

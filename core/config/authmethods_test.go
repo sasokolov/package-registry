@@ -174,3 +174,71 @@ func TestAuthMethodValidation(t *testing.T) {
 		t.Fatalf("a valid method was refused: %v", errs)
 	}
 }
+
+// Whether a person can be redirected to an issuer is a fact about that
+// issuer's configuration, not a preference on the form. A site that has not
+// registered this registry as an OAuth client has nothing to redirect as, and
+// offering a button would send somebody to an error page at their provider.
+func TestBrowserSignInIsOfferedOnlyWhereItCanWork(t *testing.T) {
+	withClient := Config{Auth: AuthConfig{OIDC: []OIDCIssuer{
+		{Issuer: "https://sso.example.com", Audience: "registry", ClientID: "console"},
+	}}}
+	got := withClient.AuthMethods()
+	if len(got) != 1 || got[0].Flow != FlowBrowser {
+		t.Fatalf("got %+v, want one browser method", got)
+	}
+	if got[0].Label != "Sign in with sso.example.com" {
+		t.Errorf("label = %q; a button should read like a button", got[0].Label)
+	}
+
+	withoutClient := Config{Auth: AuthConfig{OIDC: []OIDCIssuer{
+		{Issuer: "https://gitlab.example.com", Audience: "registry"},
+	}}}
+	got = withoutClient.AuthMethods()
+	if len(got) != 1 || got[0].Flow != FlowToken {
+		t.Fatalf("got %+v, want one paste-a-token method", got)
+	}
+	if !strings.Contains(got[0].Help, "Paste") {
+		t.Errorf("help = %q, want it to say what to do", got[0].Help)
+	}
+}
+
+// The flow follows the issuer even when the form is written out by hand, and
+// a method that names no issuer takes the only one there is.
+func TestAConfiguredMethodTakesItsIssuersFlow(t *testing.T) {
+	c := Config{Auth: AuthConfig{
+		OIDC: []OIDCIssuer{
+			{Issuer: "https://sso.example.com", Audience: "registry", ClientID: "console"},
+		},
+		Methods: []AuthMethodConfig{{Type: AuthMethodOIDC, Label: "Company SSO"}},
+	}}
+	got := c.AuthMethods()
+	if len(got) != 1 {
+		t.Fatalf("got %+v", got)
+	}
+	if got[0].Issuer != "https://sso.example.com" {
+		t.Errorf("issuer = %q; the only configured one should have been filled in", got[0].Issuer)
+	}
+	if got[0].Flow != FlowBrowser {
+		t.Errorf("flow = %q, want browser", got[0].Flow)
+	}
+	if got[0].Label != "Company SSO" {
+		t.Errorf("label = %q; a written label must survive", got[0].Label)
+	}
+}
+
+// Two issuers, one of which can be redirected to: the form has to show both
+// and be honest about which is which.
+func TestMixedIssuersKeepTheirOwnFlows(t *testing.T) {
+	c := Config{Auth: AuthConfig{OIDC: []OIDCIssuer{
+		{Issuer: "https://sso.example.com", Audience: "registry", ClientID: "console"},
+		{Issuer: "https://gitlab.example.com", Audience: "registry"},
+	}}}
+	got := c.AuthMethods()
+	if len(got) != 2 {
+		t.Fatalf("got %+v, want both issuers", got)
+	}
+	if got[0].Flow != FlowBrowser || got[1].Flow != FlowToken {
+		t.Errorf("flows = %q, %q", got[0].Flow, got[1].Flow)
+	}
+}

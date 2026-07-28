@@ -129,6 +129,8 @@ export interface AuthMethod {
   label?: string;
   issuer?: string;
   help?: string;
+  /** "token" to paste one, "browser" to be redirected to the issuer. */
+  flow?: "token" | "browser";
 }
 
 export interface AccessRule {

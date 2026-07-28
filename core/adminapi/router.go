@@ -41,6 +41,10 @@ func (s *Server) Handler() http.Handler {
 	// How to sign in. Anonymous by necessity: it is what the login form
 	// reads before anyone has signed in.
 	r.Get("/auth/methods", s.handleAuthMethods)
+	// Signing in through the browser. Both are anonymous: they are what
+	// somebody with no credential uses to get one.
+	r.Get("/auth/oidc/authorize", s.handleOIDCAuthorize)
+	r.Post("/auth/oidc/exchange", s.handleOIDCExchange)
 
 	// Access control: what the rules are, and what they would decide.
 	r.Get("/access", s.handleAccess)

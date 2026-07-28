@@ -10,3 +10,15 @@ storage:
     path: ./.devdata
 
 feeds: []
+
+# The dev identity provider from the compose overlay, so the console's browser
+# sign-in can be tried locally. It signs everybody in as alice@example.com;
+# `admins` is what makes that identity useful once signed in.
+auth:
+  oidc_issuers:
+    - issuer: http://127.0.0.1:9099
+      audience: package-registry
+      client_id: registry-console
+
+admins:
+  - "oidc:alice@example.com"

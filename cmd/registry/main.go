@@ -177,6 +177,7 @@ func serveCmd(args []string, logOut io.Writer) error {
 			Identify:   srv.Identify,
 			CanPublish: srv.PublishableFeeds,
 			Access:     srv.Access,
+			OIDC:       srv.OIDC,
 			Reindex:    srv.ReindexFeed,
 			Projection: srv.Publisher(),
 		},

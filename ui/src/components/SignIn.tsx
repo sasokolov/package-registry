@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { ApiError, api, tokenStore } from "../api/client";
 import { useResource } from "../api/hooks";
+import { describe, startBrowserSignIn } from "../api/oidc";
 import type { AuthMethod, WhoAmI } from "../api/types";
 
 /**
@@ -11,17 +12,12 @@ import type { AuthMethod, WhoAmI } from "../api/types";
  * here works with npm and maven too, and revoking it revokes all of them at
  * once.
  *
- * Which credentials this site accepts is the site's answer, not the
- * console's guess. A registry with no database issues no static tokens; one
- * with no trusted issuer accepts no id_tokens; and an operator may want to
- * offer only one of the two even where both would work. So the form is built
- * from what /auth/methods reports, and a method the site does not advertise
- * simply is not on it.
- *
- * The credential is checked before it is kept. Storing first would mean a
- * truncated paste — easy with a token this long — is saved, the console
- * navigates away, and the sidebar says "not signed in" with nothing anywhere
- * to explain why.
+ * Where that credential comes from is the site's answer, not the console's
+ * guess. A registry with no database issues no static tokens; one with no
+ * trusted issuer accepts no id_tokens; and an issuer this registry is a
+ * registered client of can hand one out through the browser, which is a
+ * button rather than a field. So the form is built from what /auth/methods
+ * reports, and a method the site does not advertise simply is not on it.
  */
 export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   const methods = useResource<{ methods: AuthMethod[] | null }>("/auth/methods");
@@ -34,6 +30,11 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   const [problem, setProblem] = useState<string>();
   const field = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // Where to come back to. Being sent to the sign-in screen from a page and
+  // landing on the overview afterwards is a small theft of context.
+  const returnTo = (location.state as { from?: string } | null)?.from ?? "/ui/";
 
   // Selecting a method that has since disappeared would leave the form with
   // no labels at all.
@@ -42,6 +43,7 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   }, [available.length, selected]);
 
   const method = available[selected];
+  const browserFlow = method?.flow === "browser";
 
   async function submit() {
     // The field is controlled, but a password manager or a middle-click
@@ -79,7 +81,7 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
       setToken("");
       if (field.current) field.current.value = "";
       onSignedIn();
-      navigate("/ui/");
+      navigate(returnTo);
     } catch (err) {
       setProblem(
         err instanceof ApiError
@@ -87,6 +89,20 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
           : `Could not reach the registry: ${String(err)}`,
       );
     } finally {
+      setBusy(false);
+    }
+  }
+
+  async function redirect() {
+    if (!method) return;
+    setBusy(true);
+    setProblem(undefined);
+    try {
+      // This navigates away, so there is no success path to handle here —
+      // only the failure to get as far as the issuer.
+      await startBrowserSignIn(method, remember, returnTo);
+    } catch (err) {
+      setProblem(`Could not start the sign-in: ${describe(err)}`);
       setBusy(false);
     }
   }
@@ -136,28 +152,37 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
           className="stack"
           onSubmit={(event) => {
             event.preventDefault();
-            void submit();
+            if (browserFlow) void redirect();
+            else void submit();
           }}
         >
-          <label>
-            <span>{method.label ?? method.type}</span>
-            <input
-              ref={field}
-              type="password"
-              value={token}
-              autoComplete="off"
-              placeholder={method.type === "oidc" ? "eyJ…" : "reg_…"}
-              onChange={(event) => {
-                setToken(event.target.value);
-                setProblem(undefined);
-              }}
-            />
-          </label>
-          {method.help ? (
-            <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+          {browserFlow ? (
+            <p className="muted" style={{ margin: 0 }}>
               {method.help}
             </p>
-          ) : null}
+          ) : (
+            <>
+              <label>
+                <span>{method.label ?? method.type}</span>
+                <input
+                  ref={field}
+                  type="password"
+                  value={token}
+                  autoComplete="off"
+                  placeholder={method.type === "oidc" ? "eyJ…" : "reg_…"}
+                  onChange={(event) => {
+                    setToken(event.target.value);
+                    setProblem(undefined);
+                  }}
+                />
+              </label>
+              {method.help ? (
+                <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+                  {method.help}
+                </p>
+              ) : null}
+            </>
+          )}
           {method.issuer ? (
             <p className="muted" style={{ margin: 0, fontSize: 12 }}>
               Issuer: <code>{method.issuer}</code>
@@ -185,7 +210,13 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
             {/* Never disabled on an empty field: a button that silently does
                 nothing is indistinguishable from a broken one. */}
             <button className="primary" type="submit" disabled={busy}>
-              {busy ? "Checking…" : "Sign in"}
+              {busy
+                ? browserFlow
+                  ? "Redirecting…"
+                  : "Checking…"
+                : browserFlow
+                  ? (method.label ?? "Sign in")
+                  : "Sign in"}
             </button>
             <span className="muted">Anonymous browsing works for feeds that allow it.</span>
           </div>

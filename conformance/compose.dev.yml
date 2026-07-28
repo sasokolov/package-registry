@@ -9,3 +9,12 @@ services:
   postgres:
     ports:
       - "127.0.0.1:5432:5432"
+  # An identity provider to sign in to the console with, so the browser flow
+  # can be exercised locally without an account anywhere. It signs everybody
+  # in as one person; ISSUER matches the published address because the
+  # registry runs on the host, not in this network.
+  fake-oidc:
+    environment:
+      ISSUER: http://127.0.0.1:9099
+    ports:
+      - "127.0.0.1:9099:9099"

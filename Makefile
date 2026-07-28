@@ -86,7 +86,7 @@ conformance-live:
 DEV_COMPOSE := docker compose -f $(COMPOSE_FILE) -f conformance/compose.dev.yml -p registry-dev
 
 dev:
-	$(DEV_COMPOSE) up -d --wait minio postgres
+	$(DEV_COMPOSE) up -d --wait minio postgres fake-oidc
 	go run ./cmd/registry -config conformance/dev.yaml
 
 dev-down:

@@ -4,20 +4,53 @@ page_title: "registry_oidc_issuer Resource - Package Registry"
 subcategory: ""
 description: |-
   An OIDC issuer whose id_tokens this site accepts as identities — typically a GitLab instance issuing CI job tokens. Adding one lets pipelines authenticate without a static secret to leak.
+  Setting client_id additionally registers this registry as an OAuth client of the issuer, which is what turns the console's sign-in from "paste an id_token" into a button and a redirect. The two are independent: pipelines keep presenting their own tokens either way.
 ---
 
 # registry_oidc_issuer (Resource)
 
 An OIDC issuer whose id_tokens this site accepts as identities — typically a GitLab instance issuing CI job tokens. Adding one lets pipelines authenticate without a static secret to leak.
 
+Setting `client_id` additionally registers this registry as an OAuth client of the issuer, which is what turns the console's sign-in from "paste an id_token" into a button and a redirect. The two are independent: pipelines keep presenting their own tokens either way.
+
 ## Example Usage
 
 ```terraform
-# Accept GitLab CI id_tokens, so pipelines authenticate without a static
-# secret that could leak.
+# A GitLab instance whose CI jobs authenticate with their own id_tokens. No
+# static secret exists to leak, and nothing here lets a person sign in — a
+# pipeline brings its own token.
 resource "registry_oidc_issuer" "gitlab" {
   issuer   = "https://gitlab.example.com"
   audience = "package-registry"
+}
+
+# The same registry, additionally registered as an OAuth client of the
+# company's identity provider. That is what turns the console's sign-in from
+# "paste an id_token" into a button: the browser is redirected, comes back
+# with a code, and the registry exchanges it.
+#
+# Register the callback https://registry.example.com/ui/oidc/callback at the
+# provider, as a public client using PKCE.
+resource "registry_oidc_issuer" "sso" {
+  issuer    = "https://sso.example.com"
+  audience  = "package-registry"
+  client_id = "registry-console"
+  scopes    = ["openid"]
+}
+
+# An issuer that publishes no discovery document, and insists on treating
+# clients as confidential. The secret itself stays in the registry's
+# environment; only the variable's name is configuration.
+resource "registry_oidc_issuer" "legacy" {
+  issuer   = "https://legacy-idp.example.com"
+  audience = "package-registry"
+
+  client_id         = "registry-console"
+  client_secret_env = "REGISTRY_OIDC_CLIENT_SECRET"
+
+  authorization_endpoint = "https://legacy-idp.example.com/oauth2/authorize"
+  token_endpoint         = "https://legacy-idp.example.com/oauth2/token"
+  jwks_url               = "https://legacy-idp.example.com/oauth2/keys"
 }
 ```
 
@@ -31,7 +64,12 @@ resource "registry_oidc_issuer" "gitlab" {
 
 ### Optional
 
+- `authorization_endpoint` (String) Overrides discovery, for an issuer that publishes no discovery document or publishes a wrong one.
+- `client_id` (String) OAuth client ID for browser sign-in. Register the callback `<registry>/ui/oidc/callback` at the issuer, as a public client using PKCE. An id_token obtained this way is addressed to the client ID, and the registry accepts it alongside `audience`.
+- `client_secret_env` (String) Name of an environment variable in the registry's process holding the client secret, for issuers that refuse to treat the registry as a public client. The *name* is configuration; the secret is not, and never enters the configuration document. A public client with PKCE needs none.
 - `jwks_url` (String) Explicit JWKS endpoint. Leave unset to let the registry discover it from the issuer.
+- `scopes` (List of String) Scopes requested at sign-in. Defaults to `["openid"]`, which is enough to learn who somebody is.
+- `token_endpoint` (String) Overrides discovery, as `authorization_endpoint` does.
 
 ### Read-Only
 

@@ -20,8 +20,17 @@ const (
 	AuthMethodOIDC  = "oidc"
 )
 
-// AuthMethodConfig describes one way to sign in, as the login form should
-// present it.
+// How a credential is obtained.
+const (
+	// FlowToken means the person already has a credential and pastes it.
+	FlowToken = "token"
+	// FlowBrowser means the console sends them to the issuer and gets one
+	// back. It needs a client_id on the issuer: without one this registry is
+	// not a registered OAuth client anywhere and has nothing to redirect as.
+	FlowBrowser = "browser"
+)
+
+// AuthMethodConfig describes one way to sign in, as an operator writes it.
 type AuthMethodConfig struct {
 	// Type is "token" or "oidc".
 	Type string `yaml:"type" json:"type"`
@@ -41,6 +50,19 @@ type AuthMethodConfig struct {
 	Hidden bool `yaml:"hidden,omitempty" json:"hidden,omitempty"`
 }
 
+// AuthMethod is one way to sign in, as the form should present it.
+//
+// It is derived rather than written: whether an issuer can be signed in to
+// through a browser is a fact about that issuer's configuration, not a field
+// somebody sets on the form and hopes matches.
+type AuthMethod struct {
+	Type   string `json:"type"`
+	Label  string `json:"label,omitempty"`
+	Issuer string `json:"issuer,omitempty"`
+	Help   string `json:"help,omitempty"`
+	Flow   string `json:"flow"`
+}
+
 // AuthMethods is what the login form should offer, in order.
 //
 // With nothing configured the list is derived from what the site can
@@ -48,52 +70,94 @@ type AuthMethodConfig struct {
 // id_token needs an issuer to trust. Deriving beats defaulting to both,
 // because a form offering a method the site cannot honour is a form that
 // wastes somebody's afternoon.
-func (c *Config) AuthMethods() []AuthMethodConfig {
+func (c *Config) AuthMethods() []AuthMethod {
 	if len(c.Auth.Methods) > 0 {
-		out := make([]AuthMethodConfig, 0, len(c.Auth.Methods))
+		out := make([]AuthMethod, 0, len(c.Auth.Methods))
 		for _, m := range c.Auth.Methods {
 			if m.Hidden {
 				continue
 			}
-			out = append(out, m.withDefaults())
+			// A method that names no issuer is unambiguous when there is
+			// only one; naming it here means everything downstream — the
+			// label, the sign-in button — has an issuer to work with.
+			if m.Type == AuthMethodOIDC && m.Issuer == "" && len(c.Auth.OIDC) == 1 {
+				m.Issuer = c.Auth.OIDC[0].Issuer
+			}
+			out = append(out, c.present(m))
 		}
 		return out
 	}
 
-	var derived []AuthMethodConfig
+	var derived []AuthMethod
 	if c.Database.DSN != "" {
-		derived = append(derived, AuthMethodConfig{Type: AuthMethodToken}.withDefaults())
+		derived = append(derived, c.present(AuthMethodConfig{Type: AuthMethodToken}))
 	}
 	for _, issuer := range c.Auth.OIDC {
 		derived = append(derived,
-			AuthMethodConfig{Type: AuthMethodOIDC, Issuer: issuer.Issuer}.withDefaults())
+			c.present(AuthMethodConfig{Type: AuthMethodOIDC, Issuer: issuer.Issuer}))
 	}
 	return derived
 }
 
-// withDefaults fills in the wording a site did not bother to write.
-func (m AuthMethodConfig) withDefaults() AuthMethodConfig {
+// present fills in the wording a site did not bother to write, and the flow
+// it does not get to choose.
+func (c *Config) present(m AuthMethodConfig) AuthMethod {
+	out := AuthMethod{
+		Type:   m.Type,
+		Label:  m.Label,
+		Issuer: m.Issuer,
+		Help:   m.Help,
+		Flow:   FlowToken,
+	}
+
 	switch m.Type {
 	case AuthMethodToken:
-		if m.Label == "" {
-			m.Label = "Registry token"
+		if out.Label == "" {
+			out.Label = "Registry token"
 		}
-		if m.Help == "" {
-			m.Help = "The token your CI uses. Paste it as-is."
+		if out.Help == "" {
+			out.Help = "The token your CI uses. Paste it as-is."
 		}
 	case AuthMethodOIDC:
-		if m.Label == "" {
-			m.Label = "OIDC id_token"
-			if m.Issuer != "" {
-				m.Label = "id_token from " + shortIssuer(m.Issuer)
+		if c.issuerSignsInBrowsers(m.Issuer) {
+			out.Flow = FlowBrowser
+		}
+		name := "your identity provider"
+		if m.Issuer != "" {
+			name = shortIssuer(m.Issuer)
+		}
+		if out.Label == "" {
+			switch {
+			case out.Flow == FlowBrowser:
+				out.Label = "Sign in with " + name
+			case m.Issuer != "":
+				out.Label = "id_token from " + name
+			default:
+				out.Label = "OIDC id_token"
 			}
 		}
-		if m.Help == "" {
-			m.Help = "A JWT from a trusted issuer — the same one a pipeline presents. " +
-				"There is no redirect sign-in: paste the token."
+		if out.Help == "" {
+			if out.Flow == FlowBrowser {
+				out.Help = "Opens " + name + " and comes back signed in. " +
+					"A pipeline still presents its own id_token."
+			} else {
+				out.Help = "A JWT from a trusted issuer — the same one a pipeline presents. " +
+					"Paste it as-is."
+			}
 		}
 	}
-	return m
+	return out
+}
+
+// issuerSignsInBrowsers reports whether a person can be redirected to this
+// issuer, rather than having to bring a token from somewhere else.
+func (c *Config) issuerSignsInBrowsers(issuer string) bool {
+	for _, candidate := range c.Auth.OIDC {
+		if candidate.Issuer == issuer {
+			return candidate.BrowserSignIn()
+		}
+	}
+	return false
 }
 
 // shortIssuer renders an issuer URL the way a person refers to it.

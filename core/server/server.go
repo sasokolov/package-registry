@@ -78,7 +78,10 @@ type runtime struct {
 	// access decides who may do what. It is built once per configuration
 	// snapshot, so a reload swaps the whole engine rather than mutating one.
 	access *access.Engine
-	feeds  map[string]*feedRuntime
+	// oidc validates id_tokens and, for issuers configured as clients,
+	// carries out the browser sign-in.
+	oidc  *auth.OIDC
+	feeds map[string]*feedRuntime
 	// stop tears down this runtime's background work (the revocation
 	// sweeper and the OIDC key cache). Config reloads build a new runtime,
 	// so without it every reload would leak a goroutine and a poller.
@@ -319,6 +322,16 @@ func (s *Server) Access() *access.Engine {
 	return rt.access
 }
 
+// OIDC exposes the current issuer validator, so the registry's own API can
+// sign a person in through the same trust the serving path uses.
+func (s *Server) OIDC() *auth.OIDC {
+	rt := s.rt.Load()
+	if rt == nil {
+		return nil
+	}
+	return rt.oidc
+}
+
 // SetAPI mounts the registry's own API under its reserved prefix. It is
 // installed after construction because the API needs the server (for feed
 // summaries and permissions) as much as the server needs it.
@@ -370,6 +383,7 @@ func (s *Server) buildRuntime(cfg *config.Config) (*runtime, error) {
 		router: chi.NewRouter(),
 		authn:  auth.NewAuthenticator(verifier, oidc),
 		access: engine,
+		oidc:   oidc,
 		feeds:  map[string]*feedRuntime{},
 		stop:   stopRuntime,
 	}

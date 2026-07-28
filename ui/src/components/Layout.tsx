@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 import type { SiteStatus, WhoAmI } from "../api/types";
 import { tokenStore } from "../api/client";
 
@@ -10,6 +10,10 @@ interface Props {
 
 export function Layout({ status, who, onSignOut }: Props) {
   const signedIn = Boolean(who && who.kind !== "anonymous");
+  const location = useLocation();
+  // A sign-in from an identity provider ends; saying so beats letting the
+  // sidebar read "browsing anonymously" as though nothing had happened.
+  const expired = !signedIn && tokenStore.expired();
   return (
     <div className="layout">
       <aside className="sidebar">
@@ -58,7 +62,9 @@ export function Layout({ status, who, onSignOut }: Props) {
             </>
           ) : (
             <>
-              {who?.auth_error ? (
+              {expired ? (
+                <div className="refused">sign-in expired</div>
+              ) : who?.auth_error ? (
                 <div className="refused" title={who.auth_error}>
                   credential refused
                 </div>
@@ -66,11 +72,17 @@ export function Layout({ status, who, onSignOut }: Props) {
                 <div>browsing anonymously</div>
               )}
               <div style={{ marginTop: 2 }}>
-                {who?.auth_error
-                  ? "The registry did not accept the stored credential."
-                  : "Open feeds only. Sign in to see the rest."}
+                {expired
+                  ? "Your identity provider's token has run out. Signing in again usually takes one click."
+                  : who?.auth_error
+                    ? "The registry did not accept the stored credential."
+                    : "Open feeds only. Sign in to see the rest."}
               </div>
-              <NavLink className="signin" to="/ui/signin">
+              <NavLink
+                className="signin"
+                to="/ui/signin"
+                state={{ from: location.pathname + location.search }}
+              >
                 Sign in
               </NavLink>
             </>

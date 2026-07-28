@@ -212,7 +212,7 @@ func (s *Server) handleAuthMethods(w http.ResponseWriter, r *http.Request) {
 	_ = r
 	methods := s.manager.Current().AuthMethods()
 	if methods == nil {
-		methods = []config.AuthMethodConfig{}
+		methods = []config.AuthMethod{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"methods": methods})
 }

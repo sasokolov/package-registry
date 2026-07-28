@@ -24,6 +24,7 @@ import (
 
 	"github.com/sasokolov/package-registry/core/access"
 	"github.com/sasokolov/package-registry/core/api"
+	"github.com/sasokolov/package-registry/core/auth"
 	"github.com/sasokolov/package-registry/core/config"
 	"github.com/sasokolov/package-registry/core/repl"
 	"github.com/sasokolov/package-registry/core/state"
@@ -72,6 +73,10 @@ type Deps struct {
 	// Projection writes the blob-store view of a coordinate, needed when
 	// an operator resolves a conflict.
 	Projection repl.ProjectionWriter
+	// OIDC returns the current issuer validator, used to sign a person in
+	// through their identity provider. A function for the same reason
+	// Access is one: a reload replaces it.
+	OIDC func() *auth.OIDC
 }
 
 // Options wires the API server.

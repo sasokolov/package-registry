@@ -55,6 +55,14 @@ type OIDCIssuer struct {
 	Issuer   string `json:"issuer"`
 	Audience string `json:"audience"`
 	JWKSURL  string `json:"jwks_url,omitempty"`
+	// Browser sign-in. A client_id is what turns the console's paste-a-token
+	// field into a button; the rest is only needed when discovery is absent
+	// or the issuer refuses to treat the registry as a public client.
+	ClientID              string   `json:"client_id,omitempty"`
+	ClientSecretEnv       string   `json:"client_secret_env,omitempty"`
+	Scopes                []string `json:"scopes,omitempty"`
+	AuthorizationEndpoint string   `json:"authorization_endpoint,omitempty"`
+	TokenEndpoint         string   `json:"token_endpoint,omitempty"`
 }
 
 // OIDCList is the response of GET /config/oidc.

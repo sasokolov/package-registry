@@ -162,6 +162,44 @@ type OIDCIssuer struct {
 	// JWKSURL overrides the JWKS endpoint; default <issuer>/oauth/discovery/keys
 	// via OIDC discovery is derived by core/auth when empty.
 	JWKSURL string `yaml:"jwks_url,omitempty" json:"jwks_url,omitempty"`
+
+	// ClientID registers this registry as an OAuth client at the issuer,
+	// which is what turns the console's sign-in from "paste an id_token"
+	// into a button and a redirect. A pipeline still presents its own
+	// id_token; this is only about how a person signs in.
+	//
+	// The id_token a browser sign-in produces has this client_id as its
+	// audience, so it is accepted alongside Audience rather than instead
+	// of it: one issuer serves both the CI tokens and the console.
+	ClientID string `yaml:"client_id,omitempty" json:"client_id,omitempty"`
+	// ClientSecretEnv names an environment variable holding the client
+	// secret, for issuers that refuse to treat the registry as a public
+	// client. The name is configuration; the secret is not — it never
+	// enters the document, which is read by every administrator, stored in
+	// the blob store and usually in version control (invariants 8 and 12).
+	//
+	// A public client with PKCE needs no secret and is the better setup.
+	ClientSecretEnv string `yaml:"client_secret_env,omitempty" json:"client_secret_env,omitempty"`
+	// Scopes requested at sign-in. Default ["openid"].
+	Scopes []string `yaml:"scopes,omitempty" json:"scopes,omitempty"`
+	// AuthorizationEndpoint and TokenEndpoint override discovery, for
+	// issuers that publish no discovery document or publish a wrong one.
+	AuthorizationEndpoint string `yaml:"authorization_endpoint,omitempty" json:"authorization_endpoint,omitempty"`
+	TokenEndpoint         string `yaml:"token_endpoint,omitempty" json:"token_endpoint,omitempty"`
+}
+
+// BrowserSignIn reports whether a person can sign in to the console through
+// this issuer, rather than pasting a token a pipeline made.
+func (i OIDCIssuer) BrowserSignIn() bool { return i.ClientID != "" }
+
+// ScopesOrDefault is what to ask the issuer for. "openid" alone is enough to
+// get a subject, and asking for more than is needed is how consent screens
+// come to say alarming things.
+func (i OIDCIssuer) ScopesOrDefault() []string {
+	if len(i.Scopes) > 0 {
+		return i.Scopes
+	}
+	return []string{"openid"}
 }
 
 // StorageConfig selects and configures the blob storage backend.
@@ -539,6 +577,27 @@ func (c *Config) Validate() error {
 			if err := validateHTTPURL(iss.JWKSURL); err != nil {
 				errs = append(errs, fmt.Errorf("%s: jwks_url: %w", at, err))
 			}
+		}
+		for _, endpoint := range []struct{ field, value string }{
+			{"authorization_endpoint", iss.AuthorizationEndpoint},
+			{"token_endpoint", iss.TokenEndpoint},
+		} {
+			if endpoint.value == "" {
+				continue
+			}
+			if err := validateHTTPURL(endpoint.value); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %s: %w", at, endpoint.field, err))
+			}
+		}
+		if iss.ClientSecretEnv != "" && !iss.BrowserSignIn() {
+			errs = append(errs, fmt.Errorf(
+				"%s: client_secret_env without client_id: a secret with no client to be the "+
+					"secret of", at))
+		}
+		if iss.ClientSecretEnv != "" && strings.ContainsAny(iss.ClientSecretEnv, "=$ ") {
+			errs = append(errs, fmt.Errorf(
+				"%s: client_secret_env is the *name* of an environment variable, not the "+
+					"secret itself", at))
 		}
 	}
 

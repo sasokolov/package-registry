@@ -76,6 +76,12 @@ configuration document itself. It has no separate login — it presents the same
 credential every other client does, and the sign-in form is built from what
 the site says it accepts.
 
+If an issuer is configured with a `client_id`, that means a **Sign in** button
+and a redirect (authorization code + PKCE) rather than a field to paste an
+id_token into. The credential it comes back with is an ordinary id_token, so
+revoking access at the identity provider revokes the console with it, and a
+pipeline still presents its own token exactly as before.
+
 Everything the console can change, Terraform can too:
 `terraform-provider-registry/` manages feeds, connectors, OIDC issuers,
 replication peers, access policies and bindings as code.
@@ -101,8 +107,9 @@ Everything below runs against real clients and real infrastructure in
 Docker — no mocks of the protocols being implemented.
 
 ```bash
-make conformance        # 29 scenarios: mvn, npm, dotnet, composer, terraform,
-                        #     groups, console, access policies and the access API
+make conformance        # 30 scenarios: mvn, npm, dotnet, composer, terraform,
+                        #     groups, console, access policies, the access API
+                        #     and browser sign-in against a real OIDC provider
 make conformance-chaos  #  5 scenarios: replica kill, PostgreSQL, upstream and S3
                         #     outages, configuration reaching every replica
 make conformance-geo    # 12 scenarios: replication, conflicts, partition, bootstrap,

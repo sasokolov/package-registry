@@ -9,6 +9,7 @@ import { Configuration } from "./pages/Configuration";
 import { Conflicts } from "./pages/Conflicts";
 import { FeedDetail } from "./pages/FeedDetail";
 import { Feeds } from "./pages/Feeds";
+import { OidcCallback } from "./pages/OidcCallback";
 import { Overview } from "./pages/Overview";
 import { Quarantine } from "./pages/Quarantine";
 import { Replication } from "./pages/Replication";
@@ -40,6 +41,7 @@ export function App() {
           <Route path="/ui/access" element={<Access />} />
           <Route path="/ui/config" element={<Configuration />} />
           <Route path="/ui/signin" element={<SignIn onSignedIn={refresh} />} />
+          <Route path="/ui/oidc/callback" element={<OidcCallback onSignedIn={refresh} />} />
           <Route path="*" element={<Navigate to="/ui/" replace />} />
         </Route>
       </Routes>

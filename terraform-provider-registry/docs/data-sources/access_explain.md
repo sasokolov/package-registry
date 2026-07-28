@@ -82,6 +82,7 @@ output "why" {
 ### Read-Only
 
 - `allowed` (Boolean) Whether it would be allowed.
+- `bindings` (List of String) The bindings that brought those policies into play. Empty means no binding matched the identity at all, which is a different mistake from a policy that grants too little.
 - `effective_capabilities` (List of String) What is granted at the deciding path.
 - `policies` (List of String) Every policy bound to that identity.
 - `policy` (String) The policy that decided.
