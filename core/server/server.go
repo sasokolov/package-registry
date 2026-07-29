@@ -51,12 +51,12 @@ type Options struct {
 // UsageSink is told what was delivered. It is an interface so the server
 // does not depend on how the numbers are kept.
 type UsageSink interface {
-	// Served reports one response: which feed, how it was answered, and the
-	// size of what the client got.
-	Served(feed, source string, size int64)
+	// Served reports one response: which feed, how it was answered, which
+	// coordinate it was, and the size of what the client got.
+	Served(feed, source, coordinate string, size int64)
 	// GroupServed reports a response a group produced, naming the member
 	// that answered it.
-	GroupServed(group, member, source string, size int64)
+	GroupServed(group, member, source, coordinate string, size int64)
 }
 
 // Server owns the feed router, rebuilt per config snapshot.

@@ -220,3 +220,100 @@ func (db *DB) Traffic(ctx context.Context) ([]FeedTraffic, error) {
 	}
 	return out, classify(rows.Err())
 }
+
+// PackageDownload is one coordinate's counters within one feed.
+type PackageDownload struct {
+	Feed       string
+	Coordinate string
+	Downloads  int64
+	Bytes      int64
+	LastAt     time.Time
+}
+
+// AddPackageDownloads folds a batch of per-coordinate deltas into the totals.
+func (db *DB) AddPackageDownloads(ctx context.Context, deltas []PackageDownload) error {
+	if len(deltas) == 0 {
+		return nil
+	}
+	batch := &pgx.Batch{}
+	for _, d := range deltas {
+		batch.Queue(`
+			INSERT INTO package_downloads (feed, coordinate, downloads, bytes, last_at)
+			VALUES ($1, $2, $3, $4, now())
+			ON CONFLICT (feed, coordinate) DO UPDATE SET
+			    downloads = package_downloads.downloads + EXCLUDED.downloads,
+			    bytes = package_downloads.bytes + EXCLUDED.bytes,
+			    last_at = now()`,
+			d.Feed, d.Coordinate, d.Downloads, d.Bytes)
+	}
+	if err := db.pool.SendBatch(ctx, batch).Close(); err != nil {
+		return classify(fmt.Errorf("add package downloads: %w", err))
+	}
+	return nil
+}
+
+// TopPackages returns the most downloaded coordinates, for one feed or across
+// all of them. Across feeds the same coordinate in two feeds stays two rows:
+// they are different objects with different access rules, and merging them
+// would hide which feed is doing the work.
+func (db *DB) TopPackages(ctx context.Context, feed string, limit int) ([]PackageDownload, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := db.pool.Query(ctx, `
+		SELECT feed, coordinate, downloads, bytes, last_at
+		  FROM package_downloads
+		 WHERE ($1 = '' OR feed = $1)
+		 ORDER BY downloads DESC, last_at DESC
+		 LIMIT $2`, feed, limit)
+	if err != nil {
+		return nil, classify(fmt.Errorf("read top packages: %w", err))
+	}
+	defer rows.Close()
+
+	var out []PackageDownload
+	for rows.Next() {
+		var p PackageDownload
+		if err := rows.Scan(&p.Feed, &p.Coordinate, &p.Downloads, &p.Bytes, &p.LastAt); err != nil {
+			return nil, classify(fmt.Errorf("scan top packages: %w", err))
+		}
+		out = append(out, p)
+	}
+	return out, classify(rows.Err())
+}
+
+// PrunePackageDownloads keeps each feed's most downloaded coordinates and
+// drops the tail, so the table stays bounded on a proxy that has seen a
+// million coordinates go by.
+//
+// The tail is what nobody is asking about: a coordinate outside its feed's
+// top keep is by definition not in a top-N list. Anything downloaded
+// recently is kept regardless, so something on its way up is not repeatedly
+// knocked back to zero.
+func (db *DB) PrunePackageDownloads(ctx context.Context, keepPerFeed int, active time.Duration) (int64, error) {
+	if keepPerFeed <= 0 {
+		return 0, nil
+	}
+	tag, err := db.pool.Exec(ctx, `
+		DELETE FROM package_downloads p
+		 WHERE p.last_at < now() - $2::interval
+		   AND p.ctid NOT IN (
+		       SELECT ctid FROM (
+		           SELECT ctid, row_number() OVER (PARTITION BY feed ORDER BY downloads DESC) AS rank
+		             FROM package_downloads
+		       ) ranked WHERE rank <= $1)`,
+		keepPerFeed, active.String())
+	if err != nil {
+		return 0, classify(fmt.Errorf("prune package downloads: %w", err))
+	}
+	return tag.RowsAffected(), nil
+}
+
+// ForgetPackageDownloads drops rows for feeds that no longer exist.
+func (db *DB) ForgetPackageDownloads(ctx context.Context, keep []string) error {
+	if _, err := db.pool.Exec(ctx,
+		`DELETE FROM package_downloads WHERE NOT (feed = ANY($1))`, keep); err != nil {
+		return classify(fmt.Errorf("forget package downloads: %w", err))
+	}
+	return nil
+}

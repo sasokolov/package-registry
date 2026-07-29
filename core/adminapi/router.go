@@ -48,6 +48,7 @@ func (s *Server) Handler() http.Handler {
 
 	// Access control: what the rules are, and what they would decide.
 	r.Get("/usage", s.handleUsage)
+	r.Get("/usage/packages", s.handleTopPackages)
 	r.Get("/access", s.handleAccess)
 	r.Get("/access/explain", s.handleExplain)
 

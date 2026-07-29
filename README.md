@@ -85,7 +85,12 @@ are counted as they happen and folded into PostgreSQL in batches, so no request
 ever waits on a counter. The console shows both on its **Usage** page, and
 `registry_feed_bytes`, `registry_bytes_served_total`,
 `registry_upstream_bytes_total` and `registry_group_requests_total` are on
-`/metrics` — by feed and group, never by package. Details: `docs/usage.md`.
+`/metrics` — by feed and group, never by package.
+
+What is actually being downloaded is a query rather than a metric, for the
+same reason: `GET /api/v1/usage/packages` returns the most downloaded
+coordinates, per feed or across the site, and the console shows them on the
+Usage page and on each feed. Details: `docs/usage.md`.
 
 ## Console and Terraform
 

@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useResource } from "../api/hooks";
 import type { FeedUsage, UsageReport } from "../api/types";
 import { Badge, Card, ErrorNotice, Empty, Loading, age, bytes } from "../components/common";
+import { TopPackages } from "../components/TopPackages";
 
 /**
  * What every feed holds, and how much it is used.
@@ -106,6 +107,8 @@ export function Usage() {
         the site holds: a tarball two feeds proxy is stored once. The site figure above is
         the one to bill against.
       </p>
+
+      <TopPackages />
     </div>
   );
 }

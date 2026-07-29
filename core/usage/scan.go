@@ -123,6 +123,18 @@ func (s *Scanner) ScanOnce(ctx context.Context) (Report, error) {
 			// A stale row for a deleted feed is untidy, not wrong.
 			s.logger.Warn("could not drop usage of removed feeds", "error", err)
 		}
+		if err := s.db.ForgetPackageDownloads(ctx, names); err != nil {
+			s.logger.Warn("could not drop package downloads of removed feeds", "error", err)
+		}
+		// The leaderboard's tail is nobody's question. Trimming it here —
+		// under the same lock, on the same schedule — is what keeps the
+		// table bounded on a proxy that has seen a million coordinates.
+		if dropped, err := s.db.PrunePackageDownloads(ctx, keepPerFeed, keepActiveFor); err != nil {
+			s.logger.Warn("could not prune package downloads", "error", err)
+		} else if dropped > 0 {
+			s.logger.Info("pruned the tail of the download leaderboard",
+				"rows", dropped, "kept_per_feed", keepPerFeed)
+		}
 		return nil
 	})
 	if err != nil {
@@ -345,6 +357,17 @@ func (s *Scanner) readManifest(ctx context.Context, key string) (storedManifest,
 	}
 	return m, nil
 }
+
+// How much of the download leaderboard is worth keeping.
+//
+// A coordinate outside its feed's top thousand is, by definition, not in a
+// top-N list; keeping it would only grow the table. Anything downloaded
+// recently is kept regardless, so something on its way up is not repeatedly
+// knocked back to zero before it gets there.
+const (
+	keepPerFeed   = 1000
+	keepActiveFor = 30 * 24 * time.Hour
+)
 
 // retryAfterFailure bounds how long a failed pass waits. The interval is
 // chosen for how often the numbers need refreshing, which on a large store is

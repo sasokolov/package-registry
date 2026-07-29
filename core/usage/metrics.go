@@ -50,6 +50,11 @@ type Metrics struct {
 	StoreBytes prometheus.Gauge
 	StoreBlobs prometheus.Gauge
 
+	// PackageOverflow counts downloads that could not be attributed to a
+	// coordinate because the in-memory map was full. Feed totals are
+	// unaffected; only the leaderboard's tail is.
+	PackageOverflow prometheus.Counter
+
 	ScanDuration  prometheus.Histogram
 	ScanFailures  prometheus.Counter
 	FlushFailures prometheus.Counter
@@ -104,6 +109,11 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Name: "registry_store_blobs",
 			Help: "Distinct blobs stored.",
 		}),
+		PackageOverflow: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "registry_usage_package_overflow_total",
+			Help: "Downloads not attributed to a coordinate because too many distinct " +
+				"coordinates were seen in one flush interval. Feed counters are exact regardless.",
+		}),
 		ScanDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "registry_usage_scan_duration_seconds",
 			Help:    "How long a full inventory scan took.",
@@ -120,7 +130,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 	}
 	reg.MustRegister(m.BytesServed, m.UpstreamBytes, m.GroupRequests,
 		m.Artifacts, m.Packages, m.Bytes, m.LastIngest, m.StoreBytes, m.StoreBlobs,
-		m.ScanDuration, m.ScanFailures, m.FlushFailures)
+		m.ScanDuration, m.ScanFailures, m.FlushFailures, m.PackageOverflow)
 	return m
 }
 

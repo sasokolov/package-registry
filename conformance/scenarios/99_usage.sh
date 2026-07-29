@@ -144,6 +144,36 @@ if grep -E '^registry_(feed|store|group)[a-z_]*\{[^}]*(coordinate|package|path)=
   echo "a usage metric is labelled per package" >&2; exit 1
 fi
 
+echo "--> and what was downloaded is on the leaderboard, by coordinate"
+top="$(client_curl -fsS -H "Authorization: Bearer $admin" "$API/usage/packages?feed=central&limit=10")"
+grep -q '"coordinate":"maven:com.example:liba@1.0.0"' <<<"$top" || {
+  echo "the downloaded coordinate is not on the list:" >&2; echo "$top" >&2; exit 1; }
+downloads="$(python3 -c '
+import json,sys
+for p in json.load(sys.stdin)["packages"]:
+    if p["coordinate"] == "maven:com.example:liba@1.0.0":
+        print(p["downloads"]); break
+else:
+    print(0)
+' <<<"$top")"
+[[ "$downloads" -ge 2 ]] || {
+  echo "the coordinate was downloaded more than $downloads times:" >&2; echo "$top" >&2; exit 1; }
+
+echo "--> metadata is not on it: a resolve is not an install"
+if grep -q 'maven-metadata' <<<"$top"; then
+  echo "a metadata document is on the most-downloaded list:" >&2; echo "$top" >&2; exit 1
+fi
+
+echo "--> a group keeps its own leaderboard"
+group_top="$(client_curl -fsS -H "Authorization: Bearer $admin" \
+  "$API/usage/packages?feed=maven-public&limit=10")"
+grep -q '"coordinate"' <<<"$group_top" || {
+  echo "the group has no leaderboard:" >&2; echo "$group_top" >&2; exit 1; }
+
+echo "--> and the leaderboard says nothing to a stranger"
+code="$(client_curl -sS -o /dev/null -w '%{http_code}' "$API/usage/packages")"
+[[ "$code" == "401" ]] || { echo "an anonymous leaderboard returned $code" >&2; exit 1; }
+
 echo "--> the feed list carries the short form, so the console needs one request"
 feeds="$(client_curl -fsS -H "Authorization: Bearer $admin" "$API/feeds")"
 grep -q '"usage"' <<<"$feeds" || {

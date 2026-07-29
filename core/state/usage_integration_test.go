@@ -162,3 +162,113 @@ func TestSiteUsageIsASingleRow(t *testing.T) {
 		t.Error("no scan timestamp")
 	}
 }
+
+// The leaderboard has to add up across flushes and sort by what it claims to.
+func TestTopPackagesAccumulateAndSort(t *testing.T) {
+	db := openDB(t)
+	ctx := t.Context()
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	feed := fmt.Sprintf("top-%d", time.Now().UnixNano())
+
+	for i := 0; i < 3; i++ {
+		if err := db.AddPackageDownloads(ctx, []PackageDownload{
+			{Feed: feed, Coordinate: "npm:popular@1.0.0", Downloads: 5, Bytes: 50},
+			{Feed: feed, Coordinate: "npm:rare@1.0.0", Downloads: 1, Bytes: 10},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rows, err := db.TopPackages(ctx, feed, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2: %+v", len(rows), rows)
+	}
+	if rows[0].Coordinate != "npm:popular@1.0.0" {
+		t.Errorf("first is %q, want the most downloaded", rows[0].Coordinate)
+	}
+	if rows[0].Downloads != 15 || rows[0].Bytes != 150 {
+		t.Errorf("got %+v, want three flushes added up", rows[0])
+	}
+}
+
+// The same coordinate in two feeds stays two rows: they are different objects
+// with different access rules, and merging them would hide which feed is
+// doing the work.
+func TestTopPackagesKeepFeedsApart(t *testing.T) {
+	db := openDB(t)
+	ctx := t.Context()
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Now().UnixNano()
+	one := fmt.Sprintf("one-%d", stamp)
+	two := fmt.Sprintf("two-%d", stamp)
+
+	if err := db.AddPackageDownloads(ctx, []PackageDownload{
+		{Feed: one, Coordinate: "npm:shared@1.0.0", Downloads: 3},
+		{Feed: two, Coordinate: "npm:shared@1.0.0", Downloads: 7},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := db.TopPackages(ctx, one, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Downloads != 3 {
+		t.Fatalf("got %+v, want only this feed's 3", rows)
+	}
+}
+
+// Pruning bounds the table on a proxy that has seen a million coordinates go
+// by. It must keep the top — that is the whole list anyone reads — and it
+// must not throw away something downloaded recently, or a package on its way
+// up gets knocked back to zero before it arrives.
+func TestPruningKeepsTheTopAndTheRecent(t *testing.T) {
+	db := openDB(t)
+	ctx := t.Context()
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	feed := fmt.Sprintf("prune-%d", time.Now().UnixNano())
+
+	var deltas []PackageDownload
+	for i := 0; i < 10; i++ {
+		deltas = append(deltas, PackageDownload{
+			Feed: feed, Coordinate: fmt.Sprintf("npm:pkg-%02d@1.0.0", i), Downloads: int64(i + 1),
+		})
+	}
+	if err := db.AddPackageDownloads(ctx, deltas); err != nil {
+		t.Fatal(err)
+	}
+
+	// Everything here was written a moment ago, so an active window that
+	// covers it must protect all of it however small the keep is.
+	dropped, err := db.PrunePackageDownloads(ctx, 3, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dropped != 0 {
+		t.Fatalf("pruning dropped %d recent rows", dropped)
+	}
+
+	// With no active window, only the top three survive.
+	if _, err := db.PrunePackageDownloads(ctx, 3, 0); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.TopPackages(ctx, feed, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("kept %d rows, want 3: %+v", len(rows), rows)
+	}
+	if rows[0].Coordinate != "npm:pkg-09@1.0.0" {
+		t.Errorf("kept %q at the top, want the most downloaded", rows[0].Coordinate)
+	}
+}

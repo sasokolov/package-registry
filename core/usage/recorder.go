@@ -25,7 +25,24 @@ type Recorder struct {
 
 	mu    sync.Mutex
 	feeds map[key]*counter
+	// packages is the same thing per coordinate, which is what a "most
+	// downloaded" list is made of. It is bounded: a proxy can see an
+	// unbounded number of coordinates, and an unbounded map in the request
+	// path is a way to be killed by a crawler rather than by traffic.
+	packages map[packageKey]*counter
 }
+
+type packageKey struct {
+	feed       string
+	coordinate string
+}
+
+// maxTrackedPackages bounds the per-coordinate map between flushes. It is
+// generous: a flush interval that sees twenty thousand distinct coordinates
+// is a mirror sync, not a build. Past it, coordinates stop being attributed
+// individually — the feed's own counters stay exact, because they are
+// counted separately and do not grow with cardinality.
+const maxTrackedPackages = 20000
 
 type key struct {
 	feed   string
@@ -54,13 +71,21 @@ func NewRecorder(metrics *Metrics, logger *slog.Logger) *Recorder {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Recorder{metrics: metrics, logger: logger, feeds: map[key]*counter{}}
+	return &Recorder{
+		metrics:  metrics,
+		logger:   logger,
+		feeds:    map[key]*counter{},
+		packages: map[packageKey]*counter{},
+	}
 }
 
 // Served records one response. Size may be negative when the body's length
 // was not known, in which case only the request is counted: a guessed byte
 // count is worse than an honest gap.
-func (r *Recorder) Served(feed, source string, size int64) {
+//
+// The coordinate is what a "most downloaded" list is made of. It never
+// becomes a metric label — see the package comment — only a database row.
+func (r *Recorder) Served(feed, source, coordinate string, size int64) {
 	if r == nil || feed == "" {
 		return
 	}
@@ -71,6 +96,7 @@ func (r *Recorder) Served(feed, source string, size int64) {
 		r.metrics.BytesServed.WithLabelValues(feed, source).Add(float64(size))
 	}
 	r.add(key{feed, source}, 1, size)
+	r.addPackage(feed, coordinate, size)
 }
 
 // Ingested records bytes pulled from an upstream to fill the cache.
@@ -91,7 +117,7 @@ func (r *Recorder) Ingested(feed string, size int64) {
 // question — what the group URL itself was asked for — and the two have
 // different fixes: nobody using the group URL is a client-configuration
 // problem, and an empty member is a content one.
-func (r *Recorder) GroupServed(group, member, source string, size int64) {
+func (r *Recorder) GroupServed(group, member, source, coordinate string, size int64) {
 	if r == nil || group == "" {
 		return
 	}
@@ -105,6 +131,71 @@ func (r *Recorder) GroupServed(group, member, source string, size int64) {
 		}
 	}
 	r.add(key{group, source}, 1, size)
+	// The group gets its own leaderboard: "what do people pull through this
+	// URL" is the question a group exists to answer.
+	r.addPackage(group, coordinate, size)
+}
+
+// addPackage counts one coordinate, if there is room to.
+func (r *Recorder) addPackage(feed, coordinate string, size int64) {
+	if coordinate == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	k := packageKey{feed, coordinate}
+	c := r.packages[k]
+	if c == nil {
+		if len(r.packages) >= maxTrackedPackages {
+			// Dropping the newcomer rather than an existing entry keeps the
+			// top of the list — which is what this is for — stable.
+			if r.metrics != nil {
+				r.metrics.PackageOverflow.Inc()
+			}
+			return
+		}
+		c = &counter{}
+		r.packages[k] = c
+	}
+	c.requests++
+	c.bytes += size
+}
+
+// takePackages removes and returns the per-coordinate deltas.
+func (r *Recorder) takePackages() []state.PackageDownload {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.packages) == 0 {
+		return nil
+	}
+	out := make([]state.PackageDownload, 0, len(r.packages))
+	for k, c := range r.packages {
+		out = append(out, state.PackageDownload{
+			Feed: k.feed, Coordinate: k.coordinate,
+			Downloads: c.requests, Bytes: c.bytes,
+		})
+	}
+	r.packages = map[packageKey]*counter{}
+	return out
+}
+
+// restorePackages puts per-coordinate deltas back after a failed flush.
+func (r *Recorder) restorePackages(deltas []state.PackageDownload) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, d := range deltas {
+		k := packageKey{d.Feed, d.Coordinate}
+		c := r.packages[k]
+		if c == nil {
+			if len(r.packages) >= maxTrackedPackages {
+				continue
+			}
+			c = &counter{}
+			r.packages[k] = c
+		}
+		c.requests += d.Downloads
+		c.bytes += d.Bytes
+	}
 }
 
 func (r *Recorder) add(k key, requests, bytes int64) {
@@ -151,11 +242,22 @@ func (r *Recorder) Flush(ctx context.Context, db *state.DB) error {
 		return nil
 	}
 	deltas := r.take()
-	if len(deltas) == 0 {
+	packages := r.takePackages()
+	if len(deltas) == 0 && len(packages) == 0 {
 		return nil
 	}
 	if err := db.AddTraffic(ctx, deltas); err != nil {
 		r.restore(deltas)
+		r.restorePackages(packages)
+		if r.metrics != nil {
+			r.metrics.FlushFailures.Inc()
+		}
+		return err
+	}
+	if err := db.AddPackageDownloads(ctx, packages); err != nil {
+		// The feed counters are already in; only the leaderboard is
+		// retried, so a failure here cannot double-count anything.
+		r.restorePackages(packages)
 		if r.metrics != nil {
 			r.metrics.FlushFailures.Inc()
 		}

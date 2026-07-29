@@ -236,3 +236,12 @@ export interface UsageReport {
   scanned_at?: string | null;
   scan_enabled: boolean;
 }
+
+/** One coordinate on the most-downloaded list. */
+export interface TopPackage {
+  feed: string;
+  coordinate: string;
+  downloads: number;
+  bytes: number;
+  last_at: string;
+}

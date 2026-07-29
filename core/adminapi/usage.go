@@ -147,6 +147,61 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// TopPackage is one coordinate on the most-downloaded list.
+type TopPackage struct {
+	Feed       string    `json:"feed"`
+	Coordinate string    `json:"coordinate"`
+	Downloads  int64     `json:"downloads"`
+	Bytes      int64     `json:"bytes"`
+	LastAt     time.Time `json:"last_at"`
+}
+
+// handleTopPackages answers what is actually being downloaded.
+//
+// Feed counters say whether a feed is worth its disk; this says what in it is
+// worth keeping. It is a query rather than a metric on purpose: coordinates
+// are unbounded, and the only thing anyone wants from them is the top of a
+// sorted list.
+func (s *Server) handleTopPackages(w http.ResponseWriter, r *http.Request) {
+	feed := r.URL.Query().Get("feed")
+	if feed == "" {
+		// Across every feed, so this is the same question as the feed list:
+		// what is deployed here and how much of it is used.
+		if _, ok := s.require(w, r, config.SysFeeds, access.CapRead); !ok {
+			return
+		}
+	} else {
+		// One feed's contents: whoever may list that feed may see it.
+		if !s.feedExists(feed) {
+			s.writeError(w, http.StatusNotFound, "no feed named "+feed)
+			return
+		}
+		if !s.mayRead(r, feed) {
+			s.writeError(w, http.StatusForbidden, "not allowed to browse this feed")
+			return
+		}
+	}
+	if s.db == nil {
+		s.writeError(w, http.StatusServiceUnavailable,
+			"download counts need a database: they are kept there")
+		return
+	}
+
+	rows, err := s.db.TopPackages(r.Context(), feed, intParam(r, "limit", 20, 200))
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	out := make([]TopPackage, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, TopPackage{
+			Feed: row.Feed, Coordinate: row.Coordinate,
+			Downloads: row.Downloads, Bytes: row.Bytes, LastAt: row.LastAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"packages": out})
+}
+
 type usageReport struct {
 	feeds  []FeedUsage
 	totals UsageTotals

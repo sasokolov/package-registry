@@ -130,7 +130,7 @@ func (s *Server) feedHandler(rt *runtime, fr *feedRuntime) http.HandlerFunc {
 		}
 
 		if s.tryRedirect(ctx, w, r, fr, intent, res) {
-			s.served(fr.feed.Name, res)
+			s.served(fr.feed.Name, intent, res)
 			return
 		}
 
@@ -149,7 +149,7 @@ func (s *Server) feedHandler(rt *runtime, fr *feedRuntime) http.HandlerFunc {
 			s.logger.Debug("client aborted download",
 				"feed", fr.feed.Name, "coord", intent.Coord.String(), "error", err)
 		}
-		s.served(fr.feed.Name, res)
+		s.served(fr.feed.Name, intent, res)
 	}
 }
 
@@ -163,11 +163,25 @@ func (s *Server) feedHandler(rt *runtime, fr *feedRuntime) http.HandlerFunc {
 // A redirected artifact counts too. The bytes leave the object store instead
 // of this process, but the question an operator is asking — how much is this
 // feed used — has the same answer either way.
-func (s *Server) served(feed string, res *pipeline.Result) {
+func (s *Server) served(feed string, intent api.Intent, res *pipeline.Result) {
 	if s.usage == nil || res == nil {
 		return
 	}
-	s.usage.Served(feed, string(res.Source), res.Size)
+	s.usage.Served(feed, string(res.Source), downloadedCoordinate(intent), res.Size)
+}
+
+// downloadedCoordinate is what a "most downloaded" list should name.
+//
+// Only artifacts count: a metadata document is fetched on every resolve, so
+// listing those would produce a leaderboard of whatever people happened to
+// look up rather than of what they installed. Checksum sidecars are the same
+// request as the artifact they belong to, and counting them would double
+// every Maven download.
+func downloadedCoordinate(intent api.Intent) string {
+	if intent.Kind != api.IntentArtifact || intent.WantChecksum != "" {
+		return ""
+	}
+	return intent.Coord.String()
 }
 
 // tryRedirect answers a cached artifact with a 302 to a pre-signed storage

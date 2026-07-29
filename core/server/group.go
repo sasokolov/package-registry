@@ -131,13 +131,13 @@ func (s *Server) serveFirstHit(ctx context.Context, rt *runtime, w http.Response
 			defer func() { _ = res.result.Body.Close() }()
 			w.Header().Set(api.GroupMemberHeader, member.feed.Name)
 			if s.tryRedirect(ctx, w, r, member, intent, res.result) {
-				s.groupServed(gr, member, res.result)
-				s.served(member.feed.Name, res.result)
+				s.groupServed(gr, member, intent, res.result)
+				s.served(member.feed.Name, intent, res.result)
 				return
 			}
 			s.streamResult(w, member, intent, res.result)
-			s.groupServed(gr, member, res.result)
-			s.served(member.feed.Name, res.result)
+			s.groupServed(gr, member, intent, res.result)
+			s.served(member.feed.Name, intent, res.result)
 			return
 		case memberBlocked:
 			blocked = append(blocked, res)
@@ -217,7 +217,9 @@ func (s *Server) serveMerged(ctx context.Context, rt *runtime, w http.ResponseWr
 	// the only group answer not counted on a member, which is what lets a
 	// site total add group traffic without counting anything twice.
 	if s.usage != nil {
-		s.usage.GroupServed(gr.feed.Name, mergedMember, usage.SourceMerged, int64(len(body)))
+		// A merged document is metadata, so it has no place on a
+		// most-downloaded list; the group's own counters still get it.
+		s.usage.GroupServed(gr.feed.Name, mergedMember, usage.SourceMerged, "", int64(len(body)))
 	}
 }
 
@@ -352,11 +354,12 @@ func (s *Server) streamResult(w http.ResponseWriter, member *feedRuntime,
 // should include what arrived through a group, since that is what the group
 // is for. The group's own row is what the group URL was asked for, and a
 // group that only ever answers from one member is worth noticing.
-func (s *Server) groupServed(group, member *feedRuntime, res *pipeline.Result) {
+func (s *Server) groupServed(group, member *feedRuntime, intent api.Intent, res *pipeline.Result) {
 	if s.usage == nil || res == nil {
 		return
 	}
-	s.usage.GroupServed(group.feed.Name, member.feed.Name, string(res.Source), res.Size)
+	s.usage.GroupServed(group.feed.Name, member.feed.Name, string(res.Source),
+		downloadedCoordinate(intent), res.Size)
 }
 
 // readPart buffers one member's document for merging.

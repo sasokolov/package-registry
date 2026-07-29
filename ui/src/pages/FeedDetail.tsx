@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { useResource } from "../api/hooks";
 import type { PackageEntry, PackageList } from "../api/types";
 import { Badge, ErrorNotice, Empty, Loading, age, bytes, short } from "../components/common";
+import { TopPackages } from "../components/TopPackages";
 
 const PAGE = 50;
 
@@ -29,6 +30,10 @@ export function FeedDetail() {
           <Link to="/ui/feeds">← all feeds</Link>
         </p>
       </header>
+
+      {/* What people actually pull from this feed, before the list of
+          everything it happens to hold. */}
+      <TopPackages feed={feed} limit={5} />
 
       <form
         className="row"
