@@ -6,7 +6,7 @@ GOLANGCI_LINT := $(BIN_DIR)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 
 COMPOSE_FILE := conformance/docker-compose.yml
 
-.PHONY: build ui test test-integration lint conformance conformance-live conformance-chaos conformance-geo terraform-build terraform-test terraform-docs load-test dev dev-down dev-ha dev-ha-down
+.PHONY: build ui test test-integration lint conformance conformance-live conformance-chaos conformance-geo terraform-build terraform-test terraform-docs load-test dev dev-down dev-ha dev-ha-down smoke
 
 # `go build ./...` alone also works — the console directory carries a
 # placeholder so the embed compiles — but the binary then reports the console
@@ -99,6 +99,16 @@ dev-ha:
 
 dev-ha-down:
 	$(DEV_HA_COMPOSE) down -v
+
+# Live smoke against a stand that is already running: every format, real
+# clients, real upstreams. Not hermetic on purpose — conformance proves the
+# protocols against fixtures, this proves a deployment.
+SMOKE_BASE ?= http://127.0.0.1:8080
+SMOKE_LABEL ?= dev
+SMOKE_TOKEN ?= $(shell cat .devdata/ci.token 2>/dev/null)
+
+smoke:
+	./conformance/smoke/run.sh $(SMOKE_BASE) "$(SMOKE_TOKEN)" $(SMOKE_LABEL)
 
 dev-down:
 	$(DEV_COMPOSE) down -v

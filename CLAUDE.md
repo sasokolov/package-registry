@@ -197,13 +197,17 @@ make test           # unit-тесты
 make lint           # golangci-lint run
 make conformance    # docker compose: герметичный прогон с fake-upstream
 make conformance-chaos # два реплики + инъекция отказов
-make conformance-geo   # три гео-сайта: репликация, конфликты, партиция
+make conformance-geo   # два гео-сайта: репликация, конфликты, партиция
 make conformance-live  # то же против реальных апстримов (ручной запуск)
 make terraform-build   # провайдер: build/vet/lint/unit (отдельный модуль)
 make terraform-test    # acceptance-тесты провайдера против registry в Docker
 make terraform-docs    # регенерация docs/ провайдера из схем и examples/
-make conformance-geo   # два полных сайта: федерация, конфликты, партиция (Фаза 7)
+make test-integration  # тесты, которым нужны настоящие minio и postgres
+make load-test         # k6 против поднятого стенда, baseline в docs/perf.md
 make dev            # локальный запуск: compose с minio+postgres, registry на хосте
+make dev-ha         # тот же стенд в деплой-форме: две реплики за балансировщиком
+make dev-down / dev-ha-down  # погасить соответствующий стенд
+make smoke          # живой смоук по всем форматам против поднятого стенда
 ```
 
 ## Definition of Done (для каждой задачи)
