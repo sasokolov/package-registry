@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { useResource } from "../api/hooks";
 import type { FeedSummary } from "../api/types";
-import { Badge, ErrorNotice, Empty, Loading } from "../components/common";
+import { Badge, ErrorNotice, Empty, Loading, bytes } from "../components/common";
 
 export function Feeds({ anonymous }: { anonymous: boolean }) {
   const feeds = useResource<{ feeds: FeedSummary[] | null }>("/feeds", [anonymous]);
@@ -35,6 +35,8 @@ export function Feeds({ anonymous }: { anonymous: boolean }) {
                 <th>Mode</th>
                 <th>Access</th>
                 <th>Packages</th>
+                <th>Stored</th>
+                <th>Downloads</th>
               </tr>
             </thead>
             <tbody>
@@ -76,8 +78,22 @@ export function Feeds({ anonymous }: { anonymous: boolean }) {
                     )}
                   </td>
                   <td>
-                    {feed.hosted && feed.packages !== undefined ? (
+                    {/* The count covers what a proxy has cached as well as
+                        what a feed hosts, so a proxy is no longer a dash. */}
+                    {feed.usage ? (
+                      feed.usage.packages.toLocaleString()
+                    ) : feed.hosted && feed.packages !== undefined ? (
                       feed.packages
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                  </td>
+                  <td>
+                    {feed.usage ? bytes(feed.usage.bytes) : <span className="muted">—</span>}
+                  </td>
+                  <td>
+                    {feed.usage ? (
+                      feed.usage.downloads.toLocaleString()
                     ) : (
                       <span className="muted">—</span>
                     )}

@@ -195,3 +195,17 @@ label > span { display: block; font-size: 12px; color: var(--text-dim); margin-b
 
 select { appearance: auto; }
 details summary { list-style: revert; }
+
+/* Column headers that sort. A button, because that is what it is: pressing
+   it changes what the table shows. */
+th .sortable {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  letter-spacing: inherit;
+  text-transform: inherit;
+}
+th .sortable[aria-pressed="true"] { color: var(--text); }

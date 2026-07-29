@@ -40,6 +40,7 @@ export interface FeedSummary {
   group?: boolean;
   /** Its members, in order. Configuration, so identified callers only. */
   members?: string[];
+  usage?: FeedUsageSummary;
 }
 
 export interface PackageEntry {
@@ -169,4 +170,69 @@ export interface Explanation {
   policies?: string[];
   effective_capabilities?: string[];
   bindings?: string[];
+}
+
+/** What a feed holds and how much it is used, in short — carried by /feeds. */
+export interface FeedUsageSummary {
+  packages: number;
+  artifacts: number;
+  bytes: number;
+  downloads: number;
+  bytes_served: number;
+}
+
+export interface SourceUsage {
+  requests: number;
+  bytes: number;
+}
+
+/** The full picture, from /usage. */
+export interface FeedUsage {
+  feed: string;
+  format: string;
+  kind: "hosted" | "proxy" | "group" | "mixed";
+  group?: boolean;
+  members?: string[];
+
+  packages: number;
+  artifacts: number;
+  bytes: number;
+  hosted_packages: number;
+  hosted_artifacts: number;
+  hosted_bytes: number;
+  cached_packages: number;
+  cached_artifacts: number;
+  cached_bytes: number;
+  shared_bytes: number;
+
+  downloads: number;
+  bytes_served: number;
+  upstream_bytes: number;
+  bytes_saved: number;
+  hit_ratio?: number;
+
+  by_source?: Record<string, SourceUsage>;
+  last_ingest_at?: string;
+  last_download_at?: string;
+  scanned_at?: string;
+  aggregated?: boolean;
+}
+
+export interface UsageTotals {
+  feeds: number;
+  packages: number;
+  artifacts: number;
+  bytes: number;
+  blobs: number;
+  downloads: number;
+  bytes_served: number;
+  upstream_bytes: number;
+  bytes_saved: number;
+}
+
+export interface UsageReport {
+  feeds: FeedUsage[] | null;
+  totals: UsageTotals;
+  scanned_at?: string | null;
+  scan_enabled: boolean;
 }

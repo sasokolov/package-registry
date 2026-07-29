@@ -14,6 +14,7 @@ import { Overview } from "./pages/Overview";
 import { Quarantine } from "./pages/Quarantine";
 import { Replication } from "./pages/Replication";
 import { Tokens } from "./pages/Tokens";
+import { Usage } from "./pages/Usage";
 
 export function App() {
   // Bumping this re-reads who we are, which is what signing in and out
@@ -38,6 +39,7 @@ export function App() {
           <Route path="/ui/conflicts" element={<Conflicts who={who.data} />} />
           <Route path="/ui/quarantine" element={<Quarantine who={who.data} />} />
           <Route path="/ui/tokens" element={<Tokens />} />
+          <Route path="/ui/usage" element={<Usage />} />
           <Route path="/ui/access" element={<Access />} />
           <Route path="/ui/config" element={<Configuration />} />
           <Route path="/ui/signin" element={<SignIn onSignedIn={refresh} />} />

@@ -68,6 +68,25 @@ bindings:
 decided it — a refusal nobody can account for is one people route around.
 Details: `docs/access-control.md`.
 
+## Knowing what it costs
+
+A proxy is a cache, and the only interesting question about a cache is whether
+it earns its disk. Both feeds and groups report what they hold and how much of
+it goes out again — proxied content included, counted from what has actually
+been cached rather than from what the upstream offers.
+
+```
+GET /api/v1/usage
+```
+
+Storage comes from a periodic inventory scan (the proxy cache deliberately has
+no database rows, so it can only be counted by walking the store); downloads
+are counted as they happen and folded into PostgreSQL in batches, so no request
+ever waits on a counter. The console shows both on its **Usage** page, and
+`registry_feed_bytes`, `registry_bytes_served_total`,
+`registry_upstream_bytes_total` and `registry_group_requests_total` are on
+`/metrics` — by feed and group, never by package. Details: `docs/usage.md`.
+
 ## Console and Terraform
 
 The web console is built into the binary and served at `/ui/`: feeds and their
@@ -107,9 +126,10 @@ Everything below runs against real clients and real infrastructure in
 Docker — no mocks of the protocols being implemented.
 
 ```bash
-make conformance        # 30 scenarios: mvn, npm, dotnet, composer, terraform,
-                        #     groups, console, access policies, the access API
-                        #     and browser sign-in against a real OIDC provider
+make conformance        # 31 scenarios: mvn, npm, dotnet, composer, terraform,
+                        #     groups, console, access policies, the access API,
+                        #     browser sign-in against a real OIDC provider,
+                        #     and per-feed storage and download accounting
 make conformance-chaos  #  5 scenarios: replica kill, PostgreSQL, upstream and S3
                         #     outages, configuration reaching every replica
 make conformance-geo    # 12 scenarios: replication, conflicts, partition, bootstrap,
@@ -165,5 +185,6 @@ Two properties are worth knowing before operating a mesh:
 - `docs/decisions.md` — one line per decision, in order.
 - `docs/geo-replication.md` — the federation ADR.
 - `docs/access-control.md` — paths, capabilities, policies and bindings.
+- `docs/usage.md` — what each feed holds and how much it is used.
 - `docs/runbooks.md` — on-call procedures.
 - `terraform-provider-registry/README.md` — configuration as code.

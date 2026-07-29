@@ -52,6 +52,10 @@ type FeedSummary struct {
 	// Packages is absent rather than zero when the caller may not be told:
 	// "none" and "not your business" are different answers.
 	Packages *int `json:"packages,omitempty"`
+	// Usage is what this feed holds and how much it is used, as of the last
+	// inventory scan. Absent when there is no database to keep it in, or
+	// when the caller may not be told.
+	Usage *FeedSummaryUsage `json:"usage,omitempty"`
 }
 
 // handleStatus answers the overview.
@@ -153,12 +157,14 @@ func (s *Server) feedSummaries(r *http.Request) []FeedSummary {
 	anonymous := !s.allows(s.identity(r), config.SysFeeds, access.CapRead).Allowed
 
 	counts := map[string]int{}
+	var usageByFeed map[string]*FeedSummaryUsage
 	if s.db != nil && !anonymous {
 		if rows, err := s.db.ListHosted(r.Context(), "", ""); err == nil {
 			for _, row := range rows {
 				counts[row.Feed]++
 			}
 		}
+		usageByFeed = s.usageFor(r.Context())
 	}
 
 	out := make([]FeedSummary, 0, len(cfg.Feeds))
@@ -183,6 +189,7 @@ func (s *Server) feedSummaries(r *http.Request) []FeedSummary {
 		}
 		count := counts[f.Name]
 		summary.Packages = &count
+		summary.Usage = usageByFeed[f.Name]
 		for _, p := range f.Policies {
 			summary.Policies = append(summary.Policies, p.Name)
 		}

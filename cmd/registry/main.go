@@ -30,6 +30,7 @@ import (
 	"github.com/sasokolov/package-registry/core/pipeline"
 	"github.com/sasokolov/package-registry/core/server"
 	"github.com/sasokolov/package-registry/core/state"
+	"github.com/sasokolov/package-registry/core/usage"
 	webui "github.com/sasokolov/package-registry/ui"
 )
 
@@ -134,6 +135,8 @@ func serveCmd(args []string, logOut io.Writer) error {
 	promReg.MustRegister(siteInfo)
 	siteInfo.WithLabelValues(cfg.Site.Name).Set(1)
 	metrics := pipeline.NewMetrics(promReg)
+	usageMetrics := usage.NewMetrics(promReg)
+	recorder := usage.NewRecorder(usageMetrics, logger)
 
 	srv, err := server.New(ctx, server.Options{
 		Logger:  logger,
@@ -141,6 +144,7 @@ func serveCmd(args []string, logOut io.Writer) error {
 		DB:      db,
 		Metrics: metrics,
 		Manager: manager,
+		Usage:   recorder,
 	})
 	if err != nil {
 		return err
@@ -154,6 +158,21 @@ func serveCmd(args []string, logOut io.Writer) error {
 		repair := pipeline.NewProjectionRepair(srv.Publisher(),
 			cfg.Server.ProjectionRepairOrDefault(), pipeline.NewRepairMetrics(promReg))
 		go repair.Run(ctx)
+
+		// What each feed holds, and how much of it was downloaded. Both are
+		// derived: the flush loop keeps counters off the request path, and
+		// the scan runs under a cross-replica lock so a hundred pods do not
+		// each walk the store to answer the same question.
+		go recorder.Run(ctx, db, cfg.Server.UsageFlushOrDefault())
+		scanner := usage.NewScanner(usage.Options{
+			Store:   store,
+			DB:      db,
+			Metrics: usageMetrics,
+			Logger:  logger,
+			Feeds:   func() []usage.Feed { return configuredFeeds(manager) },
+			Lock:    db.WithLock,
+		})
+		go scanner.Run(ctx, cfg.Server.UsageScanOrDefault())
 	}
 
 	// The web console, served from the binary at the site root.
@@ -204,6 +223,18 @@ func serveCmd(args []string, logOut io.Writer) error {
 	// that is seconds from being fully functional is not worth routing to.
 	schemaReady := func() bool { return db == nil || db.Migrated() }
 	return serveHTTP(ctx, cfg, logger, promReg, srv.Handler(), schemaReady)
+}
+
+// configuredFeeds is what the usage scan needs to know about the feeds in
+// force. It is read per pass rather than captured, so a feed added by a
+// configuration reload is counted at the next scan without a restart.
+func configuredFeeds(manager *config.Manager) []usage.Feed {
+	cfg := manager.Current()
+	out := make([]usage.Feed, 0, len(cfg.Feeds))
+	for _, f := range cfg.Feeds {
+		out = append(out, usage.Feed{Name: f.Name, Format: f.Format, Group: f.IsGroup()})
+	}
+	return out
 }
 
 // initLoop retries one-time storage initialization (e.g. bucket creation)

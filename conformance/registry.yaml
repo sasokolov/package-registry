@@ -11,6 +11,10 @@ site:
 server:
   listen: ":8080"
   shutdown_timeout: 10s
+  # A conformance run is seconds long, so the inventory has to be recomputed
+  # and the counters flushed on that scale rather than the hourly default.
+  usage_scan: 5s
+  usage_flush: 2s
 
 storage:
   type: s3

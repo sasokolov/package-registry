@@ -138,7 +138,8 @@ type Policy interface {
   Старые поля `anonymous`/`publishers`/`admins` компилируются в те же политики —
   движок один. Подробности: `docs/access-control.md`.
 - Observability: `log/slog` (JSON), `prometheus/client_golang`, `/healthz`,
-  `/readyz`, аудит-лог отдельным slog-логгером.
+  `/readyz`, аудит-лог отдельным slog-логгером. Метрики использования — по
+  фидам и группам, никогда по пакетам: координат неограниченно много.
 - Тесты: stdlib `testing`, golden-файлы для RewriteMetadata, `docker compose`
   для conformance. Линт: `golangci-lint`.
 
@@ -155,6 +156,7 @@ core/policy/           — движок цепочки политик
 core/config/           — YAML-схема фидов, загрузка, валидация, hot-reload
 core/state/            — pgx, миграции, advisory locks
 core/repl/             — гео-федерация: журнал, applier, puller (Фаза 7)
+core/usage/            — инвентарь фидов и счётчики трафика, метрики
 modules/storage/fs/
 modules/storage/s3/
 modules/format/maven/
@@ -170,6 +172,7 @@ deploy/helm/
 docs/decisions.md      — журнал мелких решений (одна строка на решение)
 docs/geo-replication.md — ADR гео-репликации (журнальная федерация, правило K1)
 docs/access-control.md — модель доступа: пути, capabilities, политики, привязки
+docs/usage.md          — что лежит в фидах и как это используется
 ```
 
 ## Конвенции кода

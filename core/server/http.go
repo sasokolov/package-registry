@@ -130,6 +130,7 @@ func (s *Server) feedHandler(rt *runtime, fr *feedRuntime) http.HandlerFunc {
 		}
 
 		if s.tryRedirect(ctx, w, r, fr, intent, res) {
+			s.served(fr.feed.Name, res)
 			return
 		}
 
@@ -148,7 +149,25 @@ func (s *Server) feedHandler(rt *runtime, fr *feedRuntime) http.HandlerFunc {
 			s.logger.Debug("client aborted download",
 				"feed", fr.feed.Name, "coord", intent.Coord.String(), "error", err)
 		}
+		s.served(fr.feed.Name, res)
 	}
+}
+
+// served records one delivered response.
+//
+// It is here rather than in the pipeline because only this layer knows a
+// request came from a client: the pipeline is also asked for the sibling
+// documents a policy needs, and counting those as downloads would make every
+// Maven artifact look like two.
+//
+// A redirected artifact counts too. The bytes leave the object store instead
+// of this process, but the question an operator is asking — how much is this
+// feed used — has the same answer either way.
+func (s *Server) served(feed string, res *pipeline.Result) {
+	if s.usage == nil || res == nil {
+		return
+	}
+	s.usage.Served(feed, string(res.Source), res.Size)
 }
 
 // tryRedirect answers a cached artifact with a 302 to a pre-signed storage

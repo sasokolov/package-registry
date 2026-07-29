@@ -86,6 +86,35 @@ type ServerConfig struct {
 	// ProjectionRepair is how often the blob-store projection of hosted
 	// manifests is compared with the database and repaired. Default 5m.
 	ProjectionRepair Duration `yaml:"projection_repair"`
+	// UsageScan is how often a replica works out what each feed holds.
+	// Hosted content is one query, but the proxy cache has no rows to
+	// count — it is deliberately in the blob store so that reads survive a
+	// database outage — so this is a walk over the manifests, and how often
+	// it is worth paying for depends on how large the store is. 0 disables
+	// it, and then the console reports storage as unknown rather than as
+	// zero. Default 1h.
+	UsageScan Duration `yaml:"usage_scan"`
+	// UsageFlush is how often the in-memory download counters are folded
+	// into the database. Shorter loses less on a crash; longer writes less.
+	// Default 30s.
+	UsageFlush Duration `yaml:"usage_flush"`
+}
+
+// UsageScanOrDefault is how often the inventory is recomputed. A negative
+// value disables the scan; zero takes the default.
+func (s ServerConfig) UsageScanOrDefault() time.Duration {
+	if s.UsageScan != 0 {
+		return s.UsageScan.Std()
+	}
+	return time.Hour
+}
+
+// UsageFlushOrDefault is how often download counters reach the database.
+func (s ServerConfig) UsageFlushOrDefault() time.Duration {
+	if s.UsageFlush != 0 {
+		return s.UsageFlush.Std()
+	}
+	return 30 * time.Second
 }
 
 // DatabaseConfig configures PostgreSQL. An empty DSN disables the database

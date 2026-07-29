@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { usePolledResource } from "../api/hooks";
-import type { ConflictEntry, ReplicationStatus, SiteStatus } from "../api/types";
-import { Badge, Card, ErrorNotice, Loading } from "../components/common";
+import type { ConflictEntry, ReplicationStatus, SiteStatus, UsageReport } from "../api/types";
+import { Badge, Card, ErrorNotice, Loading, bytes } from "../components/common";
 
 export function Overview({ anonymous }: { anonymous: boolean }) {
   const status = usePolledResource<SiteStatus>("/status", 10_000, [anonymous]);
@@ -15,6 +15,9 @@ export function Overview({ anonymous }: { anonymous: boolean }) {
     anonymous ? undefined : "/conflicts",
     15_000,
   );
+  // Storage and downloads change slowly — the inventory is a periodic scan —
+  // so this is polled far less often than the health numbers above.
+  const usage = usePolledResource<UsageReport>(anonymous ? undefined : "/usage", 60_000);
 
   if (status.loading && !status.data) return <Loading what="status" />;
 
@@ -48,6 +51,36 @@ export function Overview({ anonymous }: { anonymous: boolean }) {
           />
           {anonymous ? null : (
             <>
+          <Card
+            label="Stored"
+            value={
+              usage.data ? (
+                <Link to="/ui/usage">{bytes(usage.data.totals.bytes)}</Link>
+              ) : (
+                <span className="muted">—</span>
+              )
+            }
+            hint={
+              usage.data
+                ? `${usage.data.totals.packages.toLocaleString()} packages, hosted and cached`
+                : undefined
+            }
+          />
+          <Card
+            label="Downloads"
+            value={
+              usage.data ? (
+                <Link to="/ui/usage">{usage.data.totals.downloads.toLocaleString()}</Link>
+              ) : (
+                <span className="muted">—</span>
+              )
+            }
+            hint={
+              usage.data && usage.data.totals.bytes_saved > 0
+                ? `${bytes(usage.data.totals.bytes_saved)} saved by caching`
+                : undefined
+            }
+          />
           <Card
             label="Database"
             value={

@@ -28,6 +28,7 @@ export function Layout({ status, who, onSignOut }: Props) {
               not offered a link that can only answer 401. */}
           {signedIn ? (
             <>
+              <NavLink to="/ui/usage">Usage</NavLink>
               <NavLink to="/ui/replication">Replication</NavLink>
               <NavLink to="/ui/conflicts">Conflicts</NavLink>
               <NavLink to="/ui/quarantine">Quarantine</NavLink>

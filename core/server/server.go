@@ -43,6 +43,20 @@ type Options struct {
 	DB      *state.DB // nil: no database (tokens/audit-to-db disabled)
 	Metrics *pipeline.Metrics
 	Manager *config.Manager
+	// Usage counts what feeds and groups served. Optional: without it the
+	// registry serves exactly the same, it just cannot say how much.
+	Usage UsageSink
+}
+
+// UsageSink is told what was delivered. It is an interface so the server
+// does not depend on how the numbers are kept.
+type UsageSink interface {
+	// Served reports one response: which feed, how it was answered, and the
+	// size of what the client got.
+	Served(feed, source string, size int64)
+	// GroupServed reports a response a group produced, naming the member
+	// that answered it.
+	GroupServed(group, member, source string, size int64)
 }
 
 // Server owns the feed router, rebuilt per config snapshot.
@@ -53,6 +67,7 @@ type Server struct {
 	db      *state.DB
 	metrics *pipeline.Metrics
 	manager *config.Manager
+	usage   UsageSink
 	// forward proxies publishes to a feed's home site (write-affinity). It
 	// is installed after construction because the replication manager needs
 	// the server, so the request path reads it atomically.
@@ -116,6 +131,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		db:      o.DB,
 		metrics: o.Metrics,
 		manager: o.Manager,
+		usage:   o.Usage,
 		runCtx:  ctx,
 	}
 	cfg0 := o.Manager.Current()
@@ -134,6 +150,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		Logger: o.Logger,
 		Audit:  s.audit,
 	})
+	if sink, ok := o.Usage.(pipeline.UsageSink); ok && o.Usage != nil {
+		s.pipe.SetUsage(sink)
+	}
 	s.quarantine = newQuarantineCache(o.DB, 30*time.Second, o.Logger)
 
 	rt, err := s.buildRuntime(o.Manager.Current())

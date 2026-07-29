@@ -15,6 +15,7 @@ import (
 	"github.com/sasokolov/package-registry/core/config"
 	"github.com/sasokolov/package-registry/core/pipeline"
 	"github.com/sasokolov/package-registry/core/policy"
+	"github.com/sasokolov/package-registry/core/usage"
 )
 
 // A group is a read-only view over several feeds of one format, so a client
@@ -130,9 +131,13 @@ func (s *Server) serveFirstHit(ctx context.Context, rt *runtime, w http.Response
 			defer func() { _ = res.result.Body.Close() }()
 			w.Header().Set(api.GroupMemberHeader, member.feed.Name)
 			if s.tryRedirect(ctx, w, r, member, intent, res.result) {
+				s.groupServed(gr, member, res.result)
+				s.served(member.feed.Name, res.result)
 				return
 			}
 			s.streamResult(w, member, intent, res.result)
+			s.groupServed(gr, member, res.result)
+			s.served(member.feed.Name, res.result)
 			return
 		case memberBlocked:
 			blocked = append(blocked, res)
@@ -207,7 +212,18 @@ func (s *Server) serveMerged(ctx context.Context, rt *runtime, w http.ResponseWr
 		s.logger.Debug("client aborted a merged download",
 			"group", gr.feed.Name, "coord", intent.Coord.String(), "error", err)
 	}
+	// A merged document has no single member behind it, and saying it came
+	// from the first one would be a lie a dashboard would repeat. It is also
+	// the only group answer not counted on a member, which is what lets a
+	// site total add group traffic without counting anything twice.
+	if s.usage != nil {
+		s.usage.GroupServed(gr.feed.Name, mergedMember, usage.SourceMerged, int64(len(body)))
+	}
 }
+
+// mergedMember stands in for "several, merged here" in the member label of a
+// group's counters.
+const mergedMember = "(merged)"
 
 // askMember runs one member's own chain for this intent: its access rule,
 // its quarantine, its policies, its pipeline. A member never loses a rule by
@@ -328,6 +344,19 @@ func (s *Server) streamResult(w http.ResponseWriter, member *feedRuntime,
 		s.logger.Debug("client aborted a group download",
 			"feed", member.feed.Name, "coord", intent.Coord.String(), "error", err)
 	}
+}
+
+// groupServed records that a group answered and which member did the work.
+//
+// The member is counted too, on its own name: "how much is this feed used"
+// should include what arrived through a group, since that is what the group
+// is for. The group's own row is what the group URL was asked for, and a
+// group that only ever answers from one member is worth noticing.
+func (s *Server) groupServed(group, member *feedRuntime, res *pipeline.Result) {
+	if s.usage == nil || res == nil {
+		return
+	}
+	s.usage.GroupServed(group.feed.Name, member.feed.Name, string(res.Source), res.Size)
 }
 
 // readPart buffers one member's document for merging.

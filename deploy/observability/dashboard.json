@@ -305,6 +305,178 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Storage per feed",
+      "description": "What each feed's content occupies. Blobs are shared, so feeds sum to more than the store holds \u2014 registry_store_bytes is the bill.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 48
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "expr": "sum by (feed) (registry_feed_bytes)",
+          "legendFormat": "{{feed}}",
+          "refId": "A"
+        },
+        {
+          "expr": "registry_store_bytes",
+          "legendFormat": "site total (deduplicated)",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Packages per feed",
+      "description": "Distinct coordinates, hosted and cached. A proxy feed's number is what it has actually cached, not what its upstream offers.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 48
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "expr": "sum by (feed, kind) (registry_feed_packages)",
+          "legendFormat": "{{feed}} {{kind}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Downloads per feed",
+      "description": "Responses served. A proxy feed that stores a lot and serves little is a disk bill nobody has looked at.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 56
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "expr": "sum by (feed) (rate(registry_requests_total[5m]))",
+          "legendFormat": "{{feed}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Bytes served vs pulled from upstream",
+      "description": "The gap is what the cache saved. A proxy feed where they track each other is caching nothing useful.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 56
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(registry_bytes_served_total[5m]))",
+          "legendFormat": "served",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(registry_upstream_bytes_total[5m]))",
+          "legendFormat": "pulled from upstreams",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Group traffic by answering member",
+      "description": "Which member of a group actually answers. A group that only ever answers from one member is worth a look.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 64
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "expr": "sum by (group, member) (rate(registry_group_requests_total[5m]))",
+          "legendFormat": "{{group}} \u2190 {{member}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Days since a feed last stored anything",
+      "description": "A proxy feed that has gone quiet is either unused or broken, and this is how the two are told apart.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 64
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "expr": "(time() - registry_feed_last_ingest_timestamp_seconds) / 86400",
+          "legendFormat": "{{feed}}",
+          "refId": "A"
+        }
+      ]
     }
   ]
 }

@@ -65,6 +65,13 @@ type Options struct {
 	Site    string           // geo-site name recorded in manifests
 }
 
+// UsageSink is told what filling the cache cost. It is an interface so the
+// pipeline does not depend on how the number is stored or exported.
+type UsageSink interface {
+	// Ingested reports bytes pulled from an upstream into the cache.
+	Ingested(feed string, size int64)
+}
+
 // Pipeline executes intents against cache and upstream.
 type Pipeline struct {
 	store   api.BlobStore
@@ -74,7 +81,17 @@ type Pipeline struct {
 	now     func() time.Time
 	site    string
 	peers   PeerSource
+	usage   UsageSink
 	sf      singleflight.Group
+}
+
+// SetUsage installs the sink told about cache fills.
+func (p *Pipeline) SetUsage(sink UsageSink) { p.usage = sink }
+
+func (p *Pipeline) ingested(feed string, size int64) {
+	if p.usage != nil {
+		p.usage.Ingested(feed, size)
+	}
 }
 
 // SetPeerSource enables peer fallback for hosted feeds.
@@ -137,8 +154,13 @@ type manifest struct {
 	// Checksums holds all digests computed at ingest (sha1/md5/sha256/
 	// sha512) so protocols with sidecar checksum files (Maven) are served
 	// from stored values instead of separate upstream requests.
-	Checksums  map[string]string `json:"checksums,omitempty"`
-	IngestedAt time.Time         `json:"ingested_at"`
+	Checksums map[string]string `json:"checksums,omitempty"`
+	// Coordinate is what the request resolved to, kept so an inventory scan
+	// can say how many packages a proxy feed holds rather than only how many
+	// files. Manifests written before this field existed have none, and are
+	// counted as artifacts without a package until they are re-ingested.
+	Coordinate string    `json:"coordinate,omitempty"`
+	IngestedAt time.Time `json:"ingested_at"`
 	// Provenance: "proxy" (ingested from an upstream) or "publish".
 	Origin    string            `json:"origin,omitempty"`
 	Site      string            `json:"site,omitempty"`
@@ -484,10 +506,12 @@ func (p *Pipeline) fetchAndStore(ctx context.Context, req Request, mkey string) 
 		return manifest{}, fmt.Errorf("stat blob: %w", err)
 	}
 
+	p.ingested(req.Feed.Name, size)
 	m := manifest{
 		SHA256:     digest,
 		Size:       size,
 		Checksums:  digests,
+		Coordinate: req.Intent.Coord.String(),
 		IngestedAt: p.now().UTC(),
 		Origin:     "proxy",
 		Site:       p.site,
@@ -736,6 +760,10 @@ func (p *Pipeline) refreshMetadata(ctx context.Context, req Request, key string)
 	if err != nil {
 		return err
 	}
+	// Metadata refreshes are most of a proxy's upstream traffic on a busy
+	// feed — a document per package per TTL — so leaving them out would
+	// understate what the cache is for.
+	p.ingested(req.Feed.Name, int64(len(body)))
 	rewritten, err := req.Module.RewriteMetadata(req.Feed, body)
 	if err != nil {
 		return fmt.Errorf("rewrite metadata %s: %w", req.Intent.Coord, err)

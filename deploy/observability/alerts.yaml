@@ -29,6 +29,43 @@ groups:
             Either the TTL is too short for this feed's traffic, or clients
             are requesting coordinates that do not exist upstream.
 
+      - alert: RegistryUsageScanFailing
+        expr: increase(registry_usage_scan_failures_total[2h]) > 2
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "The inventory scan keeps failing"
+          description: >
+            Storage numbers in the console are whatever the last successful
+            pass found, and are getting older. Downloads are unaffected: they
+            are counted as they happen. Check the object store and the
+            database.
+
+      - alert: RegistryUsageCountersNotFlushing
+        expr: increase(registry_usage_flush_failures_total[30m]) > 5
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "Download counters are not reaching the database"
+          description: >
+            Deltas are kept in memory and retried, so nothing is lost yet —
+            but a replica restart now would drop them. Usually the database
+            being unavailable, which the read path survives by design.
+
+      - alert: RegistryStorageGrowingFast
+        expr: |
+          predict_linear(registry_store_bytes[6h], 7 * 24 * 3600)
+            > 2 * registry_store_bytes
+        for: 1h
+        labels: {severity: info}
+        annotations:
+          summary: "Blob storage is on course to double within a week"
+          description: >
+            Not a fault, but worth knowing before the bill arrives. The
+            console's Usage page breaks it down by feed, and a proxy feed
+            that stores much and serves little is the usual culprit;
+            `registry gc` collects what no manifest points at.
+
       - alert: RegistryProjectionDivergent
         expr: registry_projection_divergent > 0
         for: 15m
