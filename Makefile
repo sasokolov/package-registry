@@ -6,7 +6,7 @@ GOLANGCI_LINT := $(BIN_DIR)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 
 COMPOSE_FILE := conformance/docker-compose.yml
 
-.PHONY: build ui test test-integration lint conformance conformance-live conformance-chaos conformance-geo terraform-build terraform-test terraform-docs load-test dev dev-down
+.PHONY: build ui test test-integration lint conformance conformance-live conformance-chaos conformance-geo terraform-build terraform-test terraform-docs load-test dev dev-down dev-ha dev-ha-down
 
 # `go build ./...` alone also works — the console directory carries a
 # placeholder so the embed compiles — but the binary then reports the console
@@ -88,6 +88,17 @@ DEV_COMPOSE := docker compose -f $(COMPOSE_FILE) -f conformance/compose.dev.yml 
 dev:
 	$(DEV_COMPOSE) up -d --wait minio postgres fake-oidc
 	go run ./cmd/registry -config conformance/dev.yaml
+
+# The same stand in the shape it is deployed in: two replicas behind a load
+# balancer on the same port, sharing the store and the database. The console
+# and every client address http://127.0.0.1:8080 exactly as with `make dev`.
+DEV_HA_COMPOSE := docker compose -f $(COMPOSE_FILE) -f conformance/compose.dev-ha.yml -p registry-dev-ha
+
+dev-ha:
+	$(DEV_HA_COMPOSE) up -d --build --wait minio postgres fake-oidc registry-1 registry-2 lb
+
+dev-ha-down:
+	$(DEV_HA_COMPOSE) down -v
 
 dev-down:
 	$(DEV_COMPOSE) down -v

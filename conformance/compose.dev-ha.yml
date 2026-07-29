@@ -1,0 +1,55 @@
+# Overlay for `make dev-ha`: the dev stand as it is meant to be deployed —
+# more than one stateless replica behind a load balancer, sharing one object
+# store and one database.
+#
+# It is worth having as a stand rather than only in production: everything
+# that is wrong with holding state in a process shows up here and nowhere
+# else — a config change that reaches one replica, an upload session that
+# only one of them can continue, a lock that was really a mutex.
+services:
+  minio:
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  # The identity provider is published on all interfaces and its issuer is
+  # the docker bridge address, because that address means the same thing to
+  # your browser and to a replica. With 127.0.0.1 the browser would reach it
+  # and the replica would reach itself.
+  fake-oidc:
+    environment:
+      ISSUER: ${DEV_OIDC_ISSUER:-http://172.17.0.1:9099}
+      ADDR: 0.0.0.0:9099
+    ports:
+      - "9099:9099"
+
+  registry-1: &replica
+    build:
+      context: ..
+      dockerfile: conformance/Dockerfile
+    volumes:
+      - ./dev-ha.yaml:/etc/registry/config.yaml:ro
+    depends_on:
+      minio: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/readyz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+
+  registry-2: *replica
+
+  lb:
+    image: nginx:1.28-alpine
+    volumes:
+      - ./dev-lb.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      registry-1: {condition: service_healthy}
+      registry-2: {condition: service_healthy}

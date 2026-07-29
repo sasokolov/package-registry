@@ -32,6 +32,15 @@ docker push registry.example/oci/images/myapp:1.4.0
 Every response is labelled with `X-Registry-Source`
 (`cache`, `upstream`, `stale`, `local`, `peer`) and `X-Registry-Site`.
 
+## Running it locally
+
+`make dev` runs one process against MinIO and PostgreSQL in compose.
+`make dev-ha` runs the same stand the way it is deployed — two stateless
+replicas behind a load balancer on the same port, sharing the object store,
+the database and one configuration document. The console and every client
+address `http://127.0.0.1:8080` either way; `X-Replica` on the response says
+which replica answered.
+
 ## Groups
 
 Several feeds of one format can be served through a single endpoint, the way

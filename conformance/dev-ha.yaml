@@ -1,0 +1,195 @@
+# Seed config for `make dev-ha`: N registry replicas behind a load balancer,
+# which is the shape this is deployed in (invariant 3). Every replica starts
+# from this file, and then the STORE takes over as the source of truth
+# (invariant 8) — so a change made in the console or through the admin API is
+# picked up by all of them, which is the thing a single process cannot show
+# you.
+site:
+  name: dev-ha
+  # The console's browser sign-in redirects here, so it has to be the address
+  # a browser actually uses.
+  external_url: http://127.0.0.1:8080
+
+server:
+  listen: ":8080"
+  shutdown_timeout: 10s
+  # Short enough that a change made through the console or Terraform is
+  # visible before you wonder whether it worked.
+  reload_interval: 5s
+  # Small enough to watch the numbers move while trying things out; an hour
+  # and thirty seconds are the production defaults.
+  usage_scan: 30s
+  usage_flush: 5s
+
+storage:
+  type: s3
+  s3:
+    endpoint: minio:9000
+    bucket: registry-dev-ha
+    access_key: registry
+    secret_key: registry-secret
+    use_ssl: false
+
+# The document lives in the store, so every replica reads the same one and
+# the admin API can rewrite it for all of them at once.
+config_source:
+  type: store
+
+database:
+  dsn: postgres://registry:registry@postgres:5432/registry
+
+# One feed of each kind per format — proxy, hosted, and a group over both —
+# because that is the shape worth having in front of you while developing:
+# every read path, every publish path, and the merge between them.
+#
+# Every proxy feed is rate-limited. Public upstreams limit concurrency rather
+# than rate, and a build fires dozens of parallel requests, so an unlimited
+# feed collects 429s. The registry treats those as backpressure — it retries,
+# honours Retry-After and keeps the circuit breaker closed — but not
+# provoking them is better. Each artifact costs two upstream requests: the
+# file and its checksum, which is mandatory at ingest.
+feeds:
+  # ---- Maven -------------------------------------------------------------
+  - name: central
+    format: maven
+    # If Central rate-limits your egress IP, it is also served from
+    # https://maven-central.storage-download.googleapis.com/maven2.
+    upstream: https://repo1.maven.org/maven2
+    upstream_rps: 4
+    anonymous: true
+
+  - name: releases
+    format: maven
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+
+  - name: maven-public
+    format: maven
+    anonymous: true
+    # Order is priority: a locally published coordinate wins over the
+    # upstream's copy of the same name.
+    members: [releases, central]
+
+  # ---- npm ---------------------------------------------------------------
+  - name: npmjs
+    format: npm
+    upstream: https://registry.npmjs.org
+    upstream_rps: 20
+    anonymous: true
+
+  - name: npm-hosted
+    format: npm
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+
+  - name: npm-public
+    format: npm
+    anonymous: true
+    members: [npm-hosted, npmjs]
+
+  # ---- NuGet -------------------------------------------------------------
+  - name: nugetorg
+    format: nuget
+    # The host, not the service index: NuGet's paths are joined to this, so
+    # https://api.nuget.org/v3/index.json — the address that goes in a
+    # nuget.config — would produce .../index.json/v3-flatcontainer/... and a
+    # 400. The registry publishes its own service index at
+    # /nuget/nugetorg/v3/index.json.
+    upstream: https://api.nuget.org
+    upstream_rps: 10
+    anonymous: true
+
+  - name: nuget-hosted
+    format: nuget
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+
+  - name: nuget-public
+    format: nuget
+    anonymous: true
+    members: [nuget-hosted, nugetorg]
+
+  # ---- Composer ----------------------------------------------------------
+  - name: packagist
+    format: composer
+    upstream: https://repo.packagist.org
+    upstream_rps: 10
+    anonymous: true
+
+  - name: composer-hosted
+    format: composer
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+
+  - name: composer-public
+    format: composer
+    anonymous: true
+    members: [composer-hosted, packagist]
+
+  # ---- Helm --------------------------------------------------------------
+  - name: charts
+    format: helm
+    upstream: https://charts.jetstack.io
+    upstream_rps: 5
+    anonymous: true
+
+  - name: charts-hosted
+    format: helm
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+
+  - name: helm-public
+    format: helm
+    anonymous: true
+    members: [charts-hosted, charts]
+
+  # ---- OCI (docker images) -----------------------------------------------
+  # An image name carries the feed: this proxy is pulled from as
+  # 127.0.0.1:8080/oci/dockerhub/library/alpine:3.20, and docker treats
+  # 127.0.0.1 as an insecure registry by default, so no daemon configuration
+  # is needed to try it.
+  - name: dockerhub
+    format: oci
+    upstream: https://registry-1.docker.io
+    upstream_rps: 5
+    anonymous: true
+
+  - name: images
+    format: oci
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+
+  - name: oci-public
+    format: oci
+    anonymous: true
+    members: [images, dockerhub]
+
+  # ---- Terraform ---------------------------------------------------------
+  # Terraform discovers a registry at the host root, so a site can expose one
+  # terraform feed and no more; the module refuses a second at load.
+  - name: tf
+    format: terraform
+    upstream: https://registry.terraform.io
+    upstream_rps: 10
+    anonymous: true
+
+# The dev identity provider from the compose overlay, so the console's browser
+# sign-in can be tried locally. It signs everybody in as alice@example.com;
+# `admins` is what makes that identity useful once signed in.
+auth:
+  oidc_issuers:
+    # The docker bridge address: the one address that is the same for your
+    # browser and for a container. 127.0.0.1 would be the replica itself.
+    - issuer: http://172.17.0.1:9099
+      audience: package-registry
+      client_id: registry-console
+
+admins:
+  - "oidc:alice@example.com"
+  - "token:ops-*"
