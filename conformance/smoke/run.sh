@@ -25,7 +25,15 @@ HOSTPORT="${BASE#http://}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK="${SMOKE_WORK:-$ROOT/.work-$LABEL}"
 SRC="$WORK/src"
+# Every version this run publishes is named after the clock, and the run
+# number keeps two smokes started in the same second apart: sites that share
+# a home feed would otherwise publish the same version twice, and the second
+# one is correctly refused as immutable. The run number goes in the MINOR
+# component because a version part has to fit in an int32 — NuGet refuses
+# anything larger, and an epoch with digits glued to it does not fit.
 STAMP="${SMOKE_STAMP:-$(date +%s)}"
+RUN="${SMOKE_RUN:-$((RANDOM % 90 + 10))}"
+VERSION="1.$RUN.$STAMP"
 mkdir -p "$WORK" "$SRC"
 
 declare -A RESULT
@@ -126,7 +134,7 @@ settle() { # settle <url> <pattern> [seconds]
 # --------------------------------------------------------------------- maven
 smoke_maven() {
   say "maven"
-  local repo="$WORK/m2-$STAMP" ver="1.0.$STAMP"
+  local repo="$WORK/m2-$STAMP" ver="$VERSION"
   rm -rf "$repo" "$WORK/json-java"; mkdir -p "$repo"
   cp -r "$SRC/json-java" "$WORK/json-java"
   cat > "$WORK/settings.xml" <<EOF
@@ -160,7 +168,7 @@ EOF
 # ----------------------------------------------------------------------- npm
 smoke_npm() {
   say "npm"
-  local ver="1.0.$STAMP"
+  local ver="$VERSION"
   rm -rf "$WORK/npm"; mkdir -p "$WORK/npm"
   cp -r "$SRC/npm/pkg" "$SRC/npm/consumer" "$WORK/npm/"
   rm -rf "$WORK/npm/pkg/node_modules" "$WORK/npm/consumer/node_modules"
@@ -189,7 +197,7 @@ EOF
 # --------------------------------------------------------------------- nuget
 smoke_nuget() {
   say "nuget"
-  local ver="1.0.$STAMP"
+  local ver="$VERSION"
   rm -rf "$WORK/nuget"; mkdir -p "$WORK/nuget"
   cp -r "$SRC/nuget/lib" "$SRC/nuget/app" "$WORK/nuget/"
   rm -rf "$WORK/nuget/lib/bin" "$WORK/nuget/lib/obj" "$WORK/nuget/app/bin" "$WORK/nuget/app/obj"
@@ -245,7 +253,7 @@ EOF2
 # ------------------------------------------------------------------ composer
 smoke_composer() {
   say "composer"
-  local ver="1.0.$STAMP"
+  local ver="$VERSION"
   rm -rf "$WORK/composer"; mkdir -p "$WORK/composer/app" "$WORK/composer/home"
   cat > "$WORK/composer/app/composer.json" <<EOF
 { "name": "smoke/consumer",
@@ -314,7 +322,7 @@ smoke_terraform() {
 # ---------------------------------------------------------------------- helm
 smoke_helm() {
   say "helm"
-  local ver="1.0.$STAMP"
+  local ver="$VERSION"
   rm -rf "$WORK/helm"; mkdir -p "$WORK/helm"
 
   docker run --rm --network host --user "$UID_GID" -v "$WORK/helm:/tmp/h" \
@@ -362,7 +370,7 @@ smoke_helm() {
 # ----------------------------------------------------------------------- oci
 smoke_oci() {
   say "oci"
-  local tag="1.0.$STAMP"
+  local tag="$VERSION"
   local proxied="$HOSTPORT/oci/dockerhub/library/busybox:1.36"
   local mine="$HOSTPORT/oci/images/smoke-app:$tag"
   local via_group="$HOSTPORT/oci/oci-public/smoke-app:$tag"
@@ -398,7 +406,7 @@ for format in "${FORMATS[@]}"; do
   if "smoke_$format"; then RESULT[$format]=ok; else RESULT[$format]=FAIL; fi
 done
 
-printf '\n\033[1m== %s: summary (stamp %s)\033[0m\n' "$LABEL" "$STAMP"
+printf '\n\033[1m== %s: summary (published as %s)\033[0m\n' "$LABEL" "$VERSION"
 failed=0
 fixtures || exit 1
 
