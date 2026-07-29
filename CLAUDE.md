@@ -171,11 +171,15 @@ policies/allowlist/  policies/osv/  policies/license/  policies/quarantine/
 ui/                    — консоль: React+TS+Vite, встраивается go:embed
 terraform-provider-registry/ — Terraform-провайдер (отдельный Go-модуль)
 conformance/           — docker compose, fake-upstream fixtures, сценарии
+conformance/smoke/     — живой смоук по всем форматам против поднятого стенда
+scripts/               — генераторы (THIRD-PARTY-NOTICES.md из реально линкуемого)
 deploy/helm/
 docs/decisions.md      — журнал мелких решений (одна строка на решение)
 docs/geo-replication.md — ADR гео-репликации (журнальная федерация, правило K1)
 docs/access-control.md — модель доступа: пути, capabilities, политики, привязки
 docs/usage.md          — что лежит в фидах и как это используется
+LICENSE NOTICE THIRD-PARTY-NOTICES.md — Apache-2.0 и атрибуция (генерируется)
+DCO CONTRIBUTING.md TRADEMARK.md SECURITY.md — как контрибьютить, имя, уязвимости
 ```
 
 ## Конвенции кода
@@ -187,6 +191,11 @@ docs/usage.md          — что лежит в фидах и как это ис
 - Табличные тесты; для трансляции протоколов — golden-файлы в
   `modules/format/<x>/testdata/`.
 - Комментарии и идентификаторы — английский; docs/ и PLAN — русский.
+  CONTRIBUTING.md и TRADEMARK.md — английский: они для внешних контрибьюторов.
+- Лицензия Apache-2.0 на всё. Контрибьюции приходят под ней же через DCO
+  (`git commit -s`), CLA нет намеренно. Новая зависимость под копилефтом —
+  повод остановиться: THIRD-PARTY-NOTICES.md генерируется из того, что реально
+  линкуется, и должен оставаться скучным.
 
 ## Команды
 
@@ -208,6 +217,7 @@ make dev            # локальный запуск: compose с minio+postgres
 make dev-ha         # тот же стенд в деплой-форме: две реплики за балансировщиком
 make dev-down / dev-ha-down  # погасить соответствующий стенд
 make smoke          # живой смоук по всем форматам против поднятого стенда
+make notices        # перегенерировать THIRD-PARTY-NOTICES.md (и --check в CI)
 ```
 
 ## Definition of Done (для каждой задачи)
@@ -215,6 +225,9 @@ make smoke          # живой смоук по всем форматам пр�
 1. `make lint test` — зелёные.
 2. Затронутый путь покрыт тестом (unit или conformance).
 3. Инварианты выше не нарушены.
-4. Чекбокс в PLAN.md отмечен, коммит сделан.
+4. Чекбокс в PLAN.md отмечен, коммит сделан (с `-s`: DCO вместо CLA).
+   Новая зависимость — `make notices` перегенерирован и закоммичен: без этого
+   атрибуция уезжает в релиз неполной, и это нарушение лицензии, а не
+   недочёт в документации.
 5. Нет молчаливых заглушек: паникующих stub'ов, пустых реализаций без задачи в
    плане.

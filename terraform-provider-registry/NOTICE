@@ -1,0 +1,12 @@
+terraform-provider-registry
+Copyright 2026 Sergey Sokolov and the package-registry contributors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+This provider bundles the work of others, including modules under the Mozilla
+Public Licence 2.0. Their licences, the attribution notices they ship, and
+where to obtain their source are in THIRD-PARTY-NOTICES.md next to this file.

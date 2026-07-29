@@ -156,7 +156,7 @@ Everything below runs against real clients and real infrastructure in
 Docker — no mocks of the protocols being implemented.
 
 ```bash
-make conformance        # 31 scenarios: mvn, npm, dotnet, composer, terraform,
+make conformance        # 33 scenarios: mvn, npm, dotnet, composer, terraform,
                         #     groups, console, access policies, the access API,
                         #     browser sign-in against a real OIDC provider,
                         #     and per-feed storage and download accounting
@@ -218,3 +218,19 @@ Two properties are worth knowing before operating a mesh:
 - `docs/usage.md` — what each feed holds and how much it is used.
 - `docs/runbooks.md` — on-call procedures.
 - `terraform-provider-registry/README.md` — configuration as code.
+
+## Licence
+
+Apache-2.0 — see [LICENSE](LICENSE). [NOTICE](NOTICE) and
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) carry the attribution for what
+it bundles, generated from what the binaries actually link (`make notices`);
+both travel with the binary and inside the container image.
+
+The code is meant to stay open permanently, and the arrangement is built so
+that it can: contributions come in under the same licence with a
+[DCO](DCO) sign-off rather than a contributor agreement, so the copyright
+stays spread across everyone who wrote it and nobody — the maintainers
+included — can relicense it alone. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+The name is not covered by the licence: [TRADEMARK.md](TRADEMARK.md) says what
+you may call things without asking.

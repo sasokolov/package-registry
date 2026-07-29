@@ -110,5 +110,14 @@ SMOKE_TOKEN ?= $(shell cat .devdata/ci.token 2>/dev/null)
 smoke:
 	./conformance/smoke/run.sh $(SMOKE_BASE) "$(SMOKE_TOKEN)" $(SMOKE_LABEL)
 
+# Attribution for what the binaries actually link. `notices-check` fails when
+# the committed files no longer match the dependency set — a dependency added
+# without attribution is a licence violation shipped in a release.
+notices:
+	python3 scripts/third-party-notices.py
+
+notices-check:
+	python3 scripts/third-party-notices.py --check
+
 dev-down:
 	$(DEV_COMPOSE) down -v

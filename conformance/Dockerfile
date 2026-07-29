@@ -24,6 +24,10 @@ RUN CGO_ENABLED=0 go build -trimpath -tags "$GO_BUILD_TAGS" -o /out/registry ./c
 FROM alpine:3.22
 RUN adduser -D -H -u 65532 registry && mkdir -p /data && chown registry:registry /data
 COPY --from=build /out/registry /usr/local/bin/registry
+# The image is a distribution channel, and the licence obligations travel with
+# what is distributed: whoever pulls it must be able to read the terms and the
+# attributions without going to find the repository.
+COPY LICENSE NOTICE THIRD-PARTY-NOTICES.md /usr/local/share/registry/
 USER registry
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/registry"]

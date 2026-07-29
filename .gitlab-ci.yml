@@ -27,6 +27,43 @@ lint:
   script:
     - make lint
 
+# The project takes contributions under a DCO sign-off instead of a CLA, and a
+# mechanism nobody checks is a mechanism nobody has. Only the commits this
+# merge request adds are examined; the history predates the policy.
+dco:
+  stage: lint
+  image: $GO_IMAGE
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+  script:
+    - |
+      missing=0
+      for commit in $(git rev-list "$CI_MERGE_REQUEST_DIFF_BASE_SHA..HEAD"); do
+        if ! git log -1 --format=%B "$commit" | grep -qi '^Signed-off-by: .\+ <.\+@.\+>'; then
+          echo "missing Signed-off-by: $(git log -1 --oneline "$commit")"
+          missing=1
+        fi
+      done
+      if [ "$missing" = 1 ]; then
+        echo
+        echo "Add it with: git commit --amend -s   (or git rebase --signoff origin/HEAD)"
+        echo "What it means: see DCO and CONTRIBUTING.md"
+        exit 1
+      fi
+      echo "every commit is signed off"
+
+# Attribution is a licence obligation, not documentation: a dependency added
+# without it is a violation shipped in the next release. The check compares
+# the committed notices with what the binaries actually link.
+notices:
+  stage: lint
+  image: $GO_IMAGE
+  <<: *go-cache
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq python3 >/dev/null
+  script:
+    - make notices-check
+
 # Консоль: типы и сборка. Бинарь собирается в conformance-образе, но
 # ошибка в TypeScript должна падать здесь, а не в docker build.
 ui:
