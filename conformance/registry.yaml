@@ -250,6 +250,24 @@ feeds:
     anonymous: true
     members: [tf-hosted, tf]
 
+  # ---- Helm: proxy, hosted and a group over both ----
+  - name: charts
+    format: helm
+    upstream: http://fake-upstream/helm-upstream
+    upstream_rps: 50
+    anonymous: true
+
+  - name: helm-hosted
+    format: helm
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+
+  - name: helm-public
+    format: helm
+    anonymous: true
+    members: [helm-hosted, charts]
+
   # Redirect mode: cached tarballs are answered with a 302 to a pre-signed
   # MinIO URL instead of being streamed through the registry.
   - name: npm-redirect

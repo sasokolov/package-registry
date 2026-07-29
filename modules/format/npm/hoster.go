@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/sasokolov/package-registry/core/api"
+	"github.com/sasokolov/package-registry/modules/internal/semver"
 )
 
 // maxPublishSize bounds a publish body (JSON with base64 attachments).
@@ -344,6 +345,6 @@ func highestVersion(versions map[string]any) string {
 	if len(list) == 0 {
 		return ""
 	}
-	sort.Slice(list, func(i, j int) bool { return compareSemver(list[i], list[j]) < 0 })
+	sort.Slice(list, func(i, j int) bool { return semver.Compare(list[i], list[j]) < 0 })
 	return list[len(list)-1]
 }

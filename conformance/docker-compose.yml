@@ -122,6 +122,15 @@ services:
     volumes:
       - ./clients/npm/project:/src:ro
 
+  helm-client:
+    image: alpine/helm:3.16.3
+    profiles: ["tools"]
+    entrypoint: ["helm"]
+    environment:
+      HELM_CACHE_HOME: /tmp/helm/cache
+      HELM_CONFIG_HOME: /tmp/helm/config
+      HELM_DATA_HOME: /tmp/helm/data
+
   composer-client:
     image: composer:2
     profiles: ["tools"]

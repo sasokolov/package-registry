@@ -164,6 +164,8 @@ modules/format/terraform/
 modules/format/npm/
 modules/format/composer/
 modules/format/nuget/
+modules/format/helm/
+modules/internal/semver/  — общий semver-компаратор (npm и helm; maven — свой)
 policies/allowlist/  policies/osv/  policies/license/  policies/quarantine/
 ui/                    — консоль: React+TS+Vite, встраивается go:embed
 terraform-provider-registry/ — Terraform-провайдер (отдельный Go-модуль)

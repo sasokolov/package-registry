@@ -5,6 +5,7 @@ package main
 // linked via modules_conformance.go behind the "conformance" build tag.
 import (
 	_ "github.com/sasokolov/package-registry/modules/format/composer"
+	_ "github.com/sasokolov/package-registry/modules/format/helm"
 	_ "github.com/sasokolov/package-registry/modules/format/maven"
 	_ "github.com/sasokolov/package-registry/modules/format/npm"
 	_ "github.com/sasokolov/package-registry/modules/format/nuget"

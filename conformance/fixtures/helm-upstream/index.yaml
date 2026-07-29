@@ -1,0 +1,14 @@
+apiVersion: v1
+entries:
+  upstream-chart:
+    - apiVersion: v2
+      appVersion: "1.16.0"
+      created: "2026-01-01T00:00:00Z"
+      description: An upstream chart for conformance
+      digest: f24ea56ae76e207ffc1a4866beb7e7092e8cba2b5a6d9ce395d1de5cf932b09a
+      name: upstream-chart
+      type: application
+      urls:
+        - http://fake-upstream/helm-upstream/charts/upstream-chart-1.0.0.tgz
+      version: 1.0.0
+generated: "2026-01-01T00:00:00Z"

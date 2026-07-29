@@ -18,6 +18,7 @@ across regions in an active-active mesh.
 | Terraform modules | yes | yes | — |
 | NuGet (v3) | yes | yes | yes |
 | Composer | yes | yes | yes |
+| Helm charts | yes | yes, ChartMuseum's upload API | via the index |
 
 Every response is labelled with `X-Registry-Source`
 (`cache`, `upstream`, `stale`, `local`, `peer`) and `X-Registry-Site`.

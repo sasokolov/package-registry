@@ -574,7 +574,7 @@ func TestUpstreamRetriesTransientErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := u.Fetch(t.Context(), "thing")
+	resp, err := u.Fetch(t.Context(), "thing", FetchOpts{})
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -668,5 +668,55 @@ func TestUpstreamRateLimit(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed < 30*time.Millisecond {
 		t.Errorf("5 requests at 100 rps took %s; limiter seems inactive", elapsed)
+	}
+}
+
+// countingHoster records whether the module was asked to rebuild anything.
+type countingHoster struct {
+	api.FormatModule
+	reindexed int
+}
+
+func (h *countingHoster) HandlePublish(context.Context, api.Feed, *http.Request, api.CoreServices) error {
+	return nil
+}
+
+func (h *countingHoster) Reindex(context.Context, api.Feed, api.CoreServices) error {
+	h.reindexed++
+	return nil
+}
+
+// A feed that hosts nothing has no index of its own, and generating one
+// anyway is not merely wasted work: the generated document is written to the
+// same key the proxy cache uses, so an empty index lands on top of what the
+// upstream gave us and is served as fresh until the TTL runs out. A single
+// reconfiguration of a proxy feed emptied it.
+//
+// Supporting hosting is a property of the format; hosting is a property of
+// the feed, and this is the one that decides.
+func TestReindexSkipsFeedsThatHostNothing(t *testing.T) {
+	publisher := NewPublisher(PublisherOptions{Store: newMemStore(time.Now), Site: "test"})
+
+	tests := []struct {
+		name string
+		feed api.Feed
+		want int
+	}{
+		{"a proxy feed", api.Feed{Name: "proxy", Upstream: "https://example.com"}, 0},
+		{"a group", api.Feed{Name: "group", Group: true}, 0},
+		{"a hosted feed", api.Feed{Name: "hosted", Hosted: true}, 1},
+		{"one that both hosts and proxies",
+			api.Feed{Name: "both", Hosted: true, Upstream: "https://example.com"}, 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			hoster := &countingHoster{}
+			if err := publisher.Reindex(t.Context(), tc.feed, hoster); err != nil {
+				t.Fatalf("Reindex: %v", err)
+			}
+			if hoster.reindexed != tc.want {
+				t.Errorf("reindexed %d times, want %d", hoster.reindexed, tc.want)
+			}
+		})
 	}
 }

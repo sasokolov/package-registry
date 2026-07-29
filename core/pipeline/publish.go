@@ -313,9 +313,15 @@ func (p *Publisher) PutIndex(ctx context.Context, feed api.Feed, path string, bo
 // Reindex regenerates a hosted feed's indexes under the module's control,
 // serialized across replicas by an advisory lock so two concurrent
 // publishes cannot interleave index writes.
+//
+// A feed that hosts nothing has no indexes of its own, and generating one
+// anyway is not merely wasted work: a generated index is written to the same
+// key the proxy cache uses, so an empty one lands on top of the document the
+// upstream gave us and is served as fresh until its TTL runs out. The
+// module supporting hosting is not the question; whether this feed does is.
 func (p *Publisher) Reindex(ctx context.Context, feed api.Feed, module api.FormatModule) error {
 	hoster, ok := module.(api.Hoster)
-	if !ok {
+	if !ok || !feed.Hosted {
 		return nil
 	}
 	run := func(ctx context.Context) error { return hoster.Reindex(ctx, feed, p) }

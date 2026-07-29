@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sasokolov/package-registry/core/api"
+	"github.com/sasokolov/package-registry/modules/internal/semver"
 )
 
 // Search over a hosted feed.
@@ -160,7 +161,7 @@ func searchObject(base, name string, versions map[string]hostedVersion) (map[str
 	if len(list) == 0 {
 		return nil, false
 	}
-	sort.Slice(list, func(i, j int) bool { return compareSemver(list[i], list[j]) < 0 })
+	sort.Slice(list, func(i, j int) bool { return semver.Compare(list[i], list[j]) < 0 })
 	newest := list[len(list)-1]
 
 	var doc map[string]any
