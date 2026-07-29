@@ -35,7 +35,7 @@ import (
 // remotely-homed feeds answer 503 rather than accepting a write they cannot
 // own (docs/geo-replication.md).
 type ForwardFunc func(ctx context.Context, site, feed, path, method string,
-	body io.ReadCloser, identity api.Identity) (status int, header http.Header, body2 []byte, err error)
+	body io.ReadCloser, header http.Header, identity api.Identity) (status int, respHeader http.Header, body2 []byte, err error)
 
 // Options wires the server.
 type Options struct {

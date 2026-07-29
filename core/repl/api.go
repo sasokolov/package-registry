@@ -67,10 +67,13 @@ type SnapshotResponse struct {
 // on-behalf-of identity, so a peer cannot publish what that identity may
 // not (invariant 14: replication grants nothing).
 type ForwardedPublish struct {
-	Feed        string
-	Path        string
-	Method      string
-	Body        io.ReadCloser
+	Feed   string
+	Path   string
+	Method string
+	Body   io.ReadCloser
+	// Header carries the headers that describe the payload (its media type,
+	// its byte range). Nothing that identifies the caller is in here.
+	Header      http.Header
 	Identity    string
 	ProjectPath string
 	Peer        string
@@ -514,7 +517,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	}
 	status, header, body, err := s.publish(r.Context(), ForwardedPublish{
 		Feed: feed, Path: path, Method: r.Header.Get("X-Registry-Forwarded-Method"),
-		Body: r.Body, Identity: identity,
+		Body: r.Body, Header: r.Header.Clone(), Identity: identity,
 		ProjectPath: r.Header.Get("X-Registry-On-Behalf-Of-Project"),
 		Peer:        peerOf(r),
 	})

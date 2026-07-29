@@ -277,3 +277,29 @@ func TestHotReloadAddsFeed(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// What travels with a forwarded publish is the payload's description, never
+// the caller's credential: the client is authenticated at the site it talked
+// to, and the home site authorizes the on-behalf-of identity instead
+// (invariant 14).
+func TestForwardedPublishCarriesThePayloadAndNotTheCaller(t *testing.T) {
+	src := http.Header{}
+	src.Set("Content-Type", "multipart/form-data; boundary=xyz")
+	src.Set("Content-Range", "0-99")
+	src.Set("Authorization", "Bearer reg_secret")
+	src.Set("X-NuGet-ApiKey", "reg_secret")
+	src.Set("Cookie", "session=secret")
+
+	out := payloadHeaders(src)
+	if out.Get("Content-Type") != "multipart/form-data; boundary=xyz" {
+		t.Errorf("Content-Type = %q; without it a multipart upload is stored as its own envelope", out.Get("Content-Type"))
+	}
+	if out.Get("Content-Range") != "0-99" {
+		t.Errorf("Content-Range = %q", out.Get("Content-Range"))
+	}
+	for _, name := range []string{"Authorization", "X-NuGet-ApiKey", "Cookie"} {
+		if out.Get(name) != "" {
+			t.Errorf("%s crossed the site boundary", name)
+		}
+	}
+}

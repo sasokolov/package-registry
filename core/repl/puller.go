@@ -343,7 +343,7 @@ func (c *Client) Manifest(ctx context.Context, feed, path string) (ManifestRespo
 // site. Authentication is the replication credential; the publisher's
 // identity travels as on-behalf-of headers.
 func (c *Client) ForwardPublish(ctx context.Context, feed, path, method string,
-	body io.Reader, identity, projectPath string) (int, http.Header, []byte, error) {
+	body io.Reader, header http.Header, identity, projectPath string) (int, http.Header, []byte, error) {
 	q := url.Values{}
 	q.Set("feed", feed)
 	q.Set("path", path)
@@ -359,6 +359,12 @@ func (c *Client) ForwardPublish(ctx context.Context, feed, path, method string,
 		return 0, nil, nil, fmt.Errorf("build forwarded publish: %w", err)
 	}
 	c.authz(req)
+	// The payload's own headers ride along: a body whose media type was
+	// dropped on the way is a body the home site cannot read (the caller
+	// filters them; nothing about the client's identity is in here).
+	for name, values := range header {
+		req.Header[name] = values
+	}
 	req.Header.Set("X-Registry-On-Behalf-Of", identity)
 	req.Header.Set("X-Registry-Forwarded-Method", method)
 	if projectPath != "" {

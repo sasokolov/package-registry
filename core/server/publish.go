@@ -180,7 +180,7 @@ func (s *Server) forwardPublish(w http.ResponseWriter, r *http.Request, fr *feed
 	// Inside a feed handler the mount prefix is stripped; the home site
 	// addresses the coordinate by feed name and path.
 	status, header, body, err := (*forward)(r.Context(), home, fr.feed.Name,
-		strings.TrimPrefix(r.URL.Path, "/"), r.Method, r.Body, id)
+		strings.TrimPrefix(r.URL.Path, "/"), r.Method, r.Body, payloadHeaders(r.Header), id)
 	if err != nil {
 		s.audit.Warn("publish forwarding failed",
 			"feed", fr.feed.Name, "home_site", home, "identity", id.String(), "error", err)
@@ -198,6 +198,26 @@ func (s *Server) forwardPublish(w http.ResponseWriter, r *http.Request, fr *feed
 	w.Header().Set(api.SiteHeader, home)
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+}
+
+// payloadHeaders are the request headers that describe WHAT is being
+// published, as opposed to WHO is publishing it.
+//
+// They have to travel: a NuGet push is a multipart body and is unreadable
+// without its Content-Type, and a chunked upload means nothing without its
+// Content-Range. Nothing about the caller travels — the client's credential
+// stays at the site that authenticated it, and the home site authorizes the
+// on-behalf-of identity instead (invariant 14).
+func payloadHeaders(src http.Header) http.Header {
+	out := http.Header{}
+	for _, name := range []string{
+		"Content-Type", "Content-Range", "Content-Encoding", "Content-Disposition", "Accept",
+	} {
+		if v := src.Get(name); v != "" {
+			out.Set(name, v)
+		}
+	}
+	return out
 }
 
 // copyForwardedHeaders passes the home site's response headers on.
@@ -221,7 +241,7 @@ func copyForwardedHeaders(dst, src http.Header) {
 // but authorization is re-checked here against the on-behalf-of identity:
 // replication grants no authority (invariant 14).
 func (s *Server) ApplyForwardedPublish(ctx context.Context, feed, path, method string,
-	body io.ReadCloser, identity, projectPath, peer string) (int, http.Header, []byte, error) {
+	body io.ReadCloser, header http.Header, identity, projectPath, peer string) (int, http.Header, []byte, error) {
 	defer func() { _ = body.Close() }()
 
 	rt := s.rt.Load()
@@ -272,6 +292,11 @@ func (s *Server) ApplyForwardedPublish(ctx context.Context, feed, path, method s
 	req, err := http.NewRequestWithContext(ctx, method, "/"+strings.TrimPrefix(path, "/"), body)
 	if err != nil {
 		return 0, nil, nil, err
+	}
+	// The headers that describe the payload came with it; without them a
+	// multipart upload is stored as its own envelope.
+	for name, values := range payloadHeaders(header) {
+		req.Header[name] = values
 	}
 
 	deps := &publishDeps{

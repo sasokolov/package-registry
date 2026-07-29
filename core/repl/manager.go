@@ -780,10 +780,10 @@ func (m *Manager) noteMissing(key string) {
 // ForwardPublish sends a write to the named home site over the replication
 // channel.
 func (m *Manager) ForwardPublish(ctx context.Context, site, feed, path, method string,
-	body io.Reader, identity, projectPath string) (int, http.Header, []byte, error) {
+	body io.Reader, header http.Header, identity, projectPath string) (int, http.Header, []byte, error) {
 	for _, c := range m.clientList() {
 		if c.Name() == site {
-			return c.ForwardPublish(ctx, feed, path, method, body, identity, projectPath)
+			return c.ForwardPublish(ctx, feed, path, method, body, header, identity, projectPath)
 		}
 	}
 	return 0, nil, nil, fmt.Errorf("no peer configured for home site %q", site)
