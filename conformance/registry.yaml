@@ -268,6 +268,26 @@ feeds:
     anonymous: true
     members: [helm-hosted, charts]
 
+  # ---- OCI: proxy of a real registry, hosted, and a group over both ----
+  # An image name carries the feed, so these are pulled from as
+  # registry:8080/oci/<feed>/<repository>:<tag>.
+  - name: images-upstream
+    format: oci
+    upstream: http://oci-upstream:5000
+    upstream_rps: 50
+    anonymous: true
+
+  - name: oci-hosted
+    format: oci
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+
+  - name: oci-public
+    format: oci
+    anonymous: true
+    members: [oci-hosted, images-upstream]
+
   # Redirect mode: cached tarballs are answered with a 302 to a pre-signed
   # MinIO URL instead of being streamed through the registry.
   - name: npm-redirect

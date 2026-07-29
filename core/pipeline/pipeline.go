@@ -143,6 +143,11 @@ type Result struct {
 	// empty for metadata and synthesized bodies. The server uses it to
 	// answer with a pre-signed redirect where that is safe.
 	BlobKey string
+	// ContentType is the media type recorded for this body when its path
+	// does not determine it, empty otherwise. The intent's own ContentType
+	// still wins: a module that knows what a path serves is more
+	// authoritative than what an upstream once said about it.
+	ContentType string
 }
 
 // manifest is the pointer from a coordinate to its content-addressed blob.
@@ -397,12 +402,13 @@ func (p *Pipeline) openBlob(ctx context.Context, m manifest, source api.Source) 
 	}
 
 	return &Result{
-		Body:    rc,
-		Size:    size,
-		SHA256:  m.SHA256,
-		ModTime: info.ModTime,
-		Source:  source,
-		BlobKey: blobKey(m.SHA256),
+		Body:        rc,
+		Size:        size,
+		SHA256:      m.SHA256,
+		ModTime:     info.ModTime,
+		Source:      source,
+		BlobKey:     blobKey(m.SHA256),
+		ContentType: m.Metadata[api.MetaContentType],
 	}, nil
 }
 
@@ -515,6 +521,7 @@ func (p *Pipeline) fetchAndStore(ctx context.Context, req Request, mkey string) 
 		IngestedAt: p.now().UTC(),
 		Origin:     "proxy",
 		Site:       p.site,
+		Metadata:   ingestMetadata(req.Intent, resp),
 	}
 	raw, err := json.Marshal(m)
 	if err != nil {
@@ -528,16 +535,34 @@ func (p *Pipeline) fetchAndStore(ctx context.Context, req Request, mkey string) 
 	return m, nil
 }
 
+// ingestMetadata is what the ingest itself learned about the artifact.
+//
+// Only the media type so far, and only when the intent did not already
+// dictate one: a protocol whose path says what a document is has no use for
+// what the upstream called it, but one where the same path answers with
+// different kinds of document has nothing else to go on.
+func ingestMetadata(intent api.Intent, resp *http.Response) map[string]string {
+	if intent.ContentType != "" || resp == nil {
+		return nil
+	}
+	declared := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if declared == "" || declared == "application/octet-stream" {
+		return nil
+	}
+	return map[string]string{api.MetaContentType: declared}
+}
+
 // openArtifactStream fetches the artifact body, resolving one level of
 // protocol indirection (Intent.Indirect) via the module's IndirectResolver.
 // It returns the checksum the indirection published, if any.
 func (p *Pipeline) openArtifactStream(ctx context.Context, req Request) (*http.Response, api.Checksum, error) {
+	opts := FetchOpts{Accept: req.Intent.Accept}
 	if req.Intent.RemoteURL != "" {
 		// Absolute location from upstream metadata: SSRF-guarded fetch.
-		resp, err := req.Upstream.FetchURL(ctx, req.Intent.RemoteURL)
+		resp, err := req.Upstream.FetchURL(ctx, req.Intent.RemoteURL, opts)
 		return resp, api.Checksum{}, err
 	}
-	resp, err := req.Upstream.Fetch(ctx, req.Intent.RemotePath)
+	resp, err := req.Upstream.Fetch(ctx, req.Intent.RemotePath, opts)
 	if err != nil {
 		return nil, api.Checksum{}, err
 	}
@@ -568,7 +593,7 @@ func (p *Pipeline) openArtifactStream(ctx context.Context, req Request) (*http.R
 		"feed", req.Feed.Name, "coord", req.Intent.Coord.String(), "target", redactURL(target))
 	// The location comes from the upstream, i.e. from untrusted input: the
 	// fetch is restricted to public destinations (SSRF guard in FetchURL).
-	stream, err := req.Upstream.FetchURL(ctx, target)
+	stream, err := req.Upstream.FetchURL(ctx, target, FetchOpts{})
 	if err != nil {
 		return nil, api.Checksum{}, err
 	}
@@ -627,7 +652,7 @@ func (p *Pipeline) metadataChecksum(ctx context.Context, req Request) api.Checks
 // upstream must not silently disable verification.
 func (p *Pipeline) fetchRemoteChecksum(ctx context.Context, req Request) (api.Checksum, error) {
 	src := req.Intent.RemoteChecksum
-	body, err := req.Upstream.FetchAll(ctx, src.Path)
+	body, _, err := req.Upstream.FetchAll(ctx, src.Path, FetchOpts{})
 	if errors.Is(err, api.ErrNotFound) {
 		p.logger.Warn("upstream publishes no checksum document, ingesting unverified",
 			"feed", req.Feed.Name, "coord", req.Intent.Coord.String(), "path", src.Path)
@@ -729,6 +754,20 @@ func (p *Pipeline) serveMetadataBody(ctx context.Context, req Request) (*Result,
 		return p.openMeta(ctx, key, api.SourceCache)
 	}
 	if req.Upstream == nil {
+		// A mutable document a feed HOSTS may be a published coordinate
+		// rather than a generated index. An OCI tag is one: it names the
+		// manifest it currently points at, and the pointer moves. Serving it
+		// from the coordinate keeps one source of truth — no copy to
+		// regenerate on every push — and keeps it readable while the
+		// database is down, because the projection is in the store
+		// (invariant 7).
+		//
+		// It is looked up only after the metadata cache has been found stale
+		// or absent, so formats whose hosted documents ARE generated indexes
+		// pay nothing for it.
+		if m, err := p.loadManifest(ctx, manifestKey(req.Feed, req.Intent)); err == nil {
+			return p.openBlob(ctx, m, api.SourceLocal)
+		}
 		if cached {
 			return p.openMeta(ctx, key, api.SourceLocal)
 		}
@@ -756,7 +795,8 @@ func (p *Pipeline) serveMetadataBody(ctx context.Context, req Request) (*Result,
 }
 
 func (p *Pipeline) refreshMetadata(ctx context.Context, req Request, key string) error {
-	body, err := req.Upstream.FetchAllQuery(ctx, req.Intent.RemotePath, req.Intent.RemoteQuery)
+	body, contentType, err := req.Upstream.FetchAll(ctx, req.Intent.RemotePath,
+		FetchOpts{Query: req.Intent.RemoteQuery, Accept: req.Intent.Accept})
 	if err != nil {
 		return err
 	}
@@ -768,7 +808,11 @@ func (p *Pipeline) refreshMetadata(ctx context.Context, req Request, key string)
 	if err != nil {
 		return fmt.Errorf("rewrite metadata %s: %w", req.Intent.Coord, err)
 	}
-	if err := p.store.Put(ctx, key, bytes.NewReader(rewritten), api.PutOpts{}); err != nil {
+	// The media type is stored with the document because for some protocols
+	// it is not derivable from the path: the same manifest URL answers with
+	// an image manifest or an index, and a client dispatches on the type.
+	if err := p.store.Put(ctx, key, bytes.NewReader(rewritten),
+		api.PutOpts{ContentType: contentType}); err != nil {
 		return fmt.Errorf("store metadata: %w", err)
 	}
 	return nil
@@ -780,10 +824,11 @@ func (p *Pipeline) openMeta(ctx context.Context, key string, source api.Source) 
 		return nil, err
 	}
 	return &Result{
-		Body:    rc,
-		Size:    info.Size,
-		SHA256:  info.SHA256,
-		ModTime: info.ModTime,
-		Source:  source,
+		Body:        rc,
+		Size:        info.Size,
+		SHA256:      info.SHA256,
+		ModTime:     info.ModTime,
+		Source:      source,
+		ContentType: info.ContentType,
 	}, nil
 }

@@ -19,6 +19,15 @@ across regions in an active-active mesh.
 | NuGet (v3) | yes | yes | yes |
 | Composer | yes | yes | yes |
 | Helm charts | yes | yes, ChartMuseum's upload API | via the index |
+| OCI / docker images | yes | yes, `docker push` | tags and catalog |
+
+Container images are addressed with the feed inside the image name, because
+the protocol owns the whole URL:
+
+```
+docker pull registry.example/oci/dockerhub/library/alpine:3.20
+docker push registry.example/oci/images/myapp:1.4.0
+```
 
 Every response is labelled with `X-Registry-Source`
 (`cache`, `upstream`, `stale`, `local`, `peer`) and `X-Registry-Site`.

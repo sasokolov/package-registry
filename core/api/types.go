@@ -22,6 +22,13 @@ type BlobInfo struct {
 	Size    int64
 	SHA256  string // hex digest of the content; empty if unknown
 	ModTime time.Time
+	// ContentType is the media type recorded when the object was written,
+	// empty if none was. It matters for documents whose type is a property
+	// of their content rather than of their path — an OCI manifest and an
+	// OCI image index live at the same path shape and clients dispatch on
+	// the media type — so the type has to survive the round trip through
+	// the cache.
+	ContentType string
 }
 
 // PutOpts constrains a BlobStore.Put.
@@ -33,7 +40,22 @@ type PutOpts struct {
 	// Size, if > 0, is the expected content length; 0 or negative means
 	// unknown (a zero-length blob needs no size check to begin with).
 	Size int64
+	// ContentType, if non-empty, is recorded with the object and returned by
+	// Stat and Get. Stores that cannot keep it may ignore it; nothing may
+	// depend on it for correctness, only for serving the right media type.
+	ContentType string
 }
+
+// StagingPrefix is where a module keeps the bytes of a write that is not
+// finished yet: a protocol whose upload spans several requests has nowhere
+// else to put them, and putting them in memory would tie the upload to one
+// replica (invariant 3).
+//
+// It is named here rather than invented per module because the garbage
+// collector has to know where to look: an upload that is abandoned halfway —
+// a client that crashed, a CI job that was cancelled — leaves objects nobody
+// will ever ask for again, and nothing else would ever collect them.
+const StagingPrefix = "uploads/"
 
 // Iter is a pull iterator over a stream of items.
 type Iter[T any] interface {
@@ -184,8 +206,18 @@ type Intent struct {
 	// so the pipeline applies the same SSRF guard as to indirect locations.
 	// RemotePath still keys the cache.
 	RemoteURL string
-	// ContentType, when set, is used for the response Content-Type.
+	// ContentType, when set, is used for the response Content-Type. Leave it
+	// empty for documents whose media type is a property of their content:
+	// the type recorded at ingest is then served instead.
 	ContentType string
+	// Accept, when set, is the Accept header sent upstream. Content
+	// negotiation is part of some protocols rather than an optimization: an
+	// OCI registry answers the same manifest URL with an image manifest, an
+	// index or a deprecated schema depending on what the client says it
+	// understands, so asking without it gets the wrong document. The whole
+	// list is sent on every fetch, so one cached document serves every
+	// client — it is not part of the cache key.
+	Accept string
 	// RemoteQuery is the query string sent upstream, for endpoints that are
 	// queries rather than documents. It also takes part in the cache key:
 	// two different searches are two different answers, and sharing one
@@ -452,6 +484,76 @@ type CredentialHeader interface {
 	CredentialHeaders() []string
 }
 
+// FeedRouter is an optional FormatModule capability for protocols that own
+// the shape of the whole URL and therefore cannot be mounted under a prefix
+// of the registry's choosing.
+//
+// OCI Distribution is the case that exists: a client derives every request
+// path from the image reference and always addresses the fixed API root
+// /v2/, so the registry's mount point has to BE part of the image name
+// rather than a prefix in front of it. The module declares the root patterns
+// it serves and says which feed a path belongs to; everything after that is
+// the ordinary chain — auth, access, policy, cache, upstream — because the
+// core routes these requests into the same handlers as any other feed
+// traffic.
+//
+// Read methods (GET, HEAD) take the read path; any other method takes the
+// publish path, exactly as for a feed's own routes.
+type FeedRouter interface {
+	// FeedRoutes are the root-level patterns this format serves.
+	FeedRoutes() []Route
+	// RouteToFeed maps a root-level request path to the feed that must serve
+	// it and to the path that feed's module should parse. ok is false when
+	// the path names no feed of this format; the core answers 404.
+	RouteToFeed(path string) (feed, feedPath string, ok bool)
+}
+
+// AuthChallenger is an optional FormatModule capability: the WWW-Authenticate
+// challenge a protocol's clients need on a 401.
+//
+// The registry's default advertises Basic and Bearer together, which is right
+// for the tools that read it as a list. A docker client is not one of them:
+// it takes the first scheme it has a handler for and, offered Bearer, tries
+// to fetch a token from the realm — so a registry that means "send me your
+// credentials directly" has to say only that.
+type AuthChallenger interface {
+	// AuthChallenge is the WWW-Authenticate value for this feed, or "" to
+	// keep the registry's default.
+	AuthChallenge(feed Feed) string
+}
+
+// ResponseHeaderer is an optional FormatModule capability: protocol headers
+// that accompany a served document and that only the format knows the names
+// of. OCI's Docker-Content-Digest is the case that exists — a client reads
+// the manifest's digest from the response rather than computing it.
+//
+// The digest is passed in because the core knows it for everything it stores;
+// it is empty when the body is not one of those, and a module must then omit
+// the headers that would be a lie.
+type ResponseHeaderer interface {
+	ResponseHeaders(feed Feed, intent Intent, sha256 string) map[string]string
+}
+
+// PublishResponder is an optional Hoster capability: the module writes the
+// response to a publish itself.
+//
+// A single-shot upload needs nothing of the sort — the core's 201 says it
+// all. A protocol whose write path is a conversation does: OCI's chunked
+// blob upload answers each request with the URL and byte range the next one
+// must use, so the response IS the state that makes the next request
+// possible (invariant 3: it is derived from what is stored, not from
+// anything this replica remembers).
+//
+// The core still runs the whole write chain — authentication, publish
+// permission, forwarding to the feed's home site — and still reindexes
+// afterwards. Only the reply belongs to the module.
+type PublishResponder interface {
+	// HandlePublishHTTP writes the response for a write request. Returning
+	// an error means nothing was written and the core renders the error, so
+	// an implementation must not do both.
+	HandlePublishHTTP(ctx context.Context, feed Feed, w http.ResponseWriter, r *http.Request, deps CoreServices) error
+}
+
 // RootRouter is an optional FormatModule capability for protocol endpoints
 // that must live at the server root, outside any feed mount (e.g.
 // /.well-known/terraform.json). ServeRoot receives the feeds of this
@@ -537,6 +639,11 @@ const (
 	// metadata document, as "<algo>:<hex>" (npm's dist.integrity/shasum).
 	// The pipeline verifies ingests against it (invariant 5).
 	MetaChecksum = "checksum"
+	// MetaContentType is the media type an artifact must be served with when
+	// its path does not determine it. The pipeline records what the upstream
+	// declared at ingest, and a hosting module sets it on publish, so the
+	// answer survives a restart and reaches every replica.
+	MetaContentType = "content_type"
 )
 
 // Artifact describes a concrete artifact for policy checks.

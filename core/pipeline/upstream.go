@@ -56,6 +56,9 @@ type Upstream struct {
 	retries int
 	logger  *slog.Logger
 	metrics *Metrics
+	// tokens holds bearer tokens an upstream handed out in answer to a 401
+	// (upstream_auth.go). Derived, TTL-bounded, per replica.
+	tokens *tokenCache
 }
 
 // NewUpstream builds the client.
@@ -72,6 +75,7 @@ func NewUpstream(o UpstreamOptions) (*Upstream, error) {
 		retries: o.Retries,
 		logger:  o.Logger,
 		metrics: o.Metrics,
+		tokens:  newTokenCache(o.Now),
 	}
 	if u.client == nil {
 		u.client = &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 15 * time.Second}}
@@ -109,16 +113,21 @@ func (u *Upstream) buildURL(remotePath, query string) string {
 	return joined.String()
 }
 
+// FetchOpts are the per-request knobs of one upstream fetch.
+type FetchOpts struct {
+	// Query is the query string to send; it is part of what was asked, not
+	// an optimization, for endpoints that are queries rather than documents.
+	Query string
+	// Accept is the Accept header. Some protocols answer one URL with
+	// several documents and pick by it (api.Intent.Accept).
+	Accept string
+}
+
 // Fetch GETs remotePath from the upstream with retries (5xx and transport
 // errors only), jittered backoff, rate limiting and the circuit breaker.
 // The caller owns the returned body.
-func (u *Upstream) Fetch(ctx context.Context, remotePath string) (*http.Response, error) {
-	return u.FetchQuery(ctx, remotePath, "")
-}
-
-// FetchQuery is Fetch with a query string appended.
-func (u *Upstream) FetchQuery(ctx context.Context, remotePath, query string) (*http.Response, error) {
-	return u.fetchTarget(ctx, u.buildURL(remotePath, query))
+func (u *Upstream) Fetch(ctx context.Context, remotePath string, o FetchOpts) (*http.Response, error) {
+	return u.fetchTarget(ctx, u.buildURL(remotePath, o.Query), o)
 }
 
 // FetchURL is Fetch for an absolute URL — indirect artifact locations may
@@ -127,7 +136,7 @@ func (u *Upstream) FetchQuery(ctx context.Context, remotePath, query string) (*h
 // restricted: same host as the feed's upstream, or a public address.
 // Redirects are re-checked hop by hop. The feed's retry/breaker/rate-limit
 // discipline still applies.
-func (u *Upstream) FetchURL(ctx context.Context, absURL string) (*http.Response, error) {
+func (u *Upstream) FetchURL(ctx context.Context, absURL string, o FetchOpts) (*http.Response, error) {
 	parsed, err := url.Parse(absURL)
 	if err != nil || !parsed.IsAbs() {
 		return nil, fmt.Errorf("upstream %s: invalid absolute URL %q: %w", u.feed, redactURL(absURL), err)
@@ -138,7 +147,7 @@ func (u *Upstream) FetchURL(ctx context.Context, absURL string) (*http.Response,
 	if err := u.checkDestination(parsed); err != nil {
 		return nil, err
 	}
-	return u.fetchTarget(ctx, absURL)
+	return u.fetchTarget(ctx, absURL, o)
 }
 
 // checkDestination rejects upstream-supplied locations that point at
@@ -210,7 +219,7 @@ func (u *Upstream) ResolveReference(remotePath, loc string) (string, error) {
 	return base.ResolveReference(ref).String(), nil
 }
 
-func (u *Upstream) fetchTarget(ctx context.Context, target string) (*http.Response, error) {
+func (u *Upstream) fetchTarget(ctx context.Context, target string, o FetchOpts) (*http.Response, error) {
 	if !u.breaker.Allow() {
 		u.count("breaker_open")
 		return nil, fmt.Errorf("upstream %s: circuit breaker open: %w", u.feed, api.ErrUpstreamUnavailable)
@@ -241,7 +250,7 @@ func (u *Upstream) fetchTarget(ctx context.Context, target string) (*http.Respon
 			}
 		}
 
-		resp, err := u.attempt(ctx, target)
+		resp, err := u.attempt(ctx, target, o)
 		switch {
 		case err == nil:
 			u.breaker.Success()
@@ -280,23 +289,20 @@ func (u *Upstream) fetchTarget(ctx context.Context, target string) (*http.Respon
 	return nil, fmt.Errorf("upstream %s: %v: %w", u.feed, lastErr, api.ErrUpstreamUnavailable)
 }
 
-// FetchAll fetches a complete (metadata) body into memory.
-func (u *Upstream) FetchAll(ctx context.Context, remotePath string) ([]byte, error) {
-	return u.FetchAllQuery(ctx, remotePath, "")
-}
-
-// FetchAllQuery is FetchAll with a query string appended.
-func (u *Upstream) FetchAllQuery(ctx context.Context, remotePath, query string) ([]byte, error) {
-	resp, err := u.FetchQuery(ctx, remotePath, query)
+// FetchAll fetches a complete (metadata) body into memory, reporting the
+// media type the upstream declared for it. The type is returned rather than
+// discarded because for some documents it is not derivable from the path.
+func (u *Upstream) FetchAll(ctx context.Context, remotePath string, o FetchOpts) (body []byte, contentType string, err error) {
+	resp, err := u.Fetch(ctx, remotePath, o)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := readAllCapped(resp.Body, metadataSizeCap)
+	body, err = readAllCapped(resp.Body, metadataSizeCap)
 	if err != nil {
-		return nil, fmt.Errorf("upstream %s: read body: %w", u.feed, err)
+		return nil, "", fmt.Errorf("upstream %s: read body: %w", u.feed, err)
 	}
-	return body, nil
+	return body, resp.Header.Get("Content-Type"), nil
 }
 
 type transientError struct{ error }
@@ -373,18 +379,33 @@ func readAllCapped(r io.Reader, limit int64) ([]byte, error) {
 	return body, nil
 }
 
-func (u *Upstream) attempt(ctx context.Context, target string) (*http.Response, error) {
+func (u *Upstream) attempt(ctx context.Context, target string, o FetchOpts) (*http.Response, error) {
 	start := time.Now()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
+	if o.Accept != "" {
+		req.Header.Set("Accept", o.Accept)
+	}
+	u.authorize(req)
 	resp, err := u.client.Do(req)
 	if u.metrics != nil {
 		u.metrics.UpstreamDuration.WithLabelValues(u.feed).Observe(time.Since(start).Seconds())
 	}
 	if err != nil {
 		return nil, transientError{fmt.Errorf("request %s: %w", target, err)}
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		// The upstream is telling us how to ask; that is a handshake, not a
+		// failure (see upstream_auth.go).
+		retried, done, aerr := u.retryAuthorized(ctx, req, resp, o)
+		if aerr != nil {
+			return nil, aerr
+		}
+		if done {
+			resp = retried
+		}
 	}
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:

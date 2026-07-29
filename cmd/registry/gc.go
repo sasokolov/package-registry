@@ -186,15 +186,62 @@ func sweep(ctx context.Context, store api.BlobStore, db *state.DB, out io.Writer
 		return fmt.Errorf("walk blobs: %w", err)
 	}
 
+	// Abandoned uploads. A protocol whose write spans several requests
+	// stages bytes under api.StagingPrefix; a client that crashed between
+	// two of them leaves objects no manifest will ever point at, so nothing
+	// above would ever collect them. The same age guard applies: an upload
+	// still in progress is younger than it.
+	staged, stagedBytes, err := sweepStaging(ctx, out, store, cutoff, doDelete)
+	if err != nil {
+		return err
+	}
+
 	mode := "dry-run"
 	if doDelete {
 		mode = "deleted"
 	}
-	_, _ = fmt.Fprintf(out, "gc %s: %d manifests, %d blobs scanned, %d kept, %d unreferenced (%d bytes)\n",
-		mode, manifestCount, scanned, kept, collected, freed)
+	_, _ = fmt.Fprintf(out, "gc %s: %d manifests, %d blobs scanned, %d kept, %d unreferenced (%d bytes), %d abandoned upload chunk(s) (%d bytes)\n",
+		mode, manifestCount, scanned, kept, collected, freed, staged, stagedBytes)
 	logger.Info("gc finished", "mode", mode, "manifests", manifestCount,
-		"blobs", scanned, "kept", kept, "collected", collected, "bytes", freed)
+		"blobs", scanned, "kept", kept, "collected", collected, "bytes", freed,
+		"abandoned_upload_chunks", staged, "abandoned_upload_bytes", stagedBytes)
 	return nil
+}
+
+// sweepStaging collects the chunks of uploads that were never finished.
+func sweepStaging(ctx context.Context, out io.Writer, store api.BlobStore,
+	cutoff time.Time, doDelete bool) (int, int64, error) {
+	iter, err := store.List(ctx, api.StagingPrefix)
+	if err != nil {
+		if errors.Is(err, api.ErrNotFound) {
+			return 0, 0, nil // nothing was ever staged
+		}
+		return 0, 0, fmt.Errorf("list staged uploads: %w", err)
+	}
+	var count int
+	var bytes int64
+	for {
+		info, ok := iter.Next(ctx)
+		if !ok {
+			break
+		}
+		if info.ModTime.After(cutoff) {
+			continue // an upload still in progress
+		}
+		count++
+		bytes += info.Size
+		_, _ = fmt.Fprintf(out, "abandoned upload chunk %s (%d bytes, age %s)\n",
+			info.Key, info.Size, time.Since(info.ModTime).Truncate(time.Minute))
+		if doDelete {
+			if err := store.Delete(ctx, info.Key); err != nil && !errors.Is(err, api.ErrNotFound) {
+				return 0, 0, fmt.Errorf("delete %s: %w", info.Key, err)
+			}
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return 0, 0, fmt.Errorf("walk staged uploads: %w", err)
+	}
+	return count, bytes, nil
 }
 
 // manifestDigest reads the blob digest a manifest object points at.

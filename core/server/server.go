@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -34,7 +35,7 @@ import (
 // remotely-homed feeds answer 503 rather than accepting a write they cannot
 // own (docs/geo-replication.md).
 type ForwardFunc func(ctx context.Context, site, feed, path, method string,
-	body io.ReadCloser, identity api.Identity) (status int, body2 []byte, err error)
+	body io.ReadCloser, identity api.Identity) (status int, header http.Header, body2 []byte, err error)
 
 // Options wires the server.
 type Options struct {
@@ -478,6 +479,11 @@ func (s *Server) buildRuntime(cfg *config.Config) (*runtime, error) {
 		return nil, err
 	}
 
+	// Protocols that dictate the shape of the whole URL (api.FeedRouter):
+	// the path names its own feed, so the routes live at the root and are
+	// dispatched into exactly the handlers a mounted feed uses.
+	s.mountRoutedFeeds(rt)
+
 	// Root-level protocol endpoints (e.g. /.well-known/terraform.json)
 	// provided by modules with the RootRouter capability.
 	feedsByFormat := make(map[string][]api.Feed)
@@ -503,6 +509,87 @@ func (s *Server) buildRuntime(cfg *config.Config) (*runtime, error) {
 	}
 
 	return rt, nil
+}
+
+// mountRoutedFeeds wires the formats whose protocol owns the whole URL.
+//
+// Every other format is reached at /{format}/{feed}/..., a prefix this
+// registry chose. OCI Distribution cannot be: a client builds each request
+// path from the image reference and always addresses the fixed /v2/ root, so
+// the feed has to be named INSIDE the path the protocol dictates. The module
+// says which part of the path that is; the core does the rest exactly as for
+// a mounted feed, which is the point — one chain, not two.
+func (s *Server) mountRoutedFeeds(rt *runtime) {
+	for _, format := range api.Formats() {
+		module, _ := api.Format(format)
+		router, ok := module.(api.FeedRouter)
+		if !ok {
+			continue
+		}
+		handlers := map[string]routedHandlers{}
+		for name, fr := range rt.feeds {
+			if fr.feed.Format != format {
+				continue
+			}
+			switch {
+			case len(fr.members) > 0:
+				handlers[name] = routedHandlers{read: s.groupHandler(rt, fr), write: s.groupPublishHandler(fr)}
+			default:
+				h := routedHandlers{read: s.feedHandler(rt, fr)}
+				if hoster, isHoster := fr.module.(api.Hoster); isHoster && fr.hosted {
+					h.write = s.publishHandler(rt, fr, hoster)
+				}
+				handlers[name] = h
+			}
+		}
+		dispatch := s.routedFeedDispatcher(router, handlers)
+		for _, route := range router.FeedRoutes() {
+			rt.router.Method(route.Method, route.Pattern, dispatch)
+		}
+	}
+}
+
+// routedHandlers are the two chains one feed is served by.
+type routedHandlers struct {
+	read  http.HandlerFunc
+	write http.HandlerFunc // nil when the feed accepts no writes
+}
+
+// routedFeedDispatcher resolves the feed named in the path and hands the
+// request to the same handler a mounted feed would use, with the path the
+// module expects to parse.
+func (s *Server) routedFeedDispatcher(router api.FeedRouter, handlers map[string]routedHandlers) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		feedName, feedPath, ok := router.RouteToFeed(r.URL.Path)
+		if !ok {
+			s.finishError(w, http.StatusNotFound, "no feed at this path")
+			return
+		}
+		h, ok := handlers[feedName]
+		if !ok {
+			s.finishError(w, http.StatusNotFound, "no feed named "+feedName+" for this protocol")
+			return
+		}
+		// Modules see feed-relative paths, as they do behind a mount point.
+		routed := new(http.Request)
+		*routed = *r
+		routed.URL = new(url.URL)
+		*routed.URL = *r.URL
+		routed.URL.Path = feedPath
+		routed.URL.RawPath = ""
+
+		// Reads take the read path and everything else the write path, the
+		// same split as between a feed's routes and its publish routes.
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			h.read(w, routed)
+			return
+		}
+		if h.write == nil {
+			s.finishError(w, http.StatusMethodNotAllowed, "feed "+feedName+" does not accept writes")
+			return
+		}
+		h.write(w, routed)
+	}
 }
 
 // lockFunc adapts state.WithLock into a pipeline.LockFunc that degrades to

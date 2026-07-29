@@ -32,7 +32,7 @@ func TestThrottlingDoesNotOpenTheBreaker(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, err := up.Fetch(t.Context(), "a/b.jar")
+	resp, err := up.Fetch(t.Context(), "a/b.jar", FetchOpts{})
 	if err != nil {
 		t.Fatalf("a throttled fetch never recovered: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestPersistentThrottlingFailsWithoutOpeningTheBreaker(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := up.Fetch(t.Context(), "a/b.jar"); err == nil {
+	if _, err := up.Fetch(t.Context(), "a/b.jar", FetchOpts{}); err == nil {
 		t.Fatal("a permanently throttled upstream reported success")
 	} else if !errors.Is(err, api.ErrUpstreamUnavailable) {
 		t.Errorf("error = %v, want it to read as unavailable so stale can serve", err)
@@ -107,7 +107,7 @@ func TestServerErrorsStillOpenTheBreaker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := up.Fetch(t.Context(), "a/b.jar"); err == nil {
+	if _, err := up.Fetch(t.Context(), "a/b.jar", FetchOpts{}); err == nil {
 		t.Fatal("a broken upstream reported success")
 	}
 	if state := up.BreakerState(); state == int(BreakerClosed) {

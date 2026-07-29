@@ -62,6 +62,17 @@ services:
       timeout: 2s
       retries: 15
 
+  # A real container registry to proxy. The OCI module's upstream cannot be
+  # a directory of files the way the other formats' can: the protocol is a
+  # conversation, so the thing on the other side has to be a registry.
+  oci-upstream:
+    image: registry:2.8.3
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:5000/v2/"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
   # TLS gateway: terraform requires HTTPS for the registry protocol.
   # An identity provider, so the console's browser sign-in can be driven end
   # to end rather than mocked at the edges.
@@ -121,6 +132,18 @@ services:
     working_dir: /work
     volumes:
       - ./clients/npm/project:/src:ro
+
+  # crane speaks the registry protocol without needing a docker daemon, which
+  # is what makes it usable inside the compose network. It is the reference
+  # implementation's own client, and the same conversation `docker push`
+  # carries out.
+  crane-client:
+    # Pinned by digest because the only tag with a shell in it is a floating
+    # one, and a conformance run that silently changes its client is not a
+    # conformance run. This is crane :debug as of 2026-07-29.
+    image: gcr.io/go-containerregistry/crane:debug@sha256:54b27703e6c602fbd6f95712910e9c8d45d4361a59274bde38aeec943734e424
+    profiles: ["tools"]
+    entrypoint: ["crane"]
 
   helm-client:
     image: alpine/helm:3.16.3

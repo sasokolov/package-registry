@@ -28,6 +28,10 @@ const partSize = 16 << 20
 
 const sha256MetaKey = "Sha256" // stored as x-amz-meta-sha256
 
+// defaultContentType is what an object without a declared media type is
+// stored as.
+const defaultContentType = "application/octet-stream"
+
 func init() {
 	api.RegisterStorage("s3", func(options map[string]any) (api.BlobStore, error) {
 		str := func(k string) string { v, _ := options[k].(string); return v }
@@ -109,10 +113,11 @@ func infoFromStat(key string, st minio.ObjectInfo) api.BlobInfo {
 		digest = st.UserMetadata["X-Amz-Meta-"+sha256MetaKey]
 	}
 	return api.BlobInfo{
-		Key:     key,
-		Size:    st.Size,
-		SHA256:  digest,
-		ModTime: st.LastModified,
+		Key:         key,
+		Size:        st.Size,
+		SHA256:      digest,
+		ModTime:     st.LastModified,
+		ContentType: contentType(st.ContentType),
 	}
 }
 
@@ -156,7 +161,7 @@ func (s *Store) Put(ctx context.Context, key string, r io.Reader, opts api.PutOp
 	}
 	putOpts := minio.PutObjectOptions{
 		PartSize:    partSize,
-		ContentType: "application/octet-stream",
+		ContentType: putContentType(opts.ContentType),
 	}
 	uploaded, err := s.client.PutObject(ctx, s.bucket, key, tee, size, putOpts)
 	if err != nil {
@@ -177,9 +182,13 @@ func (s *Store) Put(ctx context.Context, key string, r io.Reader, opts api.PutOp
 	// promises the digest when known.
 	_, err = s.client.CopyObject(ctx,
 		minio.CopyDestOptions{
-			Bucket:          s.bucket,
-			Object:          key,
-			UserMetadata:    map[string]string{sha256MetaKey: digest},
+			Bucket:       s.bucket,
+			Object:       key,
+			UserMetadata: map[string]string{sha256MetaKey: digest},
+			// The copy replaces metadata wholesale, so the content type has
+			// to be restated or it would fall back to the default and the
+			// media type recorded a moment ago would be lost.
+			ContentType:     putContentType(opts.ContentType),
 			ReplaceMetadata: true,
 		},
 		minio.CopySrcOptions{Bucket: s.bucket, Object: key},
@@ -188,6 +197,24 @@ func (s *Store) Put(ctx context.Context, key string, r io.Reader, opts api.PutOp
 		return fmt.Errorf("put blob %s: attach digest metadata: %w", key, err)
 	}
 	return nil
+}
+
+// putContentType is what the object is stored as. S3 has no "unset", so the
+// generic default stands in for "the key says what this is".
+func putContentType(declared string) string {
+	if declared == "" {
+		return defaultContentType
+	}
+	return declared
+}
+
+// contentType reports what was recorded, treating the default as "nothing was
+// declared" so a caller cannot mistake it for a deliberate answer.
+func contentType(stored string) string {
+	if stored == defaultContentType {
+		return ""
+	}
+	return stored
 }
 
 // Delete removes the object; a missing object yields ErrNotFound.

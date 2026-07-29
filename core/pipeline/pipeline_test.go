@@ -6,6 +6,7 @@ import (
 	"crypto/sha1" //nolint:gosec // legacy checksum in tests
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -24,9 +25,10 @@ import (
 // fake in-memory BlobStore
 
 type memBlob struct {
-	data    []byte
-	sha256  string
-	modTime time.Time
+	data        []byte
+	sha256      string
+	modTime     time.Time
+	contentType string
 }
 
 type memStore struct {
@@ -53,7 +55,10 @@ func (s *memStore) Get(_ context.Context, key string) (io.ReadCloser, api.BlobIn
 }
 
 func (s *memStore) info(key string, b memBlob) api.BlobInfo {
-	return api.BlobInfo{Key: key, Size: int64(len(b.data)), SHA256: b.sha256, ModTime: b.modTime}
+	return api.BlobInfo{
+		Key: key, Size: int64(len(b.data)), SHA256: b.sha256,
+		ModTime: b.modTime, ContentType: b.contentType,
+	}
 }
 
 func (s *memStore) Put(_ context.Context, key string, r io.Reader, opts api.PutOpts) error {
@@ -68,7 +73,7 @@ func (s *memStore) Put(_ context.Context, key string, r io.Reader, opts api.PutO
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.blobs[key] = memBlob{data: data, sha256: digest, modTime: s.now()}
+	s.blobs[key] = memBlob{data: data, sha256: digest, modTime: s.now(), contentType: opts.ContentType}
 	return nil
 }
 
@@ -718,5 +723,106 @@ func TestReindexSkipsFeedsThatHostNothing(t *testing.T) {
 				t.Errorf("reindexed %d times, want %d", hoster.reindexed, tc.want)
 			}
 		})
+	}
+}
+
+// A mutable document a feed HOSTS is a published coordinate, not a generated
+// index. An OCI tag is one: it names the manifest it currently points at, and
+// the pointer moves. Reading it from the coordinate is what keeps a pull
+// working while the database is down (invariant 7) and what makes a tag
+// correct on a site that received it through replication without anything
+// having to regenerate a copy.
+func TestAHostedMutableDocumentIsServedFromItsCoordinate(t *testing.T) {
+	store := newMemStore(time.Now)
+	pipe := New(Options{Store: store, Logger: slog.New(slog.NewJSONHandler(io.Discard, nil))})
+	ctx := t.Context()
+
+	manifestBody := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}`)
+	sum := sha256.Sum256(manifestBody)
+	digest := hex.EncodeToString(sum[:])
+	if err := store.Put(ctx, blobKey(digest), bytes.NewReader(manifestBody), api.PutOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := json.Marshal(manifest{
+		SHA256: digest, Size: int64(len(manifestBody)),
+		Metadata: map[string]string{api.MetaContentType: "application/vnd.oci.image.manifest.v1+json"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	feed := api.Feed{Name: "images", Format: "echo", Hosted: true}
+	intent := api.Intent{
+		Kind:       api.IntentMetadata,
+		Coord:      api.PackageCoordinate{Format: "echo", Name: "app", Version: "latest"},
+		RemotePath: "v2/app/manifests/latest",
+		CacheTTL:   time.Minute,
+	}
+	if err := store.Put(ctx, manifestKey(feed, intent), bytes.NewReader(record), api.PutOpts{}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := pipe.Serve(ctx, Request{Feed: feed, Intent: intent, Module: echoModule{}})
+	if err != nil {
+		t.Fatalf("a hosted tag could not be read: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, manifestBody) {
+		t.Errorf("body = %q", body)
+	}
+	if res.Source != api.SourceLocal {
+		t.Errorf("source = %q, want local", res.Source)
+	}
+	// The digest a client verifies the document against, and the media type
+	// it dispatches on, both have to survive the round trip.
+	if res.SHA256 != digest {
+		t.Errorf("sha256 = %q, want %q", res.SHA256, digest)
+	}
+	if res.ContentType != "application/vnd.oci.image.manifest.v1+json" {
+		t.Errorf("content type = %q", res.ContentType)
+	}
+}
+
+// A proxied document's media type is a property of its content for some
+// protocols, so what the upstream declared is stored with it. Serving it back
+// as application/octet-stream is a pull that fails with "unexpected media
+// type" and no clue why.
+func TestAProxiedDocumentKeepsTheMediaTypeTheUpstreamDeclared(t *testing.T) {
+	h := newHarness(t)
+	h.custom["v2/app/manifests/latest"] = func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.oci.image.index.v1+json")
+		_, _ = w.Write([]byte(`{"schemaVersion":2}`))
+	}
+	up := h.upstream(0)
+	intent := api.Intent{
+		Kind:       api.IntentMetadata,
+		Coord:      api.PackageCoordinate{Format: "echo", Name: "app", Version: "latest"},
+		RemotePath: "v2/app/manifests/latest",
+		CacheTTL:   time.Minute,
+	}
+
+	res, err := h.pipe.Serve(t.Context(), h.request(intent, up))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ContentType != "application/vnd.oci.image.index.v1+json" {
+		t.Errorf("fresh from the upstream: content type = %q", res.ContentType)
+	}
+	_ = res.Body.Close()
+
+	// And again from the cache, which is where it would be lost.
+	res, err = h.pipe.Serve(t.Context(), h.request(intent, up))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.Source != api.SourceCache {
+		t.Fatalf("source = %q, want cache", res.Source)
+	}
+	if res.ContentType != "application/vnd.oci.image.index.v1+json" {
+		t.Errorf("from the cache: content type = %q", res.ContentType)
 	}
 }

@@ -117,6 +117,46 @@ feeds:
     anonymous: true
     members: [composer-hosted, packagist]
 
+  # ---- Helm --------------------------------------------------------------
+  - name: charts
+    format: helm
+    upstream: https://charts.jetstack.io
+    upstream_rps: 5
+    anonymous: true
+
+  - name: charts-hosted
+    format: helm
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+
+  - name: helm-public
+    format: helm
+    anonymous: true
+    members: [charts-hosted, charts]
+
+  # ---- OCI (docker images) -----------------------------------------------
+  # An image name carries the feed: this proxy is pulled from as
+  # 127.0.0.1:8080/oci/dockerhub/library/alpine:3.20, and docker treats
+  # 127.0.0.1 as an insecure registry by default, so no daemon configuration
+  # is needed to try it.
+  - name: dockerhub
+    format: oci
+    upstream: https://registry-1.docker.io
+    upstream_rps: 5
+    anonymous: true
+
+  - name: images
+    format: oci
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+
+  - name: oci-public
+    format: oci
+    anonymous: true
+    members: [images, dockerhub]
+
   # ---- Terraform ---------------------------------------------------------
   # Terraform discovers a registry at the host root, so a site can expose one
   # terraform feed and no more; the module refuses a second at load.

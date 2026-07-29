@@ -41,6 +41,7 @@ func adoptDeclaredCredential(module api.FormatModule, r *http.Request) {
 func (s *Server) feedHandler(rt *runtime, fr *feedRuntime) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
+		w = withChallenge(w, fr.module, fr.feed)
 
 		adoptDeclaredCredential(fr.module, r)
 		id, err := rt.authn.Identify(ctx, r)
@@ -139,11 +140,8 @@ func (s *Server) feedHandler(rt *runtime, fr *feedRuntime) http.HandlerFunc {
 		if res.Size >= 0 {
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", res.Size))
 		}
-		contentType := intent.ContentType
-		if contentType == "" {
-			contentType = "application/octet-stream"
-		}
-		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Content-Type", responseContentType(intent, res))
+		setProtocolHeaders(w, fr.module, fr.feed, intent, res.SHA256)
 		if _, err := io.Copy(w, res.Body); err != nil {
 			// Response already started; nothing to send, just record it.
 			s.logger.Debug("client aborted download",
@@ -151,6 +149,67 @@ func (s *Server) feedHandler(rt *runtime, fr *feedRuntime) http.HandlerFunc {
 		}
 		s.served(fr.feed.Name, intent, res)
 	}
+}
+
+// responseContentType decides what a body is served as.
+//
+// The module's own answer wins: it knows what a path means. Only where it
+// declined to say — because the media type is a property of the content and
+// not of the path — does the type recorded at ingest stand in.
+func responseContentType(intent api.Intent, res *pipeline.Result) string {
+	if intent.ContentType != "" {
+		return intent.ContentType
+	}
+	if res != nil && res.ContentType != "" {
+		return res.ContentType
+	}
+	return "application/octet-stream"
+}
+
+// setProtocolHeaders adds the response headers a protocol requires and whose
+// names only its module knows (api.ResponseHeaderer).
+func setProtocolHeaders(w http.ResponseWriter, module api.FormatModule, feed api.Feed,
+	intent api.Intent, sha256hex string) {
+	headerer, ok := module.(api.ResponseHeaderer)
+	if !ok {
+		return
+	}
+	for name, value := range headerer.ResponseHeaders(feed, intent, sha256hex) {
+		if value != "" {
+			w.Header().Set(name, value)
+		}
+	}
+}
+
+// challengeWriter replaces the registry's default WWW-Authenticate with the
+// one this protocol's clients can act on (api.AuthChallenger).
+//
+// It is a decorator rather than a header set up front because a challenge
+// belongs on a 401 and nowhere else: advertising on every response how to
+// authenticate would invite clients to do it unprompted.
+type challengeWriter struct {
+	http.ResponseWriter
+	challenge string
+}
+
+func (c *challengeWriter) WriteHeader(status int) {
+	if status == http.StatusUnauthorized {
+		c.Header().Set("WWW-Authenticate", c.challenge)
+	}
+	c.ResponseWriter.WriteHeader(status)
+}
+
+// withChallenge wraps w when the module declares its own challenge.
+func withChallenge(w http.ResponseWriter, module api.FormatModule, feed api.Feed) http.ResponseWriter {
+	challenger, ok := module.(api.AuthChallenger)
+	if !ok {
+		return w
+	}
+	challenge := challenger.AuthChallenge(feed)
+	if challenge == "" {
+		return w
+	}
+	return &challengeWriter{ResponseWriter: w, challenge: challenge}
 }
 
 // served records one delivered response.

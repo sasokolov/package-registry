@@ -9,6 +9,7 @@ import (
 	_ "github.com/sasokolov/package-registry/modules/format/maven"
 	_ "github.com/sasokolov/package-registry/modules/format/npm"
 	_ "github.com/sasokolov/package-registry/modules/format/nuget"
+	_ "github.com/sasokolov/package-registry/modules/format/oci"
 	_ "github.com/sasokolov/package-registry/modules/format/terraform"
 	_ "github.com/sasokolov/package-registry/modules/storage/fs"
 	_ "github.com/sasokolov/package-registry/modules/storage/s3"

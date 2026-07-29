@@ -58,6 +58,9 @@ func New(root string) (*Store, error) {
 
 type attrs struct {
 	SHA256 string `json:"sha256"`
+	// ContentType is the media type the writer declared, kept because for
+	// some documents it is not derivable from the key (api.PutOpts).
+	ContentType string `json:"content_type,omitempty"`
 }
 
 // keyPath validates a key and maps it into the given subtree.
@@ -110,6 +113,7 @@ func (s *Store) Stat(_ context.Context, key string) (api.BlobInfo, error) {
 	info := api.BlobInfo{Key: key, Size: st.Size(), ModTime: st.ModTime()}
 	if a, err := s.readAttrs(key); err == nil {
 		info.SHA256 = a.SHA256
+		info.ContentType = a.ContentType
 	}
 	return info, nil
 }
@@ -174,7 +178,8 @@ func (s *Store) Put(_ context.Context, key string, r io.Reader, opts api.PutOpts
 
 	// Attrs first: an attrs file without data is invisible, the reverse
 	// would briefly hide the digest.
-	if err := writeFileAtomic(filepath.Join(s.root, "tmp"), attrsDst, mustJSON(attrs{SHA256: digest})); err != nil {
+	if err := writeFileAtomic(filepath.Join(s.root, "tmp"), attrsDst,
+		mustJSON(attrs{SHA256: digest, ContentType: opts.ContentType})); err != nil {
 		return fmt.Errorf("put %s: attrs: %w", key, err)
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {

@@ -343,7 +343,7 @@ func (c *Client) Manifest(ctx context.Context, feed, path string) (ManifestRespo
 // site. Authentication is the replication credential; the publisher's
 // identity travels as on-behalf-of headers.
 func (c *Client) ForwardPublish(ctx context.Context, feed, path, method string,
-	body io.Reader, identity, projectPath string) (int, []byte, error) {
+	body io.Reader, identity, projectPath string) (int, http.Header, []byte, error) {
 	q := url.Values{}
 	q.Set("feed", feed)
 	q.Set("path", path)
@@ -356,7 +356,7 @@ func (c *Client) ForwardPublish(ctx context.Context, feed, path, method string,
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, body)
 	if err != nil {
-		return 0, nil, fmt.Errorf("build forwarded publish: %w", err)
+		return 0, nil, nil, fmt.Errorf("build forwarded publish: %w", err)
 	}
 	c.authz(req)
 	req.Header.Set("X-Registry-On-Behalf-Of", identity)
@@ -366,11 +366,11 @@ func (c *Client) ForwardPublish(ctx context.Context, feed, path, method string,
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return 0, nil, fmt.Errorf("forward publish to %s: %w", c.peer.Name, err)
+		return 0, nil, nil, fmt.Errorf("forward publish to %s: %w", c.peer.Name, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	out, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	return resp.StatusCode, out, nil
+	return resp.StatusCode, resp.Header, out, nil
 }
 
 // Nudge tells the peer that we have new events (an optimization).

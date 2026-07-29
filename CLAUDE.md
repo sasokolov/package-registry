@@ -165,6 +165,7 @@ modules/format/npm/
 modules/format/composer/
 modules/format/nuget/
 modules/format/helm/
+modules/format/oci/
 modules/internal/semver/  — общий semver-компаратор (npm и helm; maven — свой)
 policies/allowlist/  policies/osv/  policies/license/  policies/quarantine/
 ui/                    — консоль: React+TS+Vite, встраивается go:embed

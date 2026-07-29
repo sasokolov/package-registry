@@ -76,8 +76,11 @@ type ForwardedPublish struct {
 	Peer        string
 }
 
-// PublishHandler applies a forwarded publish locally.
-type PublishHandler func(ctx context.Context, req ForwardedPublish) (status int, body []byte, err error)
+// PublishHandler applies a forwarded publish locally. It reports the
+// response headers as well as the body: a protocol whose write path is a
+// conversation says in them where the next request goes, and a forwarded
+// write that dropped them would strand the client mid-upload.
+type PublishHandler func(ctx context.Context, req ForwardedPublish) (status int, header http.Header, body []byte, err error)
 
 // QuarantineRecord is one quarantine reason as it travels in a snapshot:
 // the state AND its stamp, so a release is conveyed explicitly rather than
@@ -509,7 +512,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "feed, path and X-Registry-On-Behalf-Of are required", http.StatusBadRequest)
 		return
 	}
-	status, body, err := s.publish(r.Context(), ForwardedPublish{
+	status, header, body, err := s.publish(r.Context(), ForwardedPublish{
 		Feed: feed, Path: path, Method: r.Header.Get("X-Registry-Forwarded-Method"),
 		Body: r.Body, Identity: identity,
 		ProjectPath: r.Header.Get("X-Registry-On-Behalf-Of-Project"),
@@ -519,6 +522,11 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("forwarded publish failed", "peer", peerOf(r), "feed", feed, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
+	}
+	for name, values := range header {
+		for _, v := range values {
+			w.Header().Add(name, v)
+		}
 	}
 	w.WriteHeader(status)
 	_, _ = w.Write(body)

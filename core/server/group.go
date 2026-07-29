@@ -202,11 +202,7 @@ func (s *Server) serveMerged(ctx context.Context, rt *runtime, w http.ResponseWr
 	w.Header().Set(api.SourceHeader, string(api.SourceLocal))
 	w.Header().Set(api.SiteHeader, s.site)
 	w.Header().Set(api.GroupMergedHeader, strings.Join(names, ","))
-	contentType := intent.ContentType
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Type", responseContentType(intent, nil))
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
 	if _, err := w.Write(body); err != nil {
 		s.logger.Debug("client aborted a merged download",
@@ -287,10 +283,21 @@ func (s *Server) answerFromMember(ctx context.Context, member *feedRuntime,
 		if err != nil {
 			return nil, err
 		}
+		// A module says "I do not have this" with a status, not an error.
+		// Handing that body to the group as an answer would let one member's
+		// 404 stand for the whole group and hide the members behind it.
+		switch {
+		case resp.Status == http.StatusNotFound:
+			return nil, api.NotFoundf("feed %s does not have %s", member.feed.Name, intent.Coord)
+		case resp.Status >= 400:
+			return nil, fmt.Errorf("feed %s refused the request with status %d", member.feed.Name, resp.Status)
+		}
 		return &pipeline.Result{
-			Body:   io.NopCloser(bytes.NewReader(resp.Body)),
-			Size:   int64(len(resp.Body)),
-			Source: api.SourceLocal,
+			Body:        io.NopCloser(bytes.NewReader(resp.Body)),
+			Size:        int64(len(resp.Body)),
+			SHA256:      digestOf(resp.Header),
+			Source:      api.SourceLocal,
+			ContentType: resp.Header["Content-Type"],
 		}, nil
 	}
 	return s.pipe.Serve(ctx, pipeline.Request{
@@ -337,15 +344,25 @@ func (s *Server) streamResult(w http.ResponseWriter, member *feedRuntime,
 	if res.Size >= 0 {
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", res.Size))
 	}
-	contentType := intent.ContentType
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Type", responseContentType(intent, res))
+	setProtocolHeaders(w, member.module, member.feed, intent, res.SHA256)
 	if _, err := io.Copy(w, res.Body); err != nil {
 		s.logger.Debug("client aborted a group download",
 			"feed", member.feed.Name, "coord", intent.Coord.String(), "error", err)
 	}
+}
+
+// digestOf reads a sha256 a module put in its own response headers, so a
+// document a member produced itself is served with the same provenance as
+// one that came out of the store.
+func digestOf(header map[string]string) string {
+	for _, value := range header {
+		hex, ok := strings.CutPrefix(value, "sha256:")
+		if ok && len(hex) == 64 {
+			return hex
+		}
+	}
+	return ""
 }
 
 // groupServed records that a group answered and which member did the work.

@@ -114,7 +114,7 @@ func setupReplication(ctx context.Context, cfg *config.Config, db *state.DB,
 		DB: db, Store: store, Site: cfg.Site.Name, UUID: identity.UUID,
 		Logger: logger, Metrics: metrics, Authorize: authorize,
 		Digests: srv.FeedDigests,
-		Publish: func(ctx context.Context, req repl.ForwardedPublish) (int, []byte, error) {
+		Publish: func(ctx context.Context, req repl.ForwardedPublish) (int, http.Header, []byte, error) {
 			return srv.ApplyForwardedPublish(ctx, req.Feed, req.Path, req.Method,
 				req.Body, req.Identity, req.ProjectPath, req.Peer)
 		},
@@ -337,13 +337,13 @@ func serverAuthorizer(rc config.ReplicationConfig) (func(*http.Request) (string,
 // an on-behalf-of identity that the home site re-authorizes.
 func makeForwarder(manager *repl.Manager, logger *slog.Logger) server.ForwardFunc {
 	return func(ctx context.Context, site, feed, path, method string,
-		body io.ReadCloser, identity api.Identity) (int, []byte, error) {
-		status, respBody, err := manager.ForwardPublish(ctx, site, feed, path, method,
+		body io.ReadCloser, identity api.Identity) (int, http.Header, []byte, error) {
+		status, header, respBody, err := manager.ForwardPublish(ctx, site, feed, path, method,
 			body, identity.String(), identity.ProjectPath)
 		if err != nil {
-			return 0, nil, err
+			return 0, nil, nil, err
 		}
 		logger.Debug("publish forwarded", "site", site, "feed", feed, "status", status)
-		return status, respBody, nil
+		return status, header, respBody, nil
 	}
 }

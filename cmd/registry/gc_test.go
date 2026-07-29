@@ -169,3 +169,45 @@ func TestParseManifestSHA(t *testing.T) {
 		t.Error("malformed manifest accepted")
 	}
 }
+
+// A push that was started and never finished leaves staged chunks nothing
+// points at. Nothing else collects them, so they would grow forever — and
+// they are the bytes of a layer, not a few hundred of them.
+func TestGCCollectsAbandonedUploadsButNotOnesInProgress(t *testing.T) {
+	store, dir := gcStore(t)
+	ctx := t.Context()
+
+	abandoned := api.StagingPrefix + "images/team/app/deadbeefdeadbeef/0000000000000000"
+	inProgress := api.StagingPrefix + "images/team/app/cafebabecafebabe/0000000000000000"
+	for _, key := range []string{abandoned, inProgress} {
+		if err := store.Put(ctx, key, strings.NewReader("staged bytes"), api.PutOpts{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backdate(t, dir, abandoned)
+
+	var out bytes.Buffer
+	if err := sweep(ctx, store, nil, &out, discard(), true, 24*time.Hour); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	if _, err := store.Stat(ctx, abandoned); err == nil {
+		t.Error("an abandoned upload chunk survived the sweep")
+	}
+	if _, err := store.Stat(ctx, inProgress); err != nil {
+		t.Errorf("an upload still in progress was collected: %v", err)
+	}
+	if !strings.Contains(out.String(), "1 abandoned upload chunk") {
+		t.Errorf("report does not mention it:\n%s", out.String())
+	}
+}
+
+// backdate ages any stored object past the -min-age floor.
+func backdate(t *testing.T, dir, key string) {
+	t.Helper()
+	path := filepath.Join(append([]string{dir, "data"}, strings.Split(key, "/")...)...)
+	old := time.Now().Add(-72 * time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+}
