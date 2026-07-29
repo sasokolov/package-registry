@@ -73,21 +73,21 @@ func (Module) Parse(r *http.Request) (api.Intent, error) {
 		}, nil
 
 	case strings.HasPrefix(p, "v3/registration/"):
-		rest := strings.TrimPrefix(p, "v3/registration/")
-		id, _, ok := strings.Cut(rest, "/")
-		if !ok || id == "" {
-			return api.Intent{}, api.NotFoundf("not a registration path: %q", p)
-		}
-		return api.Intent{
-			Kind:        api.IntentMetadata,
-			Coord:       api.PackageCoordinate{Format: "nuget", Name: id},
-			CacheTTL:    metadataTTL,
-			RemotePath:  upstreamRegistrationPrefix + rest,
-			ContentType: "application/json",
-		}, nil
+		return parseRegistration(p, strings.TrimPrefix(p, "v3/registration/"))
+
+	// The layout this registry asks an upstream for, answered as well as
+	// asked. Without it one registry cannot be another's upstream: a remote
+	// site pointed at the site that holds the link would ask for
+	// v3-flatcontainer/ and be told there is no such path. The intent is
+	// identical either way, so both spellings share one cache entry.
+	case strings.HasPrefix(p, upstreamRegistrationPrefix):
+		return parseRegistration(p, strings.TrimPrefix(p, upstreamRegistrationPrefix))
 
 	case strings.HasPrefix(p, "v3/flat2/"):
-		return parseFlatContainer(p)
+		return parseFlatContainer(p, strings.TrimPrefix(p, "v3/flat2/"))
+
+	case strings.HasPrefix(p, upstreamFlatPrefix):
+		return parseFlatContainer(p, strings.TrimPrefix(p, upstreamFlatPrefix))
 
 	case strings.HasPrefix(p, "v3/query"):
 		return api.Intent{
@@ -107,10 +107,27 @@ func (Module) Parse(r *http.Request) (api.Intent, error) {
 	}
 }
 
+// parseRegistration handles a registration document, whichever of the two
+// path spellings it arrived under.
+func parseRegistration(p, rest string) (api.Intent, error) {
+	id, _, ok := strings.Cut(rest, "/")
+	if !ok || id == "" {
+		return api.Intent{}, api.NotFoundf("not a registration path: %q", p)
+	}
+	return api.Intent{
+		Kind:        api.IntentMetadata,
+		Coord:       api.PackageCoordinate{Format: "nuget", Name: id},
+		CacheTTL:    metadataTTL,
+		RemotePath:  upstreamRegistrationPrefix + rest,
+		ContentType: "application/json",
+	}, nil
+}
+
 // parseFlatContainer handles the package base address (flat container):
 // {id}/index.json lists versions, {id}/{version}/{file} serves content.
-func parseFlatContainer(p string) (api.Intent, error) {
-	rest := strings.TrimPrefix(p, "v3/flat2/")
+// p is the path as asked, for error messages; rest is it with whichever
+// prefix it arrived under removed.
+func parseFlatContainer(p, rest string) (api.Intent, error) {
 	segs := strings.Split(rest, "/")
 	for _, s := range segs {
 		if s == "" {

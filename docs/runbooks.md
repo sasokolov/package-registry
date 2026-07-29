@@ -343,6 +343,41 @@ PostgreSQL (инвариант 7); поэтому отзыв бьёт не мг�
 
 ---
 
+## Клиент получает ENOTFOUND при здоровой репликации
+
+**Симптом.** Метаданные приходят, а скачивание падает на имени, которого нет:
+`getaddrinfo ENOTFOUND registry-b`, `Could not resolve host`. Репликация при
+этом зелёная.
+
+**Что произошло.** `site.external_url` подставляется в URL, которые реестр
+переписывает для клиентов — npm `dist.tarball`, composer `dist.url`,
+terraform `X-Terraform-Get`. Если там стоит адрес, по которому сайт доступен
+только изнутри кластера, клиент получает его дословно.
+
+Это **не** тот же адрес, что `replication.peers[].public_url`: по нему ходят
+друг к другу сайты, и он вполне может быть внутренним. Поля разные именно
+поэтому.
+
+```yaml
+site:
+  external_url: https://registry.eu.example.com   # то, что видит клиент
+replication:
+  peers:
+    - name: us-1
+      url: http://registry-us.internal:8081       # журнал
+      public_url: http://registry-us.internal:8080 # форвард публикаций
+```
+
+Проверить одним запросом:
+
+```bash
+curl -s "$REGISTRY/npm/<feed>/<package>" | jq -r '.versions[].dist.tarball' | head -1
+```
+
+Адрес в ответе должен быть тем, по которому вы только что позвали curl.
+
+---
+
 ## Удалённый сайт медленный
 
 **Симптом.** Сборки на втором сайте идут заметно дольше, чем на первом, при

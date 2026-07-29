@@ -219,3 +219,51 @@ func TestOrdinaryNuGetUpstreamsAreAccepted(t *testing.T) {
 		}
 	}
 }
+
+// A registry has to be able to answer what it asks an upstream for, or it
+// cannot be part of a chain — and a remote site caching through the site
+// that holds the upstream link is exactly the topology geo replication does
+// not cover, because a cache is site-local by design.
+//
+// Both spellings must also produce the same intent, or the two would occupy
+// separate cache entries for one package.
+func TestTheUpstreamLayoutIsAnsweredAsWellAsAsked(t *testing.T) {
+	tests := []struct {
+		client   string
+		upstream string
+	}{
+		{"v3/flat2/newtonsoft.json/index.json", "v3-flatcontainer/newtonsoft.json/index.json"},
+		{"v3/flat2/newtonsoft.json/13.0.3/newtonsoft.json.13.0.3.nupkg",
+			"v3-flatcontainer/newtonsoft.json/13.0.3/newtonsoft.json.13.0.3.nupkg"},
+		{"v3/registration/newtonsoft.json/index.json",
+			"v3/registration5-gz-semver2/newtonsoft.json/index.json"},
+	}
+	for _, tc := range tests {
+		asClient, err := parse(t, "/"+tc.client)
+		if err != nil {
+			t.Fatalf("client path %q: %v", tc.client, err)
+		}
+		asUpstream, err := parse(t, "/"+tc.upstream)
+		if err != nil {
+			t.Fatalf("upstream path %q: %v", tc.upstream, err)
+		}
+		if asClient != asUpstream {
+			t.Errorf("%q and %q resolve differently:\n  %+v\n  %+v",
+				tc.client, tc.upstream, asClient, asUpstream)
+		}
+	}
+}
+
+// The aliases must not accept nonsense that the client paths reject.
+func TestUpstreamShapedNonsenseIsStillRefused(t *testing.T) {
+	for _, p := range []string{
+		"/v3-flatcontainer/",
+		"/v3-flatcontainer/newtonsoft.json",
+		"/v3-flatcontainer/a/b/c/d",
+		"/v3/registration5-gz-semver2/",
+	} {
+		if _, err := parse(t, p); err == nil {
+			t.Errorf("Parse(%q) was accepted", p)
+		}
+	}
+}
