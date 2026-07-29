@@ -43,6 +43,44 @@ out="$(compose run --rm -T npm-client sh -c "
 " 2>&1)" || { echo "$out" | tail -30; exit 1; }
 grep -q "install ok" <<<"$out" || { echo "$out" | tail -20; exit 1; }
 
+echo "--> a scoped package publishes where a client will look for it"
+# npm uploads the attachment as "@scope/name-1.0.0.tgz" and fetches the
+# tarball from ".../-/name-1.0.0.tgz". Storing under the upload name leaves
+# the index advertising a URL that answers 404: the publish reports success
+# and the package cannot be installed.
+out="$(compose run --rm -T -e NPM_TOKEN="$token" npm-client sh -c "
+  set -e
+  rm -rf /tmp/s && mkdir -p /tmp/s && cd /tmp/s
+  cat > package.json <<'JSON'
+{
+  \"name\": \"@acme/scoped-pkg\",
+  \"version\": \"2.0.0\",
+  \"main\": \"index.js\",
+  \"license\": \"MIT\"
+}
+JSON
+  echo 'module.exports = \"scoped\";' > index.js
+  npm config set registry $REG
+  npm config set //registry:8080/npm/npm-hosted/:_authToken \$NPM_TOKEN
+  npm publish --access public
+" 2>&1)" || { echo "$out" | tail -30; exit 1; }
+grep -q "@acme/scoped-pkg@2.0.0" <<<"$out" || { echo "$out" | tail -20; exit 1; }
+
+# The tarball is where npm resolves it, not where npm uploaded it.
+code="$(client_curl -sS -o /dev/null -w '%{http_code}' \
+  "http://registry:8080/npm/npm-hosted/@acme/scoped-pkg/-/scoped-pkg-2.0.0.tgz")"
+[[ "$code" == "200" ]] || {
+  echo "the scoped tarball is not at the path npm asks for ($code)" >&2; exit 1; }
+
+out="$(compose run --rm -T npm-client sh -c "
+  set -e
+  rm -rf /tmp/si && mkdir -p /tmp/si && cd /tmp/si
+  npm config set registry $REG
+  npm install @acme/scoped-pkg@2.0.0 --no-audit --no-fund
+  node -e \"if (require('@acme/scoped-pkg') !== 'scoped') { throw new Error('wrong content'); } console.log('scoped install ok')\"
+" 2>&1)" || { echo "$out" | tail -30; exit 1; }
+grep -q "scoped install ok" <<<"$out" || { echo "$out" | tail -20; exit 1; }
+
 echo "--> republishing the same version with different content is refused"
 out="$(publish 1.0.0 second || true)"
 if ! grep -qE "409|Conflict|immutable|cannot publish over" <<<"$out"; then

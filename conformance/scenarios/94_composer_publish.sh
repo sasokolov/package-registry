@@ -80,6 +80,22 @@ JSON
   test -f vendor/acme/lib-a/composer.json
 " 2>&1)" || { echo "$out" | tail -30; exit 1; }
 
+echo "--> the group does not claim its hosted member's inventory is everything"
+# available-packages is a promise of completeness. A hosted feed can make it;
+# a proxy cannot, and publishes no such list. Inheriting the hosted member's
+# would make composer refuse to look up anything else — "could not be found
+# in any version", for a package sitting one member away.
+group_root="$(client_curl -fsS "$GROUP/packages.json")"
+if grep -q '"available-packages"' <<<"$group_root"; then
+  echo "the group claims a complete inventory it does not have:" >&2
+  echo "$group_root" >&2; exit 1
+fi
+# The hosted feed alone still enumerates: that promise is true of it.
+hosted_root="$(client_curl -fsS "$HOSTED/packages.json")"
+grep -q '"available-packages"' <<<"$hosted_root" || {
+  echo "the hosted feed stopped enumerating what it holds:" >&2
+  echo "$hosted_root" >&2; exit 1; }
+
 echo "--> the group shows the local version AND the upstream one"
 p2="$(client_curl -fsS "$GROUP/p2/acme/lib-a.json")"
 grep -q '"1.0.0"' <<<"$p2" || {

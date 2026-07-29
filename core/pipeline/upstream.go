@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -216,16 +217,23 @@ func (u *Upstream) fetchTarget(ctx context.Context, target string) (*http.Respon
 	}
 
 	var lastErr error
+	// wait is what the last attempt asked us to wait, which for a throttled
+	// upstream is the upstream's own answer rather than our guess.
+	var wait time.Duration
 	for attempt := 0; attempt < u.retries; attempt++ {
 		if attempt > 0 {
-			// Exponential backoff with full jitter.
-			backoff := backoffBase << (attempt - 1)
-			sleep := time.Duration(rand.Int64N(int64(backoff))) + backoff/2 //nolint:gosec // jitter, not crypto
+			sleep := wait
+			if sleep <= 0 {
+				// Exponential backoff with full jitter.
+				backoff := backoffBase << (attempt - 1)
+				sleep = time.Duration(rand.Int64N(int64(backoff))) + backoff/2 //nolint:gosec // jitter, not crypto
+			}
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			case <-time.After(sleep):
 			}
+			wait = 0
 		}
 		if u.limiter != nil {
 			if err := u.limiter.Wait(ctx); err != nil {
@@ -244,6 +252,16 @@ func (u *Upstream) fetchTarget(ctx context.Context, target string) (*http.Respon
 			u.breaker.Success()
 			u.count("not_found")
 			return nil, err
+		case throttleDelay(err, &wait):
+			// The upstream is up and telling us the rate. Counting that as
+			// a failure would open the breaker and turn "slow down" into
+			// "this feed is down" for everyone — which is what a public
+			// mirror's rate limit would do to a whole build.
+			u.count("throttled")
+			lastErr = err
+			u.logger.Warn("upstream asked us to slow down",
+				"feed", u.feed, "url", redactURL(target), "attempt", attempt+1,
+				"retry_in", wait)
 		case !retryable(err):
 			u.breaker.Failure()
 			u.count("error")
@@ -290,6 +308,59 @@ func retryable(err error) bool {
 	return errors.As(err, &te)
 }
 
+// throttledError is a 429: the upstream is working and is asking for a lower
+// rate. It is deliberately not a transientError, because those count against
+// the circuit breaker and this must not — an upstream that rate-limits is
+// not an upstream that is down.
+type throttledError struct {
+	retryIn time.Duration
+	error
+}
+
+func (t throttledError) Unwrap() error { return t.error }
+
+// throttleDelay reports whether err is a throttle, and how long it asked for.
+func throttleDelay(err error, out *time.Duration) bool {
+	var te throttledError
+	if !errors.As(err, &te) {
+		return false
+	}
+	*out = te.retryIn
+	return true
+}
+
+// maxRetryAfter caps what an upstream can make a request wait. Honouring an
+// hour-long Retry-After would hold a client connection open for an hour; the
+// cache and stale-while-revalidate are the better answer past this point.
+const maxRetryAfter = 30 * time.Second
+
+// retryAfter reads the header in either of the forms RFC 9110 allows. An
+// absent or unparseable value falls back to the caller's own backoff.
+func retryAfter(header string) time.Duration {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(header); err == nil {
+		return capDelay(time.Duration(seconds) * time.Second)
+	}
+	if at, err := http.ParseTime(header); err == nil {
+		return capDelay(time.Until(at))
+	}
+	return 0
+}
+
+func capDelay(d time.Duration) time.Duration {
+	switch {
+	case d <= 0:
+		return 0
+	case d > maxRetryAfter:
+		return maxRetryAfter
+	default:
+		return d
+	}
+}
+
 // readAllCapped reads at most cap bytes and errors if the body is larger.
 func readAllCapped(r io.Reader, limit int64) ([]byte, error) {
 	body, err := io.ReadAll(io.LimitReader(r, limit+1))
@@ -321,6 +392,13 @@ func (u *Upstream) attempt(ctx context.Context, target string) (*http.Response, 
 	case resp.StatusCode == http.StatusNotFound:
 		_ = resp.Body.Close()
 		return nil, api.NotFoundf("upstream %s returned 404 for %s", u.feed, target)
+	case resp.StatusCode == http.StatusTooManyRequests:
+		retry := retryAfter(resp.Header.Get("Retry-After"))
+		_ = resp.Body.Close()
+		return nil, throttledError{
+			retryIn: retry,
+			error:   fmt.Errorf("upstream status 429 for %s", target),
+		}
 	case resp.StatusCode >= 500:
 		_ = resp.Body.Close()
 		return nil, transientError{fmt.Errorf("upstream status %d for %s", resp.StatusCode, target)}

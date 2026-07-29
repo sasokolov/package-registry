@@ -292,3 +292,33 @@ func rewriteEndpoint(raw, base string) (string, bool) {
 func (Module) RedirectSafeIntent(intent api.Intent) bool {
 	return intent.Kind == api.IntentArtifact
 }
+
+// ValidateFeeds implements api.FeedSetValidator.
+//
+// A NuGet upstream is the host the protocol's paths hang off — the same
+// prefix "v3-flatcontainer/" and "v3/registration5-gz-semver2/" are appended
+// to. The address every operator has in their head is the *service index*,
+// "https://api.nuget.org/v3/index.json", because that is what goes in a
+// nuget.config; joining paths onto that produces
+// ".../v3/index.json/v3-flatcontainer/..." and a 400 from the upstream that
+// says nothing about why.
+//
+// Refusing here rather than rewriting keeps the document the source of truth
+// (invariant 8): the operator is told exactly what to write, once, instead of
+// the configuration meaning something other than it says.
+func (Module) ValidateFeeds(feeds []api.Feed) error {
+	for _, feed := range feeds {
+		trimmed := strings.TrimSuffix(feed.Upstream, "/")
+		if trimmed == "" || !strings.HasSuffix(trimmed, "/index.json") {
+			continue
+		}
+		root := strings.TrimSuffix(trimmed, "/index.json")
+		root = strings.TrimSuffix(root, "/v3")
+		return fmt.Errorf(
+			"feed %s: upstream %q is a service index; NuGet paths are joined to the host, "+
+				"so use %q instead — the registry publishes its own service index at "+
+				"/nuget/%s/v3/index.json",
+			feed.Name, feed.Upstream, root, feed.Name)
+	}
+	return nil
+}

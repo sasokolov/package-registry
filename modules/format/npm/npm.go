@@ -134,15 +134,32 @@ func (Module) Parse(r *http.Request) (api.Intent, error) {
 	}, nil
 }
 
-// versionFromTarball extracts the version from "<name>-<version>.tgz",
-// handling scoped packages whose tarball drops the scope.
+// versionFromTarball extracts the version from an attachment or tarball
+// filename, and returns "" when the name is not one of this package's.
+//
+// A scoped package is spelled two ways and both are correct: npm uploads the
+// attachment as "@scope/name-1.0.0.tgz", keeping the scope, and serves the
+// tarball at a path whose last segment drops it — "name-1.0.0.tgz". Accepting
+// only one of them silently produced a version of "@scope/name-1.0.0", which
+// then went into a coordinate and a stored path that no client would ever ask
+// for.
 func versionFromTarball(pkg, file string) string {
 	base := strings.TrimSuffix(file, ".tgz")
-	name := pkg
-	if scoped := strings.SplitN(pkg, "/", 2); len(scoped) == 2 {
-		name = scoped[1]
+	for _, prefix := range []string{pkg + "-", shortName(pkg) + "-"} {
+		if version, ok := strings.CutPrefix(base, prefix); ok && version != "" {
+			return version
+		}
 	}
-	return strings.TrimPrefix(base, name+"-")
+	return ""
+}
+
+// shortName is the package name without its scope, which is how npm spells it
+// in a tarball's filename.
+func shortName(pkg string) string {
+	if _, rest, ok := strings.Cut(pkg, "/"); ok {
+		return rest
+	}
+	return pkg
 }
 
 func validPackageName(name string) bool {

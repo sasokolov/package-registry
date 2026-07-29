@@ -180,3 +180,42 @@ func TestRewriteMetadataDecompressesGzip(t *testing.T) {
 		t.Errorf("gzipped document not rewritten: %s", got)
 	}
 }
+
+// The address in everybody's head is the service index, because that is what
+// goes in a nuget.config. Joining protocol paths onto it produces
+// ".../v3/index.json/v3-flatcontainer/..." and a 400 that explains nothing —
+// so it is refused at load with the address to use instead.
+func TestAServiceIndexUpstreamIsRefused(t *testing.T) {
+	var module Module
+	err := module.ValidateFeeds([]api.Feed{
+		{Name: "nugetorg", Upstream: "https://api.nuget.org/v3/index.json"},
+	})
+	if err == nil {
+		t.Fatal("a service-index upstream was accepted")
+	}
+	if !strings.Contains(err.Error(), "https://api.nuget.org") {
+		t.Errorf("the error does not say what to write instead: %v", err)
+	}
+	if !strings.Contains(err.Error(), "service index") {
+		t.Errorf("the error does not say what is wrong: %v", err)
+	}
+}
+
+// The host root is what the protocol needs, and a hosted feed has no
+// upstream at all: neither may be refused.
+func TestOrdinaryNuGetUpstreamsAreAccepted(t *testing.T) {
+	cases := [][]api.Feed{
+		{{Name: "nugetorg", Upstream: "https://api.nuget.org"}},
+		{{Name: "nugetorg", Upstream: "https://api.nuget.org/"}},
+		// An upstream served under a sub-path, which the rewriter already
+		// supports.
+		{{Name: "mirror", Upstream: "http://mirror.example/nuget"}},
+		{{Name: "hosted", Hosted: true}},
+	}
+	var module Module
+	for _, feeds := range cases {
+		if err := module.ValidateFeeds(feeds); err != nil {
+			t.Errorf("ValidateFeeds(%+v) = %v, want accepted", feeds, err)
+		}
+	}
+}

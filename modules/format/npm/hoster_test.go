@@ -263,3 +263,55 @@ func TestSearchIntentCarriesTheQuery(t *testing.T) {
 		t.Errorf("RemoteQuery = %q", intent.RemoteQuery)
 	}
 }
+
+// A scoped package is spelled two ways, and npm uses both in one publish: the
+// attachment keeps the scope, the tarball path drops it. Storing under the
+// upload name leaves the index advertising a URL that answers 404 — the
+// package publishes "successfully" and cannot be installed.
+func TestScopedPackagesArePublishedWhereTheyAreFetched(t *testing.T) {
+	tests := []struct {
+		pkg      string
+		file     string
+		version  string
+		wantPath string
+	}{
+		{
+			pkg: "@sindresorhus/slugify", file: "@sindresorhus/slugify-3.0.0.tgz",
+			version:  "3.0.0",
+			wantPath: "@sindresorhus/slugify/-/slugify-3.0.0.tgz",
+		},
+		{
+			// The same package, uploaded by a client that spells the
+			// attachment the short way.
+			pkg: "@sindresorhus/slugify", file: "slugify-3.0.0.tgz",
+			version:  "3.0.0",
+			wantPath: "@sindresorhus/slugify/-/slugify-3.0.0.tgz",
+		},
+		{
+			pkg: "left-pad", file: "left-pad-1.3.0.tgz",
+			version:  "1.3.0",
+			wantPath: "left-pad/-/left-pad-1.3.0.tgz",
+		},
+	}
+	for _, tc := range tests {
+		version := versionFromTarball(tc.pkg, tc.file)
+		if version != tc.version {
+			t.Errorf("versionFromTarball(%q, %q) = %q, want %q",
+				tc.pkg, tc.file, version, tc.version)
+			continue
+		}
+		if got := tarballPath(tc.pkg, tarballFile(tc.pkg, version)); got != tc.wantPath {
+			t.Errorf("stored path for %s = %q, want %q", tc.pkg, got, tc.wantPath)
+		}
+	}
+}
+
+// A filename that belongs to another package must not be accepted as a
+// version: it used to come back whole, and then travelled into a coordinate.
+func TestAnAttachmentFromAnotherPackageIsRefused(t *testing.T) {
+	for _, file := range []string{"something-else-1.0.0.tgz", "1.0.0.tgz", "slugify-.tgz"} {
+		if version := versionFromTarball("@sindresorhus/slugify", file); version != "" {
+			t.Errorf("versionFromTarball(%q) = %q, want it refused", file, version)
+		}
+	}
+}

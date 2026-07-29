@@ -106,9 +106,13 @@ func (Module) HandlePublish(ctx context.Context, feed api.Feed, r *http.Request,
 		}
 
 		if _, err := deps.Publish(ctx, api.PublishRequest{
-			Feed:      feed,
-			Coord:     api.PackageCoordinate{Format: "npm", Name: doc.Name, Version: version},
-			Path:      tarballPath(doc.Name, filename),
+			Feed:  feed,
+			Coord: api.PackageCoordinate{Format: "npm", Name: doc.Name, Version: version},
+			// Stored where a client will ask for it, which is not where npm
+			// uploaded it: the attachment keeps the scope and the tarball
+			// path drops it. Storing under the upload name would leave the
+			// index pointing at a 404.
+			Path:      tarballPath(doc.Name, tarballFile(doc.Name, version)),
 			SHA256:    sha256hex,
 			Size:      int64(len(raw)),
 			Checksums: digests,
@@ -181,6 +185,9 @@ func putMutable(ctx context.Context, feed api.Feed, deps api.CoreServices,
 const hostedPrefix = "-/hosted/"
 
 func tarballPath(pkg, filename string) string { return pkg + "/-/" + filename }
+
+// tarballFile is the filename npm resolves a tarball at.
+func tarballFile(pkg, version string) string { return shortName(pkg) + "-" + version + ".tgz" }
 func versionDocPath(pkg, version string) string {
 	return hostedPrefix + pkg + "/versions/" + version + ".json"
 }
@@ -262,9 +269,8 @@ func (Module) Reindex(ctx context.Context, feed api.Feed, deps api.CoreServices)
 			if err := json.Unmarshal(raw, &doc); err != nil {
 				return fmt.Errorf("decode stored version %s@%s: %w", name, version, err)
 			}
-			short := name[strings.LastIndex(name, "/")+1:]
 			doc["dist"] = map[string]any{
-				"tarball":   base + "/" + tarballPath(name, short+"-"+version+".tgz"),
+				"tarball":   base + "/" + tarballPath(name, tarballFile(name, version)),
 				"shasum":    tarball.Checksums["sha1"],
 				"integrity": integrityFrom(tarball.Checksums),
 			}

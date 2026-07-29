@@ -3,6 +3,8 @@ package composer
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
 
 	"github.com/sasokolov/package-registry/core/api"
@@ -76,6 +78,9 @@ func (m Module) mergeRoot(feed api.Feed, parts []api.GroupPart) ([]byte, error) 
 	if err := json.Unmarshal(parts[0].Body, &doc); err != nil {
 		return nil, fmt.Errorf("parse composer root manifest from %s: %w", parts[0].Feed, err)
 	}
+	if err := mergeInventory(doc, parts); err != nil {
+		return nil, err
+	}
 	// RewriteMetadata already knows how a root manifest must look for a
 	// feed; the group is a feed as far as that is concerned.
 	body, err := json.Marshal(doc)
@@ -83,6 +88,60 @@ func (m Module) mergeRoot(feed api.Feed, parts []api.GroupPart) ([]byte, error) 
 		return nil, fmt.Errorf("encode composer root manifest: %w", err)
 	}
 	return m.RewriteMetadata(feed, body)
+}
+
+// inventoryKeys are the root manifest's exhaustive lists: Composer will not
+// ask for a package name that is not covered by them.
+var inventoryKeys = []string{"available-packages", "available-package-patterns"}
+
+// mergeInventory reconciles the members' claims about what they contain.
+//
+// These lists are a promise of completeness, and a hosted feed makes it
+// because it knows everything it holds. A proxy does not publish one at all,
+// because it can serve whatever its upstream has. Taking the first member's
+// list — which is what merging the first document alone amounts to — makes
+// the group claim the hosted feed's inventory is the whole group, and
+// Composer then refuses to look up any proxied package: "could not be found
+// in any version", for a package sitting one member away.
+//
+// So the list survives only if every member that answered made the promise,
+// and then it is their union.
+func mergeInventory(doc map[string]any, parts []api.GroupPart) error {
+	unions := map[string][]string{}
+	complete := map[string]bool{}
+	for _, key := range inventoryKeys {
+		complete[key] = true
+	}
+
+	for _, part := range parts {
+		var member map[string]any
+		if err := json.Unmarshal(part.Body, &member); err != nil {
+			return fmt.Errorf("parse composer root manifest from %s: %w", part.Feed, err)
+		}
+		for _, key := range inventoryKeys {
+			listed, ok := member[key].([]any)
+			if !ok {
+				complete[key] = false
+				continue
+			}
+			for _, raw := range listed {
+				if name, ok := raw.(string); ok {
+					unions[key] = append(unions[key], name)
+				}
+			}
+		}
+	}
+
+	for _, key := range inventoryKeys {
+		if !complete[key] {
+			delete(doc, key)
+			continue
+		}
+		names := unions[key]
+		sort.Strings(names)
+		doc[key] = slices.Compact(names)
+	}
+	return nil
 }
 
 // mergePackage unions the version lists of one package across members.
