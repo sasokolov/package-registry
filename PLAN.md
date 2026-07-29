@@ -13,7 +13,7 @@
 - [x] `go mod init` (спросить у пользователя module path), структура каталогов
       из CLAUDE.md, `Makefile` со всеми целями (пустые цели допустимы только
       в этой фазе).
-- [x] `cmd/registry`: запуск HTTP-сервера, `/healthz`, `/readyz`, `/metrics`,
+- [x] `cmd/fondaco`: запуск HTTP-сервера, `/healthz`, `/readyz`, `/metrics`,
       slog JSON-логирование, graceful shutdown.
 - [x] `core/config`: YAML-схема v0 (`server`, `storage`, `feeds: []`),
       загрузка + валидация + тесты на невалидные конфиги.
@@ -52,7 +52,7 @@
       `publish_sessions`, `quarantine`), helper для advisory locks; тесты
       против Postgres из compose.
 - [x] `core/auth`: статические токены (создание через CLI-субкоманду
-      `registry token create`, хэш в БД, кэш в памяти с TTL); OIDC: валидация
+      `fondaco token create`, хэш в БД, кэш в памяти с TTL); OIDC: валидация
       JWT по JWKS издателя из конфига, маппинг claims → `Identity`
       (`project_path`, `ref`, `sub`); тесты с локально сгенерированным JWKS.
 - [x] `core/policy`: движок цепочки (первый Deny побеждает; пустая цепочка =
@@ -235,7 +235,7 @@ Deny/недоступности внешней зависимости.
       ServiceMonitor, values для S3/Postgres/issuer'ов; README с примером
       установки и подключением GitLab CI (сниппеты `.npmrc`, `settings.xml`,
       `auth.json`, `.terraformrc`, NuGet.config через `CI_JOB_JWT`/id_token).
-- [x] GC: команда `registry gc` — удаление блобов без ссылок из манифестов,
+- [x] GC: команда `fondaco gc` — удаление блобов без ссылок из манифестов,
       dry-run по умолчанию; advisory lock на весь прогон. Задел гео:
       mark-and-sweep с минимальным возрастом блоба и грейсом ≥ журнального
       горизонта; GC выключен во время бутстрапа/ресинка сайта.
@@ -296,7 +296,7 @@ kind-кластер скриптом `deploy/helm/smoke.sh` и проходит 
 - [x] Peer-fallback в `core/pipeline` (per-feed): miss манифеста ИЛИ блоба →
       sha-пинованный fetch у peer'ов; `api.SourcePeer` + `X-Registry-Site`;
       negative cache с TTL.
-- [x] CLI: `registry repl status | backfill | resync | retry-dead-letter |
+- [x] CLI: `fondaco repl status | backfill | resync | retry-dead-letter |
       resolve --feed --path --keep <sha256>` (журналируемое, аудируемое).
 - [x] Бутстрап нового сайта: snapshot → авто-backfill → Reindex всех
       hosted-фидов; до сходимости фиды живут через peer-fallback.
@@ -408,13 +408,13 @@ merge-конвергенции зелёный; ни один гео-сценар
 
 - [x] `terraform-provider-registry/` — отдельный Go-модуль,
       terraform-plugin-framework, версионирование независимое.
-- [x] Ресурсы: `registry_feed` (включая upstream-коннектор, политики,
+- [x] Ресурсы: `fondaco_feed` (включая upstream-коннектор, политики,
       publishers, redirect, publish_policy, replication_mode,
       peer_fallback), `registry_admin_binding`, `registry_oidc_issuer`,
-      `registry_replication_peer`, `registry_token` (secret отдаётся один
+      `registry_replication_peer`, `fondaco_token` (secret отдаётся один
       раз и попадает в state — задокументировано, импорт невозможен по той
-      же причине), `registry_quarantine`.
-- [x] Data sources: `registry_site`, `registry_feed`, `registry_feeds`,
+      же причине), `fondaco_quarantine`.
+- [x] Data sources: `registry_site`, `fondaco_feed`, `fondaco_feeds`,
       `registry_replication_status`.
 - [x] Импорт существующей конфигурации, drift detection, plan-time
       валидация схемы фида на стороне провайдера (строгое подмножество:
@@ -603,8 +603,8 @@ destroy, с проверкой, что фиды реально отдавали 
       поэтому группа по-прежнему не может расширить доступ.
 - [x] Политики в UI и в Terraform-провайдере: страница **Access** (правила,
       привязки, форма «что было бы разрешено»), ресурсы
-      `registry_access_policy` и `registry_binding`, data source
-      `registry_access_explain` для `check`-блоков, per-resource CRUD в
+      `fondaco_access_policy` и `fondaco_binding`, data source
+      `fondaco_access_explain` для `check`-блоков, per-resource CRUD в
       админ-API. Форма входа строится из `GET /api/v1/auth/methods` —
       способы входа настраиваются и скрываются, как в Vault.
 - [x] Conformance: запрет узкого пути поверх широкого разрешения; grant
@@ -656,9 +656,9 @@ Vault, и оно кусается ровно там, где политики п�
 - [x] `GET /api/v1/usage` и короткая форма в `/api/v1/feeds`; страница
       **Usage** в консоли, карточки на обзоре, колонки в списке фидов.
 - [x] Метрики по фидам и группам, никогда по пакетам:
-      `registry_feed_{artifacts,packages,bytes}`, `registry_store_bytes`,
+      `fondaco_feed_{artifacts,packages,bytes}`, `registry_store_bytes`,
       `registry_bytes_served_total`, `registry_upstream_bytes_total`,
-      `registry_group_requests_total`, `registry_feed_last_ingest_*`.
+      `registry_group_requests_total`, `fondaco_feed_last_ingest_*`.
       Плюс панели в дашборде и три алерта.
 - [x] Топ пакетов по скачиваниям: `package_downloads` (feed, coordinate),
       `GET /api/v1/usage/packages`, блок «Most downloaded» на странице Usage
@@ -804,6 +804,48 @@ Content-Disposition, Accept) и не едет ничего о том, кто п�
 
 **Acceptance:** `make dev-ha` поднимает стенд, `make smoke` зелёный по всем
 семи форматам против него и против обоих сайтов гео-стенда.
+
+---
+
+## Фаза 18 — имя и лицензия
+
+Предпосылка: пользователь попросил (2026-07-29) выбрать лицензию так, чтобы
+проект стал промышленным стандартом, остался открытым навсегда и привлекал и
+пользователей, и контрибьюторов — а затем придумать имя.
+
+- [x] Apache-2.0 на всё: ядро, модули, консоль, провайдер. Не MIT — нужен
+      явный патентный грант и оговорка о встречном иске; не копилефт — в этой
+      категории стандартом стало только пермиссивное, а AGPL закрывает
+      дистрибутивы, вендоров и корпоративные OSPO, то есть тех, кто и делает
+      стандартом.
+- [x] DCO вместо CLA. Это и есть разница между «останется открытым» и
+      намерением: все громкие развороты лицензий были возможны потому, что CLA
+      собрал права в одних руках. Здесь копирайт размазан по всем, и сменить
+      лицензию в одиночку физически нельзя.
+- [x] `scripts/third-party-notices.py` + `make notices`: атрибуция
+      генерируется из реально линкуемого (`go list -deps` по каждому бинарю и
+      production-дерево консоли), с полными текстами лицензий, чужими NOTICE
+      дословно и адресом исходников MPL-модулей провайдера. `make
+      notices-check` падает в CI, когда закоммиченное разошлось с
+      зависимостями: зависимость без атрибуции — это нарушение лицензии в
+      релизе, а не пробел в документации.
+- [x] Обязательства едут с тем, что распространяется: LICENSE, NOTICE и
+      THIRD-PARTY-NOTICES.md копируются в образ, у провайдера свой комплект.
+- [x] TRADEMARK.md, SECURITY.md, CONTRIBUTING.md, проверка sign-off в CI.
+- [x] Имя: **fondaco** — склад-таможня средневекового порта, где иноземный
+      товар принимали, досматривали, хранили и выдавали по местным правилам.
+      Выбрано из 49 кандидатов по проверяемым критериям (свободны npm, PyPI,
+      crates.io, Docker Hub, .io и .dev; нет коллизий в devtools; нет знака в
+      софтверных классах), а не по вкусу. Переименованы module path, бинарь и
+      CLI, образ, чарт, ресурсы Terraform-провайдера, переменные окружения и
+      префикс метрик.
+- [x] Метрики стали `fondaco_*`: `registry_*` занимает docker/distribution —
+      тот самый реестр, который этот проект проксирует. Заголовки
+      `X-Registry-*` наоборот оставлены небрендированными: они часть
+      протокола, и их должен мочь отдавать кто угодно (инвариант 11).
+
+**Acceptance:** `make lint test`, conformance и гео-набор зелёные после
+переименования; в дереве не осталось ни одного упоминания старого пути.
 
 ---
 

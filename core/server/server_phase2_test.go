@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 // synthModule exercises the Synthesizer and RootRouter capabilities.

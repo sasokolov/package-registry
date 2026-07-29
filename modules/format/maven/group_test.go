@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 // metadataDoc is one member's maven-metadata.xml for com.example:lib.

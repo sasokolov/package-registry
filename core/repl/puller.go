@@ -15,8 +15,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/sasokolov/package-registry/core/api"
-	"github.com/sasokolov/package-registry/core/state"
+	"github.com/fondaco-dev/fondaco/core/api"
+	"github.com/fondaco-dev/fondaco/core/state"
 )
 
 // Peer is a configured replication partner.
@@ -198,7 +198,7 @@ func (c *Client) Snapshot(ctx context.Context) (SnapshotResponse, error) {
 // large artifacts over a WAN.
 func (c *Client) FetchBlob(ctx context.Context, store api.BlobStore, digest string, size int64) error {
 	// Spool while hashing so nothing enters the store unverified.
-	tmp, err := os.CreateTemp("", "registry-peer-blob-*")
+	tmp, err := os.CreateTemp("", "fondaco-peer-blob-*")
 	if err != nil {
 		return fmt.Errorf("spool peer blob: %w", err)
 	}

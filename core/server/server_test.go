@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sasokolov/package-registry/core/api"
-	"github.com/sasokolov/package-registry/core/config"
+	"github.com/fondaco-dev/fondaco/core/api"
+	"github.com/fondaco-dev/fondaco/core/config"
 
-	_ "github.com/sasokolov/package-registry/modules/storage/fs" // storage under test
-	_ "github.com/sasokolov/package-registry/policies/allowlist" // policy under test
+	_ "github.com/fondaco-dev/fondaco/modules/storage/fs" // storage under test
+	_ "github.com/fondaco-dev/fondaco/policies/allowlist" // policy under test
 )
 
 // srvtestModule mirrors the conformance echo module but registers under its

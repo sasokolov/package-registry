@@ -32,7 +32,7 @@ heal
 echo "--> both sites detect the conflict and quarantine the coordinate"
 conflict_seen() { # <eu|us>
   local out
-  out="$(compose exec -T "registry-$1" registry repl conflicts -config /etc/registry/config.yaml 2>/dev/null)" || return 1
+  out="$(compose exec -T "registry-$1" fondaco repl conflicts -config /etc/fondaco/config.yaml 2>/dev/null)" || return 1
   [[ "$out" == *"clash"* ]]
 }
 for site in eu us; do
@@ -56,7 +56,7 @@ done
 
 echo "--> both sites agree on the canonical digest (content-derived, not clock-derived)"
 digest_of() { # <eu|us>
-  compose exec -T "registry-$1" registry repl conflicts -config /etc/registry/config.yaml 2>/dev/null |
+  compose exec -T "registry-$1" fondaco repl conflicts -config /etc/fondaco/config.yaml 2>/dev/null |
     awk '/clash/ {print $3; exit}'
 }
 d_eu="$(digest_of eu)"
@@ -69,7 +69,7 @@ echo "    canonical: $d_eu"
 
 echo "--> an operator resolves the conflict, and every site converges on the choice"
 conflicts_json() { # <eu|us>
-  compose exec -T "registry-$1" registry repl conflicts -json -config /etc/registry/config.yaml 2>/dev/null
+  compose exec -T "registry-$1" fondaco repl conflicts -json -config /etc/fondaco/config.yaml 2>/dev/null
 }
 json="$(conflicts_json eu)"
 canonical="$(grep -o '"canonical_sha256": "[0-9a-f]*"' <<<"$json" | head -1 | grep -o '[0-9a-f]\{64\}')"
@@ -82,8 +82,8 @@ fi
 
 # Deliberately keep the OTHER digest: the operator's choice must win over
 # the automatic K1 pick, everywhere.
-compose exec -T registry-eu registry repl resolve \
-  -feed shared -path "$PATH_JAR" -keep "$other" -config /etc/registry/config.yaml >/dev/null
+compose exec -T registry-eu fondaco repl resolve \
+  -feed shared -path "$PATH_JAR" -keep "$other" -config /etc/fondaco/config.yaml >/dev/null
 
 # The kept digest belongs to exactly one of the two publishes; work out
 # which content that is, so the assertion is "the operator's choice is
@@ -102,7 +102,7 @@ resolved_everywhere() { # <eu|us>
 for site in eu us; do
   if ! wait_for 90 resolved_everywhere "$site"; then
     echo "site $site still refuses to serve the resolved coordinate" >&2
-    compose exec -T "registry-$site" registry repl conflicts -config /etc/registry/config.yaml >&2 || true
+    compose exec -T "registry-$site" fondaco repl conflicts -config /etc/fondaco/config.yaml >&2 || true
     exit 1
   fi
 done

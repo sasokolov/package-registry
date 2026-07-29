@@ -6,8 +6,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sasokolov/package-registry/core/api"
-	"github.com/sasokolov/package-registry/core/state"
+	"github.com/fondaco-dev/fondaco/core/api"
+	"github.com/fondaco-dev/fondaco/core/state"
 )
 
 // Writer records local actions in the replication journal. It is the only

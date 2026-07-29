@@ -43,8 +43,8 @@ services:
       dockerfile: conformance/Dockerfile
     hostname: registry-eu
     volumes:
-      - ./eu.yaml:/etc/registry/config.yaml:ro
-      - ./peer-token:/etc/registry/peer-token:ro
+      - ./eu.yaml:/etc/fondaco/config.yaml:ro
+      - ./peer-token:/etc/fondaco/peer-token:ro
     depends_on:
       minio-eu: {condition: service_healthy}
       postgres-eu: {condition: service_healthy}
@@ -89,8 +89,8 @@ services:
       dockerfile: conformance/Dockerfile
     hostname: registry-us
     volumes:
-      - ./us.yaml:/etc/registry/config.yaml:ro
-      - ./peer-token:/etc/registry/peer-token:ro
+      - ./us.yaml:/etc/fondaco/config.yaml:ro
+      - ./peer-token:/etc/fondaco/peer-token:ro
     depends_on:
       minio-us: {condition: service_healthy}
       postgres-us: {condition: service_healthy}
@@ -139,8 +139,8 @@ services:
       context: ../..
       dockerfile: conformance/Dockerfile
     volumes:
-      - ./ap.yaml:/etc/registry/config.yaml:ro
-      - ./peer-token:/etc/registry/peer-token:ro
+      - ./ap.yaml:/etc/fondaco/config.yaml:ro
+      - ./peer-token:/etc/fondaco/peer-token:ro
     depends_on:
       minio-ap: {condition: service_healthy}
       postgres-ap: {condition: service_healthy}

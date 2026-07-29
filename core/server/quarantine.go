@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sasokolov/package-registry/core/state"
+	"github.com/fondaco-dev/fondaco/core/state"
 )
 
 // quarantineCache answers "is this coordinate quarantined?" on the read path

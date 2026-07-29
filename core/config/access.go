@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sasokolov/package-registry/core/access"
+	"github.com/fondaco-dev/fondaco/core/access"
 )
 
 // Access control as configuration.

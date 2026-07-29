@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 // MetadataIntent points at the package root, which carries per-version

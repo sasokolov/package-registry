@@ -6,7 +6,7 @@ groups:
   - name: registry
     rules:
       - alert: RegistryUpstreamBreakerOpen
-        expr: registry_upstream_breaker_state > 0
+        expr: fondaco_upstream_breaker_state > 0
         for: 5m
         labels: {severity: warning}
         annotations:
@@ -17,9 +17,9 @@ groups:
 
       - alert: RegistryCacheHitRatioLow
         expr: |
-          sum(rate(registry_requests_total{source="upstream"}[15m])) by (feed)
+          sum(rate(fondaco_requests_total{source="upstream"}[15m])) by (feed)
             /
-          clamp_min(sum(rate(registry_requests_total[15m])) by (feed), 0.001)
+          clamp_min(sum(rate(fondaco_requests_total[15m])) by (feed), 0.001)
             > 0.5
         for: 30m
         labels: {severity: warning}
@@ -30,7 +30,7 @@ groups:
             are requesting coordinates that do not exist upstream.
 
       - alert: RegistryUsageScanFailing
-        expr: increase(registry_usage_scan_failures_total[2h]) > 2
+        expr: increase(fondaco_usage_scan_failures_total[2h]) > 2
         for: 10m
         labels: {severity: warning}
         annotations:
@@ -42,7 +42,7 @@ groups:
             database.
 
       - alert: RegistryUsageCountersNotFlushing
-        expr: increase(registry_usage_flush_failures_total[30m]) > 5
+        expr: increase(fondaco_usage_flush_failures_total[30m]) > 5
         for: 15m
         labels: {severity: warning}
         annotations:
@@ -54,8 +54,8 @@ groups:
 
       - alert: RegistryStorageGrowingFast
         expr: |
-          predict_linear(registry_store_bytes[6h], 7 * 24 * 3600)
-            > 2 * registry_store_bytes
+          predict_linear(fondaco_store_bytes[6h], 7 * 24 * 3600)
+            > 2 * fondaco_store_bytes
         for: 1h
         labels: {severity: info}
         annotations:
@@ -64,10 +64,10 @@ groups:
             Not a fault, but worth knowing before the bill arrives. The
             console's Usage page breaks it down by feed, and a proxy feed
             that stores much and serves little is the usual culprit;
-            `registry gc` collects what no manifest points at.
+            `fondaco gc` collects what no manifest points at.
 
       - alert: RegistryProjectionDivergent
-        expr: registry_projection_divergent > 0
+        expr: fondaco_projection_divergent > 0
         for: 15m
         labels: {severity: critical}
         annotations:
@@ -81,18 +81,18 @@ groups:
   - name: registry-geo
     rules:
       - alert: RegistryReplicationStalled
-        expr: registry_repl_lag > 0 and changes(registry_repl_applied_total[15m]) == 0
+        expr: fondaco_repl_lag > 0 and changes(fondaco_repl_applied_total[15m]) == 0
         for: 15m
         labels: {severity: critical}
         annotations:
           summary: "Replication from {{ $labels.peer }} ({{ $labels.origin }}) has stalled"
           description: >
             This site is behind and nothing has been applied for 15 minutes.
-            Check `registry repl status`; a peer that is merely slow shows a
+            Check `fondaco repl status`; a peer that is merely slow shows a
             falling lag.
 
       - alert: RegistryReplicationPeerUnreachable
-        expr: registry_repl_cursor_age_seconds > 300
+        expr: fondaco_repl_cursor_age_seconds > 300
         for: 5m
         labels: {severity: warning}
         annotations:
@@ -102,7 +102,7 @@ groups:
             is paused. Check connectivity and peer credentials.
 
       - alert: RegistryReplicationRPOBreached
-        expr: registry_repl_durable_lag > 100
+        expr: fondaco_repl_durable_lag > 100
         for: 15m
         labels: {severity: warning}
         annotations:
@@ -110,21 +110,21 @@ groups:
           description: >
             Manifests have been applied whose blobs are not here yet. If
             this site had to take over now, that many coordinates would be
-            unservable locally. Run `registry repl backfill`.
+            unservable locally. Run `fondaco repl backfill`.
 
       - alert: RegistryPublishConflict
-        expr: increase(registry_repl_publish_conflicts_total[10m]) > 0
+        expr: increase(fondaco_repl_publish_conflicts_total[10m]) > 0
         labels: {severity: critical}
         annotations:
           summary: "Cross-site publish conflict detected (rule K1)"
           description: >
             Two sites published different bytes at one coordinate. The
             coordinate is quarantined and is NOT being served. Resolve it
-            with `registry repl conflicts` and `registry repl resolve`.
+            with `fondaco repl conflicts` and `fondaco repl resolve`.
             See docs/runbooks.md.
 
       - alert: RegistryReplicationParkedEvents
-        expr: registry_repl_parked_events > 0
+        expr: fondaco_repl_parked_events > 0
         for: 30m
         labels: {severity: warning}
         annotations:
@@ -132,7 +132,7 @@ groups:
           description: >
             Events that could not be applied (unknown kind from a newer
             peer, missing blob, clock skew). They retry on every poll.
-            A count that does not fall needs `registry repl retry-parked`
+            A count that does not fall needs `fondaco repl retry-parked`
             and the site log.
 
       - alert: RegistryFeedDigestDivergence
@@ -140,8 +140,8 @@ groups:
         # spread across sites is the divergence signal. (Grouping by value
         # is not expressible in PromQL; max != min is.)
         expr: |
-          max by (feed) (registry_repl_feed_digest)
-            != min by (feed) (registry_repl_feed_digest)
+          max by (feed) (fondaco_repl_feed_digest)
+            != min by (feed) (fondaco_repl_feed_digest)
         for: 30m
         labels: {severity: critical}
         annotations:
@@ -149,5 +149,5 @@ groups:
           description: >
             The per-feed manifest digest differs between sites for longer
             than any normal replication lag. This is the silent-divergence
-            alarm: compare `registry repl status` on each site and check
+            alarm: compare `fondaco repl status` on each site and check
             for parked events or an open conflict.

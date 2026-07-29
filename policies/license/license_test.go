@@ -3,7 +3,7 @@ package license
 import (
 	"testing"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 func mustPolicy(t *testing.T, options map[string]any) api.Policy {

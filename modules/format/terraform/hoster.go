@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 // maxArchiveSize bounds a module upload.

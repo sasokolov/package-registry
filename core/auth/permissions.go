@@ -5,7 +5,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 // Publishers decides who may publish into a feed. Subjects are declared in

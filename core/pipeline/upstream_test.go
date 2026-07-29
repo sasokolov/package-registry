@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 // A 429 is the upstream working and asking for a lower rate. Treating it as a

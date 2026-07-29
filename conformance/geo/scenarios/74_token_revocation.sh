@@ -16,8 +16,8 @@ code="$(publish eu shared "$PATH_A" "before revocation" "$token")"
 [[ "$code" == "201" ]] || { echo "publish before revocation: $code" >&2; exit 1; }
 
 echo "--> revoking it at eu-1"
-compose exec -T registry-eu registry token revoke -name "$name" \
-  -config /etc/registry/config.yaml >/dev/null
+compose exec -T registry-eu fondaco token revoke -name "$name" \
+  -config /etc/fondaco/config.yaml >/dev/null
 
 echo "--> eu-1 rejects it within the revocation sweep window"
 # Verified identities are cached so the read path survives a database

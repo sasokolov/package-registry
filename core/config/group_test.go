@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 // Two formats: one that can merge the documents listing what exists, one

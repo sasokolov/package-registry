@@ -20,7 +20,7 @@ PROXY=$BASE/helm/charts
 HOSTED=$BASE/helm/helm-hosted
 GROUP=$BASE/helm/helm-public
 
-token="$(registry_token "ci-helm-$(date +%s)")"
+token="$(fondaco_token "ci-helm-$(date +%s)")"
 
 # Every invocation is a fresh container, so anything that depends on a
 # previous helm command — and `helm repo add` is nothing but state for the
@@ -132,7 +132,7 @@ grep -q "kind: ServiceAccount" <<<"$out" || {
   echo "the hosted chart did not render through the group:" >&2; echo "$out" >&2; exit 1; }
 
 echo "--> publishing without the right is refused"
-nobody="$(registry_token "nobody-helm-$(date +%s)")"
+nobody="$(fondaco_token "nobody-helm-$(date +%s)")"
 code="$(client_curl -sS -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $nobody" \
   --data-binary @/fixtures/helm-upstream/charts/upstream-chart-1.0.0.tgz "$HOSTED/api/charts")"
 [[ "$code" == "403" ]] || { echo "an identity without publish rights got $code" >&2; exit 1; }

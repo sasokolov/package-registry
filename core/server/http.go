@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/sasokolov/package-registry/core/api"
-	"github.com/sasokolov/package-registry/core/pipeline"
+	"github.com/fondaco-dev/fondaco/core/api"
+	"github.com/fondaco-dev/fondaco/core/pipeline"
 )
 
 // adoptDeclaredCredential lets a protocol that carries its credential
@@ -455,7 +455,7 @@ func (s *Server) finishError(w http.ResponseWriter, status int, msg string) {
 	if status == http.StatusUnauthorized {
 		// Basic is advertised too: maven-resolver and Gradle send
 		// username/password credentials only for a scheme they support.
-		w.Header().Set("WWW-Authenticate", `Basic realm="package-registry", Bearer realm="package-registry"`)
+		w.Header().Set("WWW-Authenticate", `Basic realm="fondaco", Bearer realm="fondaco"`)
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(status)

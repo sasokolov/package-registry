@@ -21,8 +21,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sasokolov/package-registry/core/api"
-	"github.com/sasokolov/package-registry/core/state"
+	"github.com/fondaco-dev/fondaco/core/api"
+	"github.com/fondaco-dev/fondaco/core/state"
 )
 
 // RevokeTx marks a token revoked inside the caller's transaction and

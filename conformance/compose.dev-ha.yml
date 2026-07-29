@@ -31,7 +31,7 @@ services:
       context: ..
       dockerfile: conformance/Dockerfile
     volumes:
-      - ./dev-ha.yaml:/etc/registry/config.yaml:ro
+      - ./dev-ha.yaml:/etc/fondaco/config.yaml:ro
     depends_on:
       minio: {condition: service_healthy}
       postgres: {condition: service_healthy}

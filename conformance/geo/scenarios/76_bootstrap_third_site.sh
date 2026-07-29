@@ -33,7 +33,7 @@ serves_it() {
 }
 if ! wait_for 120 serves_it; then
   echo "the new site never served the pre-existing artifact" >&2
-  compose exec -T registry-ap registry repl status -config /etc/registry/config.yaml >&2 || true
+  compose exec -T registry-ap fondaco repl status -config /etc/fondaco/config.yaml >&2 || true
   exit 1
 fi
 
@@ -46,18 +46,18 @@ case "$source" in
 esac
 
 echo "--> ap-1 knows both peers and has cursors for both journals"
-ap_status="$(compose exec -T registry-ap registry repl status -config /etc/registry/config.yaml 2>/dev/null)"
+ap_status="$(compose exec -T registry-ap fondaco repl status -config /etc/fondaco/config.yaml 2>/dev/null)"
 for peer in eu-1 us-1; do
   grep -q "$peer" <<<"$ap_status" || {
     echo "ap-1 has no stream for $peer" >&2; echo "$ap_status" >&2; exit 1; }
 done
 
 echo "--> backfill reports (and then fixes) blobs the lazy feed has not pulled"
-report="$(compose exec -T registry-ap registry repl backfill -config /etc/registry/config.yaml 2>/dev/null)"
+report="$(compose exec -T registry-ap fondaco repl backfill -config /etc/fondaco/config.yaml 2>/dev/null)"
 if grep -q 'blob(s) missing' <<<"$report"; then
-  compose exec -T registry-ap registry repl backfill -dry-run=false \
-    -config /etc/registry/config.yaml >/dev/null
-  after="$(compose exec -T registry-ap registry repl backfill -config /etc/registry/config.yaml 2>/dev/null)"
+  compose exec -T registry-ap fondaco repl backfill -dry-run=false \
+    -config /etc/fondaco/config.yaml >/dev/null
+  after="$(compose exec -T registry-ap fondaco repl backfill -config /etc/fondaco/config.yaml 2>/dev/null)"
   grep -q 'every hosted coordinate has its blob locally' <<<"$after" || {
     echo "backfill did not fetch every missing blob:" >&2; echo "$after" >&2; exit 1; }
 fi

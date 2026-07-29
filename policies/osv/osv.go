@@ -29,7 +29,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 // DenyCode is the machine-readable reason for OSV denials.

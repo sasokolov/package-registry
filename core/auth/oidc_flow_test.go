@@ -14,8 +14,8 @@ import (
 
 	"github.com/lestrrat-go/jwx/v2/jwt"
 
-	"github.com/sasokolov/package-registry/core/api"
-	"github.com/sasokolov/package-registry/core/config"
+	"github.com/fondaco-dev/fondaco/core/api"
+	"github.com/fondaco-dev/fondaco/core/config"
 )
 
 // The browser half of the fake issuer: an authorization endpoint that hands
@@ -125,7 +125,7 @@ func browserOIDC(t *testing.T, fi *fakeIssuer, mutate func(*config.OIDCIssuer)) 
 	t.Helper()
 	cfg := config.OIDCIssuer{
 		Issuer:   fi.server.URL,
-		Audience: "package-registry",
+		Audience: "fondaco",
 		ClientID: testClientID,
 	}
 	if mutate != nil {
@@ -219,7 +219,7 @@ func TestBothAudiencesAreAccepted(t *testing.T) {
 	fi := newFakeIssuer(t)
 	o := browserOIDC(t, fi, nil)
 
-	fromCI := fi.sign(t, nil) // aud: package-registry
+	fromCI := fi.sign(t, nil) // aud: fondaco
 	if _, err := o.Authenticate(t.Context(), fromCI); err != nil {
 		t.Errorf("a pipeline's id_token stopped working: %v", err)
 	}

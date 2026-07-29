@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 // Merging for groups. Two documents decide what a client believes exists:

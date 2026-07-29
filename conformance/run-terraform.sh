@@ -37,16 +37,16 @@ echo "==> building the acceptance runner"
 compose --profile tools build tf-acc
 
 echo "==> minting an administrator token"
-token="$(registry_token "ops-terraform")"
+token="$(fondaco_token "ops-terraform")"
 [[ -n "$token" ]] || { echo "no token was issued" >&2; exit 1; }
 
 echo "==> terraform acceptance tests"
 compose run --rm -T \
-  -e REGISTRY_TOKEN="$token" \
+  -e FONDACO_TOKEN="$token" \
   tf-acc test ./... -run 'TestAcc' -count=1 -v -timeout 20m
 
 echo "==> terraform end-to-end (real CLI, real provider binary)"
 compose run --rm -T \
-  -e REGISTRY_TOKEN="$token" \
+  -e FONDACO_TOKEN="$token" \
   --entrypoint /bin/sh \
   tf-acc /src/conformance/terraform/e2e.sh

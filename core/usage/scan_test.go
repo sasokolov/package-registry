@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sasokolov/package-registry/core/api"
-	"github.com/sasokolov/package-registry/core/state"
-	"github.com/sasokolov/package-registry/modules/storage/fs"
+	"github.com/fondaco-dev/fondaco/core/api"
+	"github.com/fondaco-dev/fondaco/core/state"
+	"github.com/fondaco-dev/fondaco/modules/storage/fs"
 )
 
 // The scan runs against the real filesystem store rather than a fake: what

@@ -54,7 +54,7 @@ us_lists_it() {
 }
 if ! wait_for 90 us_lists_it; then
   echo "us-1 never rebuilt its index for the forwarded publish" >&2
-  compose exec -T registry-us registry repl status -config /etc/registry/config.yaml >&2 || true
+  compose exec -T registry-us fondaco repl status -config /etc/fondaco/config.yaml >&2 || true
   exit 1
 fi
 
@@ -69,7 +69,7 @@ out="$(compose run --rm -T npm-client sh -c "
 grep -q INSTALL_OK <<<"$out" || { echo "$out" | tail -15; exit 1; }
 
 echo "--> mvn deploy against us-1 (feed homed at eu-1)"
-out="$(compose run --rm -T -e REGISTRY_TOKEN="$token" --entrypoint sh maven-client -c "
+out="$(compose run --rm -T -e FONDACO_TOKEN="$token" --entrypoint sh maven-client -c "
   set -e
   cp -r /work-geo /tmp/m && cd /tmp/m
   sed -i 's/GEO_VERSION/$VERSION/' pom.xml

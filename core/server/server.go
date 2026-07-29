@@ -19,15 +19,15 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/sasokolov/package-registry/core/access"
-	"github.com/sasokolov/package-registry/core/adminapi"
-	"github.com/sasokolov/package-registry/core/api"
-	"github.com/sasokolov/package-registry/core/auth"
-	"github.com/sasokolov/package-registry/core/config"
-	"github.com/sasokolov/package-registry/core/pipeline"
-	"github.com/sasokolov/package-registry/core/policy"
-	"github.com/sasokolov/package-registry/core/repl"
-	"github.com/sasokolov/package-registry/core/state"
+	"github.com/fondaco-dev/fondaco/core/access"
+	"github.com/fondaco-dev/fondaco/core/adminapi"
+	"github.com/fondaco-dev/fondaco/core/api"
+	"github.com/fondaco-dev/fondaco/core/auth"
+	"github.com/fondaco-dev/fondaco/core/config"
+	"github.com/fondaco-dev/fondaco/core/pipeline"
+	"github.com/fondaco-dev/fondaco/core/policy"
+	"github.com/fondaco-dev/fondaco/core/repl"
+	"github.com/fondaco-dev/fondaco/core/state"
 )
 
 // ForwardFunc proxies a publish request to another site and reports its

@@ -10,7 +10,7 @@ distributed, and a module that is linked must be attributed whether or not
 anyone remembered to declare it. Regenerate with `make notices`.
 
 
-## The registry binary (`cmd/registry`)
+## The registry binary (`cmd/fondaco`)
 
 Linked into the registry binary. The web console is embedded in the same binary.
 
@@ -75,7 +75,7 @@ Shipped inside the binary as built assets.
 | `scheduler` | 0.27.0 | MIT |
 | `set-cookie-parser` | 2.7.2 | MIT |
 
-## The Terraform provider (`terraform-provider-registry/`)
+## The Terraform provider (`terraform-provider-fondaco/`)
 
 A separate Go module, a separate binary, released separately.
 
@@ -113,7 +113,7 @@ in executable form to tell recipients how to obtain their source, whether or
 not they were modified — and this project does not modify them.
 
 Their source is the upstream repository at the version recorded in
-`terraform-provider-registry/go.mod`, and a copy of every version this build used is in the Go
+`terraform-provider-fondaco/go.mod`, and a copy of every version this build used is in the Go
 module cache and in the checksum database:
 
 

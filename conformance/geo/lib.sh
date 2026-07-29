@@ -19,8 +19,8 @@ site_url() { # <eu|us|ap>
 
 # geo_token creates a static token on a site and prints the secret.
 geo_token() { # <eu|us> <name>
-  compose exec -T "registry-$1" registry token create \
-    -name "$2" -config /etc/registry/config.yaml 2>/dev/null | tail -1
+  compose exec -T "registry-$1" fondaco token create \
+    -name "$2" -config /etc/fondaco/config.yaml 2>/dev/null | tail -1
 }
 
 # publish PUTs content to a site and prints the HTTP status.
@@ -74,7 +74,7 @@ served() { # <eu|us|ap> <feed> <path> <expected>
 
 # repl_status prints a site's replication status (operator view).
 repl_status() { # <eu|us>
-  compose exec -T "registry-$1" registry repl status -config /etc/registry/config.yaml 2>/dev/null
+  compose exec -T "registry-$1" fondaco repl status -config /etc/fondaco/config.yaml 2>/dev/null
 }
 
 # The sites are linked by a dedicated "wan" network; a partition is a

@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib.sh
 source "$SCRIPT_DIR/../lib.sh"
 
-token="$(registry_token "ci-npm-$(date +%s)")"
+token="$(fondaco_token "ci-npm-$(date +%s)")"
 REG=http://registry:8080/npm/npm-hosted/
 
 publish() { # <version> <extra-file-content>

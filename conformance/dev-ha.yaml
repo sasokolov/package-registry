@@ -187,7 +187,7 @@ auth:
     # The docker bridge address: the one address that is the same for your
     # browser and for a container. 127.0.0.1 would be the replica itself.
     - issuer: http://172.17.0.1:9099
-      audience: package-registry
+      audience: fondaco
       client_id: registry-console
 
 admins:

@@ -23,7 +23,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 // versionsTTL bounds the versions document freshness (SWR beyond it).

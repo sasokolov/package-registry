@@ -5,7 +5,7 @@
 terraform {
   required_providers {
     registry = {
-      source = "registry.local/sasokolov/registry"
+      source = "registry.local/fondaco-dev/fondaco"
     }
   }
 }
@@ -14,7 +14,7 @@ provider "registry" {}
 
 # --- proxy feeds -------------------------------------------------------------
 
-resource "registry_feed" "central" {
+resource "fondaco_feed" "central" {
   name      = "tf-e2e-central"
   format    = "maven"
   upstream  = "http://fake-upstream/maven"
@@ -28,7 +28,7 @@ resource "registry_feed" "central" {
   }
 }
 
-resource "registry_feed" "npm" {
+resource "fondaco_feed" "npm" {
   name         = "tf-e2e-npm"
   format       = "npm"
   upstream     = "http://fake-upstream/npm"
@@ -38,16 +38,16 @@ resource "registry_feed" "npm" {
 
 # --- hosted feed with permissions --------------------------------------------
 
-resource "registry_token" "ci" {
+resource "fondaco_token" "ci" {
   name = "ci-tf-e2e"
 }
 
-resource "registry_feed" "releases" {
+resource "fondaco_feed" "releases" {
   name       = "tf-e2e-releases"
   format     = "maven"
   hosted     = true
   anonymous  = true
-  publishers = ["token:${registry_token.ci.name}"]
+  publishers = ["token:${fondaco_token.ci.name}"]
 }
 
 # --- who may administer, and who may authenticate ----------------------------
@@ -58,7 +58,7 @@ resource "registry_admin_binding" "platform" {
 
 resource "registry_oidc_issuer" "gitlab" {
   issuer   = "https://gitlab.tf-e2e.example.com"
-  audience = "package-registry"
+  audience = "fondaco"
 }
 
 # --- what the site says about itself -----------------------------------------
@@ -72,14 +72,14 @@ output "site" {
 # The secret is an output so the end-to-end check can prove the token this
 # configuration issued actually publishes to the feed that names it.
 output "ci_token" {
-  value     = registry_token.ci.secret
+  value     = fondaco_token.ci.secret
   sensitive = true
 }
 
 output "feed_names" {
   value = sort([
-    registry_feed.central.name,
-    registry_feed.npm.name,
-    registry_feed.releases.name,
+    fondaco_feed.central.name,
+    fondaco_feed.npm.name,
+    fondaco_feed.releases.name,
   ])
 }

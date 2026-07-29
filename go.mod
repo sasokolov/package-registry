@@ -1,4 +1,4 @@
-module github.com/sasokolov/package-registry
+module github.com/fondaco-dev/fondaco
 
 go 1.26.1
 

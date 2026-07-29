@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sasokolov/package-registry/core/api"
-	"github.com/sasokolov/package-registry/core/config"
+	"github.com/fondaco-dev/fondaco/core/api"
+	"github.com/fondaco-dev/fondaco/core/config"
 )
 
 // groupEnv is newEnv with two upstreams, so a group can be built over two

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 type fakeCore struct {

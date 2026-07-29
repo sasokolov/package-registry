@@ -13,7 +13,7 @@ restore_pg() {
 }
 trap restore_pg EXIT
 
-token="$(registry_token "ci-chaos-$(date +%s)")"
+token="$(fondaco_token "ci-chaos-$(date +%s)")"
 PRIVATE=http://lb/maven/private/com/example/liba/1.0.0/liba-1.0.0.jar
 ANON=http://lb/maven/central/com/example/libb/1.0.0/libb-1.0.0.jar
 HOSTED=http://lb/maven/hosted/com/example/chaos/1.0.0/chaos-1.0.0.jar

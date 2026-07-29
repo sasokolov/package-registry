@@ -44,7 +44,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 // formatName is both the module name and the first path segment of an image
@@ -166,7 +166,7 @@ func (Module) ServeRoot(w http.ResponseWriter, r *http.Request, _ []api.Feed) {
 // looking for a token service that does not exist here. `docker login`
 // sends the token as the password, which is the same credential verified the
 // same way.
-func (Module) AuthChallenge(api.Feed) string { return `Basic realm="package-registry"` }
+func (Module) AuthChallenge(api.Feed) string { return `Basic realm="fondaco"` }
 
 // RedirectSafeIntent implements api.RedirectSafe: a client verifies every
 // blob against the digest it asked for, so a layer may be answered with a

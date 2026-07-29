@@ -12,7 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib.sh"
 
 BASE=http://registry:8080
-ci="$(registry_token "ci-tf-$(date +%s)")"
+ci="$(fondaco_token "ci-tf-$(date +%s)")"
 
 echo "--> service discovery points at the group, not at one of its members"
 discovery="$(client_curl -fsS "$BASE/.well-known/terraform.json")"

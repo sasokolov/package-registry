@@ -21,7 +21,7 @@ package usage
 import (
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/sasokolov/package-registry/core/state"
+	"github.com/fondaco-dev/fondaco/core/state"
 )
 
 // Metrics are the collectors for what feeds hold and serve.
@@ -70,61 +70,61 @@ const (
 func NewMetrics(reg prometheus.Registerer) *Metrics {
 	m := &Metrics{
 		BytesServed: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "registry_bytes_served_total",
+			Name: "fondaco_bytes_served_total",
 			Help: "Response bytes served, by feed and response source.",
 		}, []string{"feed", "source"}),
 		UpstreamBytes: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "registry_upstream_bytes_total",
+			Name: "fondaco_upstream_bytes_total",
 			Help: "Bytes pulled from upstreams to fill the cache, by feed.",
 		}, []string{"feed"}),
 		GroupRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "registry_group_requests_total",
+			Name: "fondaco_group_requests_total",
 			Help: "Requests answered through a group, by group, answering member and source.",
 		}, []string{"group", "member", "source"}),
 
 		Artifacts: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "registry_feed_artifacts",
+			Name: "fondaco_feed_artifacts",
 			Help: "Stored artifacts per feed, by kind (hosted|cached).",
 		}, []string{"feed", "format", "kind"}),
 		Packages: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "registry_feed_packages",
+			Name: "fondaco_feed_packages",
 			Help: "Distinct package coordinates per feed, by kind (hosted|cached).",
 		}, []string{"feed", "format", "kind"}),
 		Bytes: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "registry_feed_bytes",
+			Name: "fondaco_feed_bytes",
 			Help: "Bytes of blob storage a feed's content occupies, by kind. " +
 				"Blobs are shared, so feeds can sum to more than the store holds.",
 		}, []string{"feed", "format", "kind"}),
 		LastIngest: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "registry_feed_last_ingest_timestamp_seconds",
+			Name: "fondaco_feed_last_ingest_timestamp_seconds",
 			Help: "When a feed last stored anything. A proxy feed that has gone quiet is " +
 				"either unused or broken, and this is how the two are told apart.",
 		}, []string{"feed"}),
 
 		StoreBytes: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "registry_store_bytes",
+			Name: "fondaco_store_bytes",
 			Help: "Bytes of blob storage in use, counting each blob once.",
 		}),
 		StoreBlobs: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "registry_store_blobs",
+			Name: "fondaco_store_blobs",
 			Help: "Distinct blobs stored.",
 		}),
 		PackageOverflow: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "registry_usage_package_overflow_total",
+			Name: "fondaco_usage_package_overflow_total",
 			Help: "Downloads not attributed to a coordinate because too many distinct " +
 				"coordinates were seen in one flush interval. Feed counters are exact regardless.",
 		}),
 		ScanDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Name:    "registry_usage_scan_duration_seconds",
+			Name:    "fondaco_usage_scan_duration_seconds",
 			Help:    "How long a full inventory scan took.",
 			Buckets: []float64{1, 5, 15, 60, 300, 900, 3600},
 		}),
 		ScanFailures: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "registry_usage_scan_failures_total",
+			Name: "fondaco_usage_scan_failures_total",
 			Help: "Inventory scans that could not complete.",
 		}),
 		FlushFailures: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "registry_usage_flush_failures_total",
+			Name: "fondaco_usage_flush_failures_total",
 			Help: "Traffic-counter flushes that could not be written. Deltas are kept and retried.",
 		}),
 	}

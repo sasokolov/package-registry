@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 func parse(t *testing.T, path string) (api.Intent, error) {

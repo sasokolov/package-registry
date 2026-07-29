@@ -7,12 +7,12 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/sasokolov/package-registry/core/access"
-	"github.com/sasokolov/package-registry/core/api"
-	"github.com/sasokolov/package-registry/core/auth"
-	"github.com/sasokolov/package-registry/core/config"
-	"github.com/sasokolov/package-registry/core/repl"
-	"github.com/sasokolov/package-registry/core/state"
+	"github.com/fondaco-dev/fondaco/core/access"
+	"github.com/fondaco-dev/fondaco/core/api"
+	"github.com/fondaco-dev/fondaco/core/auth"
+	"github.com/fondaco-dev/fondaco/core/config"
+	"github.com/fondaco-dev/fondaco/core/repl"
+	"github.com/fondaco-dev/fondaco/core/state"
 )
 
 // Operator actions the console offers. Each one calls the SAME code path

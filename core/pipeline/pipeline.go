@@ -33,7 +33,7 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 // ingestTimeout bounds a detached artifact ingest (download of one blob).

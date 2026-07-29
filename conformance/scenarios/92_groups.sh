@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib.sh"
 
 BASE=http://registry:8080
-ci="$(registry_token "ci-group-$(date +%s)")"
+ci="$(fondaco_token "ci-group-$(date +%s)")"
 
 echo "--> publishing a version into the hosted member that the upstream does not have"
 # The upload body goes on the command line: the client container cannot see

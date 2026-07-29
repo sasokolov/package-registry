@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sasokolov/package-registry/core/state"
+	"github.com/fondaco-dev/fondaco/core/state"
 )
 
 // The convergence property is the load-bearing claim of geo replication, and

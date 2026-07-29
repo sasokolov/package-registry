@@ -1,6 +1,6 @@
 {
   "title": "Package registry",
-  "uid": "package-registry",
+  "uid": "fondaco",
   "tags": [
     "registry",
     "geo"
@@ -42,7 +42,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (source) (rate(registry_requests_total[5m]))",
+          "expr": "sum by (source) (rate(fondaco_requests_total[5m]))",
           "legendFormat": "{{source}}",
           "refId": "A"
         }
@@ -65,7 +65,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(registry_requests_total{source=~\"cache|local\"}[5m])) / clamp_min(sum(rate(registry_requests_total[5m])), 0.001)",
+          "expr": "sum(rate(fondaco_requests_total{source=~\"cache|local\"}[5m])) / clamp_min(sum(rate(fondaco_requests_total[5m])), 0.001)",
           "legendFormat": "hit ratio",
           "refId": "A"
         }
@@ -94,17 +94,17 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(registry_request_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(fondaco_request_duration_seconds_bucket[5m])))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(registry_request_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(fondaco_request_duration_seconds_bucket[5m])))",
           "legendFormat": "p95",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(registry_request_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(fondaco_request_duration_seconds_bucket[5m])))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -133,7 +133,7 @@
       },
       "targets": [
         {
-          "expr": "registry_upstream_breaker_state",
+          "expr": "fondaco_upstream_breaker_state",
           "legendFormat": "{{feed}}",
           "refId": "A"
         }
@@ -156,7 +156,7 @@
       },
       "targets": [
         {
-          "expr": "registry_repl_lag",
+          "expr": "fondaco_repl_lag",
           "legendFormat": "{{peer}} / {{origin}}",
           "refId": "A"
         }
@@ -179,7 +179,7 @@
       },
       "targets": [
         {
-          "expr": "registry_repl_durable_lag",
+          "expr": "fondaco_repl_durable_lag",
           "legendFormat": "{{peer}} / {{origin}}",
           "refId": "A"
         }
@@ -202,7 +202,7 @@
       },
       "targets": [
         {
-          "expr": "registry_repl_cursor_age_seconds",
+          "expr": "fondaco_repl_cursor_age_seconds",
           "legendFormat": "{{peer}}",
           "refId": "A"
         }
@@ -231,7 +231,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (kind) (rate(registry_repl_applied_total[5m]))",
+          "expr": "sum by (kind) (rate(fondaco_repl_applied_total[5m]))",
           "legendFormat": "{{kind}}",
           "refId": "A"
         }
@@ -254,7 +254,7 @@
       },
       "targets": [
         {
-          "expr": "increase(registry_repl_publish_conflicts_total[1h])",
+          "expr": "increase(fondaco_repl_publish_conflicts_total[1h])",
           "legendFormat": "conflicts/h",
           "refId": "A"
         }
@@ -277,7 +277,7 @@
       },
       "targets": [
         {
-          "expr": "registry_repl_parked_events",
+          "expr": "fondaco_repl_parked_events",
           "legendFormat": "parked",
           "refId": "A"
         }
@@ -300,7 +300,7 @@
       },
       "targets": [
         {
-          "expr": "registry_repl_feed_digest",
+          "expr": "fondaco_repl_feed_digest",
           "legendFormat": "{{feed}} @ {{site}}",
           "refId": "A"
         }
@@ -310,7 +310,7 @@
       "id": 12,
       "type": "timeseries",
       "title": "Storage per feed",
-      "description": "What each feed's content occupies. Blobs are shared, so feeds sum to more than the store holds \u2014 registry_store_bytes is the bill.",
+      "description": "What each feed's content occupies. Blobs are shared, so feeds sum to more than the store holds \u2014 fondaco_store_bytes is the bill.",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -323,12 +323,12 @@
       },
       "targets": [
         {
-          "expr": "sum by (feed) (registry_feed_bytes)",
+          "expr": "sum by (feed) (fondaco_feed_bytes)",
           "legendFormat": "{{feed}}",
           "refId": "A"
         },
         {
-          "expr": "registry_store_bytes",
+          "expr": "fondaco_store_bytes",
           "legendFormat": "site total (deduplicated)",
           "refId": "B"
         }
@@ -357,7 +357,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (feed, kind) (registry_feed_packages)",
+          "expr": "sum by (feed, kind) (fondaco_feed_packages)",
           "legendFormat": "{{feed}} {{kind}}",
           "refId": "A"
         }
@@ -380,7 +380,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (feed) (rate(registry_requests_total[5m]))",
+          "expr": "sum by (feed) (rate(fondaco_requests_total[5m]))",
           "legendFormat": "{{feed}}",
           "refId": "A"
         }
@@ -409,12 +409,12 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(registry_bytes_served_total[5m]))",
+          "expr": "sum(rate(fondaco_bytes_served_total[5m]))",
           "legendFormat": "served",
           "refId": "A"
         },
         {
-          "expr": "sum(rate(registry_upstream_bytes_total[5m]))",
+          "expr": "sum(rate(fondaco_upstream_bytes_total[5m]))",
           "legendFormat": "pulled from upstreams",
           "refId": "B"
         }
@@ -443,7 +443,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (group, member) (rate(registry_group_requests_total[5m]))",
+          "expr": "sum by (group, member) (rate(fondaco_group_requests_total[5m]))",
           "legendFormat": "{{group}} \u2190 {{member}}",
           "refId": "A"
         }
@@ -472,7 +472,7 @@
       },
       "targets": [
         {
-          "expr": "(time() - registry_feed_last_ingest_timestamp_seconds) / 86400",
+          "expr": "(time() - fondaco_feed_last_ingest_timestamp_seconds) / 86400",
           "legendFormat": "{{feed}}",
           "refId": "A"
         }

@@ -14,7 +14,7 @@ import (
 
 	"github.com/lestrrat-go/jwx/v2/jwt"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 // Signing in through the browser: OAuth 2.0 authorization code with PKCE.

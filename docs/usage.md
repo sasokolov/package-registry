@@ -44,7 +44,7 @@
   контент-адресуемы и общие, поэтому тарбол, который проксируют два фида,
   посчитан у обоих: это ответ на «во сколько обходится этот фид», а не на
   «сколько освободится, если его удалить». Разница — `shared_bytes`.
-- **Байты сайта** (`registry_store_bytes`) — каждый блоб посчитан один раз.
+- **Байты сайта** (`fondaco_store_bytes`) — каждый блоб посчитан один раз.
   Это и есть счёт за хранилище; сумма по фидам всегда больше или равна ему.
 - **Скачивания** — сколько ответов отдано, с разбивкой по источнику
   (`cache`, `upstream`, `stale`, `local`, `peer`). Отсюда же hit ratio.
@@ -121,7 +121,7 @@ maven-скачивание.
 
 **В памяти тоже есть предел** — 20 000 различных координат между флашами.
 Больше — новые координаты перестают учитываться поштучно
-(`registry_usage_package_overflow_total`), а счётчики фида остаются точными:
+(`fondaco_usage_package_overflow_total`), а счётчики фида остаются точными:
 они не растут с кардинальностью. Двадцать тысяч различных координат за
 полминуты — это зеркалирование, а не сборка.
 
@@ -168,24 +168,24 @@ GET /api/v1/usage
 
 | Метрика | Тип | Лейблы |
 |---|---|---|
-| `registry_feed_artifacts` | gauge | feed, format, kind |
-| `registry_feed_packages` | gauge | feed, format, kind |
-| `registry_feed_bytes` | gauge | feed, format, kind |
-| `registry_feed_last_ingest_timestamp_seconds` | gauge | feed |
-| `registry_store_bytes` / `registry_store_blobs` | gauge | — (дедуплицированный итог) |
-| `registry_bytes_served_total` | counter | feed, source |
-| `registry_upstream_bytes_total` | counter | feed |
-| `registry_group_requests_total` | counter | group, member, source |
-| `registry_usage_scan_duration_seconds` | histogram | — |
-| `registry_usage_scan_failures_total` | counter | — |
-| `registry_usage_flush_failures_total` | counter | — |
-| `registry_usage_package_overflow_total` | counter | — |
+| `fondaco_feed_artifacts` | gauge | feed, format, kind |
+| `fondaco_feed_packages` | gauge | feed, format, kind |
+| `fondaco_feed_bytes` | gauge | feed, format, kind |
+| `fondaco_feed_last_ingest_timestamp_seconds` | gauge | feed |
+| `fondaco_store_bytes` / `fondaco_store_blobs` | gauge | — (дедуплицированный итог) |
+| `fondaco_bytes_served_total` | counter | feed, source |
+| `fondaco_upstream_bytes_total` | counter | feed |
+| `fondaco_group_requests_total` | counter | group, member, source |
+| `fondaco_usage_scan_duration_seconds` | histogram | — |
+| `fondaco_usage_scan_failures_total` | counter | — |
+| `fondaco_usage_flush_failures_total` | counter | — |
+| `fondaco_usage_package_overflow_total` | counter | — |
 
-`kind` — это `hosted` или `cached`. Суммировать `registry_feed_bytes` по всем
+`kind` — это `hosted` или `cached`. Суммировать `fondaco_feed_bytes` по всем
 фидам не нужно: получится больше, чем в хранилище, ровно на величину
-разделяемого. Для итога есть `registry_store_bytes`.
+разделяемого. Для итога есть `fondaco_store_bytes`.
 
-Скачивания как rate — это уже существующий `registry_requests_total{feed,source}`;
+Скачивания как rate — это уже существующий `fondaco_requests_total{feed,source}`;
 кумулятивное «скачано N раз» переживает рестарты только в БД, поэтому оно в
 `/api/v1/usage`, а не в метрике. По координатам метрик нет вовсе — только
 `/api/v1/usage/packages`.
@@ -208,18 +208,18 @@ server:
 
 ## Что с этим делать
 
-- **`throttled` в `registry_upstream_requests_total`** — апстрим просит
+- **`throttled` в `fondaco_upstream_requests_total`** — апстрим просит
   снизить темп. Ставьте `upstream_rps`; подробности — в runbook'ах.
 - **Прокси хранит много и отдаёт мало** — либо фид не нужен, либо у клиентов
-  прописан не тот URL. `registry gc` соберёт то, на что не указывает ни один
+  прописан не тот URL. `fondaco gc` соберёт то, на что не указывает ни один
   манифест.
 - **Низкий hit ratio** — TTL слишком короткий для трафика фида, либо клиенты
   просят координаты, которых нет в апстриме (тогда это ещё и алерт
   `RegistryCacheHitRatioLow`).
 - **Группа не используется, а её члены — да** — клиенты ходят мимо группы;
-  это видно по `registry_group_requests_total` рядом с `registry_requests_total`.
+  это видно по `fondaco_group_requests_total` рядом с `fondaco_requests_total`.
 - **Группа используется, а один из членов никогда не отвечает** — порядок
-  членов или содержимое не то, что ожидалось: `registry_group_requests_total`
+  членов или содержимое не то, что ожидалось: `fondaco_group_requests_total`
   разбит по `member`.
 - **Что из фида вообще нужно** — топ пакетов на странице фида. Для прокси это
   ещё и ответ на «что должно быть в зеркале, если апстрим исчезнет».

@@ -23,8 +23,8 @@ if ! wait_for 90 replicated us homed "$PATH_JAR" "$CONTENT"; then
 fi
 
 echo "--> rewinding the us-1 cursor and pruning the eu-1 journal past it"
-compose exec -T registry-us registry repl resync -peer eu-1 \
-  -config /etc/registry/config.yaml >/dev/null
+compose exec -T registry-us fondaco repl resync -peer eu-1 \
+  -config /etc/fondaco/config.yaml >/dev/null
 head="$(psql_eu "SELECT COALESCE(MAX(origin_seq),0) FROM repl_journal WHERE origin_site='eu-1'")"
 if [[ "${head:-0}" -lt 2 ]]; then
   echo "eu-1 journal is too short to prune (head=$head)" >&2
@@ -42,7 +42,7 @@ bootstrapped() {
 }
 if ! wait_for 90 bootstrapped; then
   echo "us-1 never re-bootstrapped after the journal gap" >&2
-  compose exec -T registry-us registry repl status -config /etc/registry/config.yaml >&2 || true
+  compose exec -T registry-us fondaco repl status -config /etc/fondaco/config.yaml >&2 || true
   exit 1
 fi
 
@@ -70,7 +70,7 @@ code="$(publish eu homed "$NEW_PATH" "published after the resync" "$token")"
 [[ "$code" == "201" ]] || { echo "post-resync publish returned $code" >&2; exit 1; }
 if ! wait_for 90 replicated us homed "$NEW_PATH" "published after the resync"; then
   echo "replication did not resume after the resync" >&2
-  compose exec -T registry-us registry repl status -config /etc/registry/config.yaml >&2 || true
+  compose exec -T registry-us fondaco repl status -config /etc/fondaco/config.yaml >&2 || true
   exit 1
 fi
 

@@ -1,6 +1,6 @@
 # Деплой в Kubernetes
 
-Helm-чарт в `deploy/helm/registry`. Смоук-проверка чарта в одноразовом
+Helm-чарт в `deploy/helm/fondaco`. Смоук-проверка чарта в одноразовом
 kind-кластере: `deploy/helm/smoke.sh` (нужны `kind`, `kubectl`, `helm`,
 `docker`).
 
@@ -24,7 +24,7 @@ kubectl -n registry create secret generic registry-s3 \
 kubectl -n registry create secret generic registry-postgres \
   --from-literal=dsn='postgres://registry:...@postgres:5432/registry'
 
-helm install registry deploy/helm/registry -n registry \
+helm install registry deploy/helm/fondaco -n registry \
   --set site.name=eu-1 \
   --set site.externalURL=https://registry.example.com \
   --set storage.s3.endpoint=minio.storage.svc:9000 \
@@ -49,7 +49,7 @@ namespace ConfigMap обновляется kubelet'ом, процесс подх
 
 ```bash
 kubectl -n registry exec deploy/registry-registry -- \
-  registry token create -name ci-bot -config /etc/registry/config.yaml
+  fondaco token create -name ci-bot -config /etc/fondaco/config.yaml
 ```
 
 Секрет печатается один раз, в БД хранится только его хэш.
@@ -67,7 +67,7 @@ kubectl -n registry exec deploy/registry-registry -- \
 job:
   id_tokens:
     REGISTRY_TOKEN:
-      aud: package-registry
+      aud: fondaco
   before_script:
     - |
       cat > .npmrc <<EOF
@@ -86,7 +86,7 @@ Maven-клиенты умеют только HTTP Basic — регистри п�
 ```yaml
 job:
   id_tokens:
-    REGISTRY_TOKEN: {aud: package-registry}
+    REGISTRY_TOKEN: {aud: fondaco}
   before_script:
     - |
       cat > settings.xml <<EOF
@@ -186,7 +186,7 @@ listener репликации означал бы право писать в э�
 kubectl -n registry create secret generic registry-replication \
   --from-file=ca.crt --from-file=tls.crt --from-file=tls.key
 
-helm upgrade registry deploy/helm/registry -n registry \
+helm upgrade registry deploy/helm/fondaco -n registry \
   --set site.name=eu-1 \
   --set replication.enabled=true \
   --set 'replication.peerCIDRs={10.20.0.0/16}' \
@@ -202,11 +202,11 @@ auth-материала требует рестарта (процесс пише
 ## Наблюдаемость
 
 `serviceMonitor.enabled=true` подключает Prometheus Operator. Ключевые
-метрики: `registry_requests_total{feed,source}` (RPS и доля попаданий в
-кэш), `registry_upstream_request_duration_seconds`,
-`registry_upstream_breaker_state`, `registry_site_info`; для гео —
-`registry_repl_lag`, `registry_repl_durable_lag` (RPO),
-`registry_repl_publish_conflicts_total`, `registry_repl_feed_digest`.
+метрики: `fondaco_requests_total{feed,source}` (RPS и доля попаданий в
+кэш), `fondaco_upstream_request_duration_seconds`,
+`fondaco_upstream_breaker_state`, `fondaco_site_info`; для гео —
+`fondaco_repl_lag`, `fondaco_repl_durable_lag` (RPO),
+`fondaco_repl_publish_conflicts_total`, `fondaco_repl_feed_digest`.
 
 Готовые артефакты: `deploy/observability/dashboard.json` (Grafana) и
 `deploy/observability/alerts.yaml` (Prometheus rules). Дежурные сценарии —
@@ -219,9 +219,9 @@ auth-материала требует рестарта (процесс пише
 ```bash
 # Сборка мусора: сначала всегда dry-run
 kubectl -n registry exec deploy/registry-registry -- \
-  registry gc -config /etc/registry/config.yaml
+  fondaco gc -config /etc/fondaco/config.yaml
 kubectl -n registry exec deploy/registry-registry -- \
-  registry gc -config /etc/registry/config.yaml -delete -min-age 168h
+  fondaco gc -config /etc/fondaco/config.yaml -delete -min-age 168h
 ```
 
 GC удаляет блобы, на которые не ссылается ни один манифест, держит

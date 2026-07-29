@@ -17,11 +17,11 @@ client_curl() {
   compose run --rm -T --quiet-pull client "$@"
 }
 
-# registry_token creates a static token via the CLI and prints the secret.
-registry_token() {
+# fondaco_token creates a static token via the CLI and prints the secret.
+fondaco_token() {
   local name="$1"
-  compose exec -T registry registry token create -name "$name" \
-    -config /etc/registry/config.yaml 2>/dev/null | tail -1
+  compose exec -T registry fondaco token create -name "$name" \
+    -config /etc/fondaco/config.yaml 2>/dev/null | tail -1
 }
 
 # wait_for_chaos retries a command until it succeeds or the deadline passes.

@@ -9,7 +9,7 @@ services:
         # Conformance builds include the test-only echo format module.
         GO_BUILD_TAGS: conformance
     volumes:
-      - ./registry.yaml:/etc/registry/config.yaml:ro
+      - ./registry.yaml:/etc/fondaco/config.yaml:ro
       - registry-data:/data
     depends_on:
       minio:

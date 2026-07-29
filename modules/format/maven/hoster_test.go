@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 // fakeCore is an in-memory api.CoreServices for module tests.

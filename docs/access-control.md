@@ -193,13 +193,13 @@ GET /api/v1/access/explain?path=feed/releases/maven:com.acme:lib@1.0.0&capabilit
 выбрала ни одной: чинить надо `match`, а не политику.
 
 В консоли это форма «Would this be allowed?» на странице **Access**; в
-Terraform — data source `registry_access_explain`, которым удобно закрывать
+Terraform — data source `fondaco_access_explain`, которым удобно закрывать
 `check`-блок:
 
 ```hcl
 check "access_is_what_we_meant" {
   assert {
-    condition     = !data.registry_access_explain.acme_ci_internal.allowed
+    condition     = !data.fondaco_access_explain.acme_ci_internal.allowed
     error_message = "CI получил publish во внутренний неймспейс"
   }
 }
@@ -269,7 +269,7 @@ auth:
   oidc_issuers:
     # Кнопка «Sign in with …»: у реестра есть client_id у этого провайдера.
     - issuer: https://sso.example.com
-      audience: package-registry
+      audience: fondaco
       client_id: registry-console
       # Необязательное: по умолчанию openid и эндпоинты из discovery.
       scopes: [openid]
@@ -279,7 +279,7 @@ auth:
 
     # Только приём id_token'ов из пайплайнов: в форме это поле для вставки.
     - issuer: https://gitlab.example.com
-      audience: package-registry
+      audience: fondaco
 
   # Необязательно: перечислить и подписать методы явно, скрыть ненужные.
   methods:
@@ -359,5 +359,5 @@ PKCE).
 | проверки на read/publish-path | `core/server/access.go` |
 | API `/access`, `/access/explain`, CRUD | `core/adminapi/access.go`, `resources.go` |
 | консоль | `ui/src/pages/Access.tsx`, `ui/src/components/SignIn.tsx` |
-| Terraform | `registry_access_policy`, `registry_binding`, `registry_access_explain`, `registry_oidc_issuer` |
+| Terraform | `fondaco_access_policy`, `fondaco_binding`, `fondaco_access_explain`, `registry_oidc_issuer` |
 | фейковый провайдер для тестов | `conformance/fake-oidc/` (и `98_browser_signin.sh`) |

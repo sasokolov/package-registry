@@ -87,7 +87,7 @@ DEV_COMPOSE := docker compose -f $(COMPOSE_FILE) -f conformance/compose.dev.yml 
 
 dev:
 	$(DEV_COMPOSE) up -d --wait minio postgres fake-oidc
-	go run ./cmd/registry -config conformance/dev.yaml
+	go run ./cmd/fondaco -config conformance/dev.yaml
 
 # The same stand in the shape it is deployed in: two replicas behind a load
 # balancer on the same port, sharing the store and the database. The console

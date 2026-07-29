@@ -6,7 +6,7 @@ services:
       context: ./clients/terraform-acc
     profiles: ["tools"]
     environment:
-      REGISTRY_ENDPOINT: http://registry:8080
+      FONDACO_ENDPOINT: http://registry:8080
       # The module cache is a volume, so a second run does not re-download
       # the plugin framework.
       GOMODCACHE: /gomod

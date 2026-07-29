@@ -11,7 +11,7 @@ import (
 
 // Compile-time module registries (Caddy style, per CLAUDE.md): module
 // packages self-register from init(), the final binary chooses its module
-// set through imports in cmd/registry. The maps are effectively read-only
+// set through imports in cmd/fondaco. The maps are effectively read-only
 // after init; the mutex only guards misuse and parallel tests.
 
 // PolicyServices is what the core offers policies: a shared verdict cache

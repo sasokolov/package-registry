@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sasokolov/package-registry/core/state"
+	"github.com/fondaco-dev/fondaco/core/state"
 )
 
 // The merge rules are the heart of geo replication, so they are modelled

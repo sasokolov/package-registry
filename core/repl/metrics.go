@@ -33,39 +33,39 @@ type Metrics struct {
 func NewMetrics(reg prometheus.Registerer) *Metrics {
 	m := &Metrics{
 		Lag: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "registry_repl_lag",
+			Name: "fondaco_repl_lag",
 			Help: "Journal entries this site has not applied yet, by peer and origin site.",
 		}, []string{"peer", "origin"}),
 		CursorAge: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "registry_repl_cursor_age_seconds",
+			Name: "fondaco_repl_cursor_age_seconds",
 			Help: "Seconds since the last successful poll of a peer.",
 		}, []string{"peer"}),
 		DurableLag: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "registry_repl_durable_lag",
+			Name: "fondaco_repl_durable_lag",
 			Help: "Applied entries whose blobs are not local yet (RPO), by peer and origin.",
 		}, []string{"peer", "origin"}),
 		Applied: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "registry_repl_applied_total",
+			Name: "fondaco_repl_applied_total",
 			Help: "Replication events applied, by kind.",
 		}, []string{"kind"}),
 		Conflicts: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "registry_repl_publish_conflicts_total",
+			Name: "fondaco_repl_publish_conflicts_total",
 			Help: "Cross-site publish conflicts resolved by rule K1.",
 		}),
 		Parked: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "registry_repl_parked_events",
+			Name: "fondaco_repl_parked_events",
 			Help: "Replication events parked for retry.",
 		}),
 		PollFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "registry_repl_poll_failures_total",
+			Name: "fondaco_repl_poll_failures_total",
 			Help: "Failed peer polls, by peer.",
 		}, []string{"peer"}),
 		FeedDigest: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "registry_repl_feed_digest",
+			Name: "fondaco_repl_feed_digest",
 			Help: "Numeric digest of a feed's hosted manifest set; sites that agree report the same value.",
 		}, []string{"feed"}),
 		PeerFetches: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "registry_repl_peer_blob_fetches_total",
+			Name: "fondaco_repl_peer_blob_fetches_total",
 			Help: "Blobs fetched from peers, by outcome.",
 		}, []string{"outcome"}),
 	}

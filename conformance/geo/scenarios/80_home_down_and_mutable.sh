@@ -112,7 +112,7 @@ converged() {
 }
 if ! wait_for 120 converged; then
   echo "the sites disagree about the dist-tag: eu=$(tag_of eu) us=$(tag_of us)" >&2
-  compose exec -T registry-eu registry repl status -config /etc/registry/config.yaml >&2 || true
+  compose exec -T registry-eu fondaco repl status -config /etc/fondaco/config.yaml >&2 || true
   exit 1
 fi
 echo "    both sites: $(tag_of eu)"

@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/sasokolov/package-registry/core/access"
-	"github.com/sasokolov/package-registry/core/config"
-	"github.com/sasokolov/package-registry/core/state"
-	"github.com/sasokolov/package-registry/core/usage"
+	"github.com/fondaco-dev/fondaco/core/access"
+	"github.com/fondaco-dev/fondaco/core/config"
+	"github.com/fondaco-dev/fondaco/core/state"
+	"github.com/fondaco-dev/fondaco/core/usage"
 )
 
 // What each feed holds and how much it is used.

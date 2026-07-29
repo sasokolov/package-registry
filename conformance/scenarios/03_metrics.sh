@@ -16,11 +16,11 @@ require() {
   fi
 }
 
-require 'registry_requests_total\{feed="test",source="cache"\} [1-9]'
-require 'registry_requests_total\{feed="test",source="upstream"\} [1-9]'
-require 'registry_requests_total\{feed="test",source="stale"\} [1-9]'
-require 'registry_upstream_requests_total\{feed="test",outcome="ok"\} [1-9]'
-require 'registry_upstream_request_duration_seconds_count\{feed="test"\} [1-9]'
-require 'registry_upstream_breaker_state\{feed="test"\}'
+require 'fondaco_requests_total\{feed="test",source="cache"\} [1-9]'
+require 'fondaco_requests_total\{feed="test",source="upstream"\} [1-9]'
+require 'fondaco_requests_total\{feed="test",source="stale"\} [1-9]'
+require 'fondaco_upstream_requests_total\{feed="test",outcome="ok"\} [1-9]'
+require 'fondaco_upstream_request_duration_seconds_count\{feed="test"\} [1-9]'
+require 'fondaco_upstream_breaker_state\{feed="test"\}'
 
 echo "metrics ok"

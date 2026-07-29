@@ -86,7 +86,7 @@ type Presigner interface {
 
 // Initializer is an optional module capability: one-time startup
 // initialization that needs the process context (e.g. ensuring a bucket
-// exists). Called by the assembly code in cmd/registry.
+// exists). Called by the assembly code in cmd/fondaco.
 type Initializer interface {
 	Init(ctx context.Context) error
 }

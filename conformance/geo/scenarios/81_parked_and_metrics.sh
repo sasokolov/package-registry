@@ -19,9 +19,9 @@ metric() { # <eu|us> <metric name>
 }
 
 echo "--> baseline: the parked gauge is exported and zero"
-gauge="$(metric eu registry_repl_parked_events)"
+gauge="$(metric eu fondaco_repl_parked_events)"
 if [[ -z "$gauge" ]]; then
-  echo "registry_repl_parked_events is not exported at all" >&2
+  echo "fondaco_repl_parked_events is not exported at all" >&2
   exit 1
 fi
 echo "    $gauge"
@@ -37,54 +37,54 @@ compose exec -T postgres-us psql -U registry -d registry -tA -c "
 echo "--> eu-1 parks it instead of stalling"
 parked_visible() {
   local out
-  out="$(compose exec -T registry-eu registry repl retry-parked -config /etc/registry/config.yaml 2>/dev/null)" || return 1
+  out="$(compose exec -T registry-eu fondaco repl retry-parked -config /etc/fondaco/config.yaml 2>/dev/null)" || return 1
   grep -q 'a_future_event_kind' <<<"$out"
 }
 if ! wait_for 90 parked_visible; then
   echo "the unknown event never reached the parked table" >&2
-  compose exec -T registry-eu registry repl status -config /etc/registry/config.yaml >&2 || true
+  compose exec -T registry-eu fondaco repl status -config /etc/fondaco/config.yaml >&2 || true
   exit 1
 fi
 
 echo "--> the operator sees it, with the reason"
-report="$(compose exec -T registry-eu registry repl retry-parked -config /etc/registry/config.yaml 2>/dev/null)"
+report="$(compose exec -T registry-eu fondaco repl retry-parked -config /etc/fondaco/config.yaml 2>/dev/null)"
 grep -q 'unknown event kind' <<<"$report" || {
   echo "the parked report does not explain why:" >&2; echo "$report" >&2; exit 1; }
 
 echo "--> and the metric the alert watches is non-zero"
 parked_metric_set() {
   local value
-  value="$(metric eu registry_repl_parked_events | awk '{print $2}')"
+  value="$(metric eu fondaco_repl_parked_events | awk '{print $2}')"
   [[ -n "$value" && "$value" != "0" ]]
 }
 if ! wait_for 90 parked_metric_set; then
-  echo "registry_repl_parked_events stayed zero with an event parked" >&2
-  metric eu registry_repl_parked_events >&2
+  echo "fondaco_repl_parked_events stayed zero with an event parked" >&2
+  metric eu fondaco_repl_parked_events >&2
   exit 1
 fi
-echo "    $(metric eu registry_repl_parked_events)"
+echo "    $(metric eu fondaco_repl_parked_events)"
 
 echo "--> the stream is NOT blocked: a later publish still replicates"
 code="$(publish us shared "$PATH_JAR" "published after the parked event" "$token")"
 [[ "$code" == "201" ]] || { echo "publish returned $code" >&2; exit 1; }
 if ! wait_for 90 replicated eu shared "$PATH_JAR" "published after the parked event"; then
   echo "a parked event blocked everything behind it (head-of-line blocking)" >&2
-  compose exec -T registry-eu registry repl status -config /etc/registry/config.yaml >&2 || true
+  compose exec -T registry-eu fondaco repl status -config /etc/fondaco/config.yaml >&2 || true
   exit 1
 fi
 
 echo "--> lag and applied-event metrics are exported and moving"
-for m in registry_repl_lag registry_repl_applied_total registry_repl_feed_digest; do
+for m in fondaco_repl_lag fondaco_repl_applied_total fondaco_repl_feed_digest; do
   if [[ -z "$(metric eu "$m")" ]]; then
     echo "$m is not exported" >&2
     exit 1
   fi
 done
-echo "    $(metric eu registry_repl_applied_total)"
+echo "    $(metric eu fondaco_repl_applied_total)"
 
 echo "--> both sites report the same digest for a converged feed"
 digest_of() { # <eu|us>
-  metric "$1" 'registry_repl_feed_digest{feed="shared"}' | awk '{print $2}'
+  metric "$1" 'fondaco_repl_feed_digest{feed="shared"}' | awk '{print $2}'
 }
 digests_agree() {
   local a b

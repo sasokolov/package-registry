@@ -15,8 +15,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sasokolov/package-registry/core/api"
-	"github.com/sasokolov/package-registry/modules/internal/semver"
+	"github.com/fondaco-dev/fondaco/core/api"
+	"github.com/fondaco-dev/fondaco/modules/internal/semver"
 )
 
 // maxPublishSize bounds a publish body (JSON with base64 attachments).

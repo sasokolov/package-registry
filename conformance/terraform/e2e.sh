@@ -24,7 +24,7 @@ mkdir -p "$BIN" "$STACK"
 cat > /tmp/terraformrc <<RC
 provider_installation {
   dev_overrides {
-    "registry.local/sasokolov/registry" = "$BIN"
+    "registry.local/fondaco-dev/fondaco" = "$BIN"
   }
   direct {}
 }
@@ -60,7 +60,7 @@ fi
 
 echo "==> the feeds actually serve"
 code="$(curl -sS -o /dev/null -w '%{http_code}' \
-  "$REGISTRY_ENDPOINT/maven/tf-e2e-central/com/example/liba/1.0.0/liba-1.0.0.jar")"
+  "$FONDACO_ENDPOINT/maven/tf-e2e-central/com/example/liba/1.0.0/liba-1.0.0.jar")"
 [ "$code" = "200" ] || { echo "the proxied feed returned $code" >&2; exit 1; }
 
 echo "==> the issued token can publish to the feed that names it"
@@ -69,14 +69,14 @@ secret="$(terraform output -raw ci_token)"
 printf 'artifact' > /tmp/a.jar
 code="$(curl -sS -o /dev/null -w '%{http_code}' -X PUT \
   -H "Authorization: Bearer $secret" --data-binary @/tmp/a.jar \
-  "$REGISTRY_ENDPOINT/maven/tf-e2e-releases/com/example/e2e/1.0.0/e2e-1.0.0.jar")"
+  "$FONDACO_ENDPOINT/maven/tf-e2e-releases/com/example/e2e/1.0.0/e2e-1.0.0.jar")"
 [ "$code" = "201" ] || { echo "publishing with the declared token returned $code" >&2; exit 1; }
 
 echo "==> an edit made through the API is drift"
 curl -sS -o /dev/null -X PUT \
-  -H "Authorization: Bearer $REGISTRY_TOKEN" -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $FONDACO_TOKEN" -H 'Content-Type: application/json' \
   --data '{"name":"tf-e2e-npm","format":"npm","upstream":"http://fake-upstream/npm","anonymous":false}' \
-  "$REGISTRY_ENDPOINT/api/v1/config/feeds/tf-e2e-npm"
+  "$FONDACO_ENDPOINT/api/v1/config/feeds/tf-e2e-npm"
 set +e
 terraform plan -detailed-exitcode -input=false >/tmp/plan2.out 2>&1
 code=$?
@@ -99,12 +99,12 @@ set -e
 echo "==> destroy removes what it created and leaves the packages alone"
 terraform destroy -auto-approve
 code="$(curl -sS -o /dev/null -w '%{http_code}' \
-  "$REGISTRY_ENDPOINT/maven/tf-e2e-central/com/example/liba/1.0.0/liba-1.0.0.jar")"
+  "$FONDACO_ENDPOINT/maven/tf-e2e-central/com/example/liba/1.0.0/liba-1.0.0.jar")"
 [ "$code" = "404" ] || { echo "a destroyed feed still serves ($code)" >&2; exit 1; }
 # The site itself is untouched: the feeds it was configured with by hand are
 # still there.
 code="$(curl -sS -o /dev/null -w '%{http_code}' \
-  "$REGISTRY_ENDPOINT/maven/central/com/example/liba/1.0.0/liba-1.0.0.jar")"
+  "$FONDACO_ENDPOINT/maven/central/com/example/liba/1.0.0/liba-1.0.0.jar")"
 [ "$code" = "200" ] || { echo "destroy took out a feed it did not own ($code)" >&2; exit 1; }
 
 echo "OK: terraform end-to-end"

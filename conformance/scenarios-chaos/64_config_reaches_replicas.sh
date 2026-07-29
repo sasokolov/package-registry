@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib.sh"
 
 API=http://lb/api/v1
-admin="$(registry_token "ops-chaos-$(date +%s)")"
+admin="$(fondaco_token "ops-chaos-$(date +%s)")"
 FEED="replicated-config"
 
 cleanup() {

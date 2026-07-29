@@ -18,7 +18,7 @@ fi
 
 echo "--> authenticated identity without the publish right is 403"
 # The hosted feed allows only "token:ci-*"; this token has another name.
-other="$(registry_token "reader-$(date +%s)")"
+other="$(fondaco_token "reader-$(date +%s)")"
 code="$(client_curl -sS -o /dev/null -w '%{http_code}' -X PUT --data-binary 'x' \
   -H "Authorization: Bearer $other" "$URL")"
 if [[ "$code" != "403" ]]; then

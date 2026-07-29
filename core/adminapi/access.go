@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/sasokolov/package-registry/core/access"
-	"github.com/sasokolov/package-registry/core/api"
-	"github.com/sasokolov/package-registry/core/config"
+	"github.com/fondaco-dev/fondaco/core/access"
+	"github.com/fondaco-dev/fondaco/core/api"
+	"github.com/fondaco-dev/fondaco/core/config"
 )
 
 // The access surface: what the rules say, and why a particular request

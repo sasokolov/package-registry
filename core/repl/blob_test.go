@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sasokolov/package-registry/core/api"
-	"github.com/sasokolov/package-registry/modules/storage/fs"
+	"github.com/fondaco-dev/fondaco/core/api"
+	"github.com/fondaco-dev/fondaco/modules/storage/fs"
 )
 
 // flakyPeer serves a blob but cuts the first transfer short, so the client

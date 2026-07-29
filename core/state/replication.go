@@ -663,7 +663,7 @@ func (db *DB) ResetPeerTrust(ctx context.Context, peer string) (oldUUID string, 
 }
 
 // ForgetPeerIdentity drops a pin so the next handshake re-pins the peer. It
-// is the deliberate operator action behind `registry repl trust-reset`: a
+// is the deliberate operator action behind `fondaco repl trust-reset`: a
 // peer whose UUID changed is a different site until a human says otherwise.
 func (db *DB) ForgetPeerIdentity(ctx context.Context, peer string) (string, error) {
 	var uuid string

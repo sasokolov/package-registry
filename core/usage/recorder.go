@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sasokolov/package-registry/core/state"
+	"github.com/fondaco-dev/fondaco/core/state"
 )
 
 // Recorder counts what feeds served, in memory, and folds the totals into

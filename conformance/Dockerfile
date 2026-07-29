@@ -18,17 +18,17 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=console /ui/dist ./ui/dist
-RUN CGO_ENABLED=0 go build -trimpath -tags "$GO_BUILD_TAGS" -o /out/registry ./cmd/registry
+RUN CGO_ENABLED=0 go build -trimpath -tags "$GO_BUILD_TAGS" -o /out/fondaco ./cmd/fondaco
 
 # alpine, not scratch/distroless: busybox wget is used for container healthchecks.
 FROM alpine:3.22
-RUN adduser -D -H -u 65532 registry && mkdir -p /data && chown registry:registry /data
-COPY --from=build /out/registry /usr/local/bin/registry
+RUN adduser -D -H -u 65532 fondaco && mkdir -p /data && chown fondaco:fondaco /data
+COPY --from=build /out/fondaco /usr/local/bin/fondaco
 # The image is a distribution channel, and the licence obligations travel with
 # what is distributed: whoever pulls it must be able to read the terms and the
 # attributions without going to find the repository.
-COPY LICENSE NOTICE THIRD-PARTY-NOTICES.md /usr/local/share/registry/
-USER registry
+COPY LICENSE NOTICE THIRD-PARTY-NOTICES.md /usr/local/share/fondaco/
+USER fondaco
 EXPOSE 8080
-ENTRYPOINT ["/usr/local/bin/registry"]
-CMD ["-config", "/etc/registry/config.yaml"]
+ENTRYPOINT ["/usr/local/bin/fondaco"]
+CMD ["-config", "/etc/fondaco/config.yaml"]

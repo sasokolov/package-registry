@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Standard Maven credential form: <server> username/password, which
      maven-resolver sends as HTTP Basic. The password is the registry token,
-     injected from the REGISTRY_TOKEN environment variable. -->
+     injected from the FONDACO_TOKEN environment variable. -->
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
   <servers>
     <server>
       <id>registry-private</id>
       <username>ci</username>
-      <password>${env.REGISTRY_TOKEN}</password>
+      <password>${env.FONDACO_TOKEN}</password>
     </server>
   </servers>
   <mirrors>

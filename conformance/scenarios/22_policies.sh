@@ -7,10 +7,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib.sh
 source "$SCRIPT_DIR/../lib.sh"
 
-token="$(registry_token "ci-policy-$(date +%s)")"
+token="$(fondaco_token "ci-policy-$(date +%s)")"
 
 deploy() { # <pom-file>
-  compose run --rm -T -e REGISTRY_TOKEN="$token" --entrypoint sh maven-client -c "
+  compose run --rm -T -e FONDACO_TOKEN="$token" --entrypoint sh maven-client -c "
     set -e
     cp -r /work-deploy /tmp/w && cd /tmp/w
     mvn -B -s settings.xml -f $1 \

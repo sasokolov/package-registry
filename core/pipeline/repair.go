@@ -9,7 +9,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 // ProjectionRepair keeps the blob-store projection of hosted manifests in
@@ -43,15 +43,15 @@ type RepairMetrics struct {
 func NewRepairMetrics(reg prometheus.Registerer) *RepairMetrics {
 	m := &RepairMetrics{
 		Divergent: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "registry_projection_divergent",
+			Name: "fondaco_projection_divergent",
 			Help: "Hosted coordinates whose blob-store projection disagrees with the database.",
 		}),
 		Repaired: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "registry_projection_repaired_total",
+			Name: "fondaco_projection_repaired_total",
 			Help: "Hosted manifest projections rewritten by the repair loop.",
 		}),
 		Failures: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "registry_projection_repair_failures_total",
+			Name: "fondaco_projection_repair_failures_total",
 			Help: "Repair passes that could not complete.",
 		}),
 	}

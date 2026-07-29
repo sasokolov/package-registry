@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/sasokolov/package-registry/core/state"
+	"github.com/fondaco-dev/fondaco/core/state"
 )
 
 // BlobFetcher retrieves a blob by digest from a peer and stores it locally.

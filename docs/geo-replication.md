@@ -177,7 +177,7 @@ opt-in per feed; тогда конкурентный конфликт разре
      в системе не существует;
    - обе стороны — в `publish_conflicts` + audit + метрика + алерт; оба
      блоба сохраняются (content-addressed);
-   - разрешение — только явное: `registry repl resolve --feed --path
+   - разрешение — только явное: `fondaco repl resolve --feed --path
      --keep <sha256>` порождает журналируемое `conflict_resolve`.
 3. При дефолтной политике `forward:<home>` шаг 2 в нормальной работе
    недостижим; правило — всегда включённая страховка от split-brain и
@@ -229,7 +229,7 @@ merge идемпотентен; digest множества манифестов p
 
 ## Наблюдаемость
 
-`registry_repl_lag{peer,origin}` (head − applied + возраст последнего
+`fondaco_repl_lag{peer,origin}` (head − applied + возраст последнего
 успешного poll), durability watermark (RPO), конфликты, dead-letter,
 parked, projection divergence, digest множества манифестов per feed.
 

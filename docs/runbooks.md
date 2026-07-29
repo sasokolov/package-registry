@@ -1,7 +1,7 @@
 # Runbook'и
 
 Каждый раздел — один сценарий дежурства: симптом, что происходит на самом
-деле, что делать. Все команды предполагают `-config /etc/registry/config.yaml`
+деле, что делать. Все команды предполагают `-config /etc/fondaco/config.yaml`
 (в поде — `kubectl exec deploy/registry-registry -- ...`).
 
 ## Общее
@@ -9,9 +9,9 @@
 Быстрый осмотр:
 
 ```bash
-registry repl status      # сайт, головы журналов, курсоры, пины, parked, конфликты
-registry repl peers       # мешевые связи и их состояние
-registry config check     # конфиг валиден? (перед SIGHUP и в CI)
+fondaco repl status      # сайт, головы журналов, курсоры, пины, parked, конфликты
+fondaco repl peers       # мешевые связи и их состояние
+fondaco config check     # конфиг валиден? (перед SIGHUP и в CI)
 ```
 
 Заголовки ответов говорят, откуда пришли байты: `X-Registry-Source`
@@ -34,8 +34,8 @@ sha256 — свойство содержимого, не часов), коорд
 **Действия.**
 
 ```bash
-registry repl conflicts               # человекочитаемо
-registry repl conflicts -json         # полные дайджесты для автоматики
+fondaco repl conflicts               # человекочитаемо
+fondaco repl conflicts -json         # полные дайджесты для автоматики
 ```
 
 Решите, какая сборка правильная. Обычно это видно по сайту-источнику и
@@ -45,13 +45,13 @@ registry repl conflicts -json         # полные дайджесты для �
 ```bash
 # на сайте, где лежит нужный блоб
 wget -qO- http://127.0.0.1:8081/internal/replication/v1/blobs/sha256/<sha> \
-  -H "Authorization: Bearer $(cat /etc/registry/peer-token)" | sha256sum
+  -H "Authorization: Bearer $(cat /etc/fondaco/peer-token)" | sha256sum
 ```
 
 Зафиксируйте выбор — он реплицируется и снимает карантин везде:
 
 ```bash
-registry repl resolve -feed <feed> -path <path> -keep <полный sha256>
+fondaco repl resolve -feed <feed> -path <path> -keep <полный sha256>
 ```
 
 **Профилактика.** Для фидов, где важна строгая иммутабельность, ставьте
@@ -62,35 +62,35 @@ registry repl resolve -feed <feed> -path <path> -keep <полный sha256>
 
 ## Долгий ресинк / сайт отстал
 
-**Симптом.** `RegistryReplicationStalled` или растущий `registry_repl_lag`.
+**Симптом.** `RegistryReplicationStalled` или растущий `fondaco_repl_lag`.
 
 **Диагностика.**
 
 ```bash
-registry repl status
+fondaco repl status
 ```
 
 - `LAST ERROR` пустой, `APPLIED` растёт → сайт просто догоняет, ждите.
 - `LAST ERROR` про `unreachable` → сетевой разрыв, см. следующий раздел.
 - `APPLIED` стоит, parked events растут → события не применяются:
-  `registry repl retry-parked` покажет причины.
+  `fondaco repl retry-parked` покажет причины.
 
 **Действия.**
 
 ```bash
-registry repl retry-parked            # причины и повторная попытка
-registry repl resync -peer <name>     # перечитать журнал пира с нуля
+fondaco repl retry-parked            # причины и повторная попытка
+fondaco repl resync -peer <name>     # перечитать журнал пира с нуля
 ```
 
 `resync` безопасен в любой момент: применение идемпотентно. Если курсор
 ушёл за горизонт хранения журнала пира, тот ответит `410`, и сайт сам
 подтянет snapshot.
 
-**Блобы отстают от манифестов** (ненулевой `registry_repl_durable_lag`):
+**Блобы отстают от манифестов** (ненулевой `fondaco_repl_durable_lag`):
 
 ```bash
-registry repl backfill                       # что не хватает
-registry repl backfill -dry-run=false        # дотянуть с пиров
+fondaco repl backfill                       # что не хватает
+fondaco repl backfill -dry-run=false        # дотянуть с пиров
 ```
 
 ---
@@ -130,7 +130,7 @@ registry repl backfill -dry-run=false        # дотянуть с пиров
 3. Сайт сам сделает snapshot-бутстрап. До сходимости он отдаёт hosted-фиды
    через peer-fallback (`X-Registry-Source: peer`), так что клиентов можно
    пускать сразу.
-4. Дотяните блобы, если фиды ленивые: `registry repl backfill -dry-run=false`.
+4. Дотяните блобы, если фиды ленивые: `fondaco repl backfill -dry-run=false`.
 
 **Восстановление сайта, потерявшего БД.**
 
@@ -142,11 +142,11 @@ registry repl backfill -dry-run=false        # дотянуть с пиров
 2. На каждом пире снимите пин:
 
    ```bash
-   registry repl trust-reset -peer <имя-восстановленного-сайта>
+   fondaco repl trust-reset -peer <имя-восстановленного-сайта>
    ```
 
 3. Дальше сайт сходится сам: snapshot-бутстрап, затем журнал. Ленивым
-   фидам дотяните блобы: `registry repl backfill -dry-run=false`.
+   фидам дотяните блобы: `fondaco repl backfill -dry-run=false`.
 
 Если UUID сменился без вашего ведома — не сбрасывайте пин. Это ровно тот
 случай, ради которого он существует.
@@ -173,7 +173,7 @@ Secret. Смена `replication.auth.*` требует рестарта пода
 
 Смена UUID сайта (пересоздание БД) выглядит для пиров как чужой сайт под
 знакомым именем; они откажутся реплицировать. Это защита от подмены, а не
-сбой. `registry repl status` показывает это отдельной строкой
+сбой. `fondaco repl status` показывает это отдельной строкой
 `PEER IDENTITY MISMATCH`, см. следующий раздел.
 
 ---
@@ -262,7 +262,7 @@ capabilities и полный список привязанных политик.
 
 **Проверить, что почините именно то.** Сначала спросить explain про
 идентичность, потом менять политику, потом спросить снова. В Terraform это
-`check`-блок с `registry_access_explain` — и проверять обе стороны: что нужное
+`check`-блок с `fondaco_access_explain` — и проверять обе стороны: что нужное
 разрешено и что ненужное всё ещё запрещено.
 
 ---
@@ -273,18 +273,18 @@ capabilities и полный список привязанных политик.
 публикация — всё, что нужно заблокировать быстрее, чем удалять.
 
 ```bash
-registry repl quarantine -feed <feed> -coordinate 'maven:com.example:lib@1.0.0' \
+fondaco repl quarantine -feed <feed> -coordinate 'maven:com.example:lib@1.0.0' \
   -reason manual -detail 'legal takedown #123'
 ```
 
 Решение реплицируется: в пределах лага пира координата отдаёт `409` на всех
 сайтах. Байты не удаляются — блокируется выдача (удаление блобов — отдельная
-операция, `registry gc`, и только после того, как манифесты убраны).
+операция, `fondaco gc`, и только после того, как манифесты убраны).
 
 Снять:
 
 ```bash
-registry repl release -feed <feed> -coordinate '<coordinate>' -reason manual
+fondaco repl release -feed <feed> -coordinate '<coordinate>' -reason manual
 ```
 
 Причины независимы: снятие `manual` не снимет `policy_osv` или
@@ -303,7 +303,7 @@ registry repl release -feed <feed> -coordinate '<coordinate>' -reason manual
 за ними НЕ блокируется — они откладываются и переигрываются.
 
 ```bash
-registry repl retry-parked    # покажет причины и попробует применить снова
+fondaco repl retry-parked    # покажет причины и попробует применить снова
 ```
 
 Если счётчик не падает: неизвестный тип события означает, что этот сайт
@@ -318,7 +318,7 @@ registry repl retry-parked    # покажет причины и попробу�
 (по умолчанию 5 минут) паркуются, а не применяются. Разъехавшиеся часы —
 самая частая причина растущих parked events.
 
-**Окно отзыва токена.** После `registry token revoke -name <name>` токен
+**Окно отзыва токена.** После `fondaco token revoke -name <name>` токен
 перестаёт работать:
 
 ```
@@ -397,9 +397,9 @@ curl -s "$REGISTRY/npm/<feed>/<package>" | jq -r '.versions[].dist.tarball' | he
 ```
 
 Промах на B становится попаданием в кэш A вместо похода в интернет. Проверить,
-что помогло, можно по `registry_upstream_requests_total` на A: во время сборки
+что помогло, можно по `fondaco_upstream_requests_total` на A: во время сборки
 на B счётчик `outcome="ok"` там расти не должен — всё должно уходить в
-`registry_requests_total{source="cache"}`.
+`fondaco_requests_total{source="cache"}`.
 
 Ровно один сайт в цепочке должен смотреть в интернет: кольцо из
 proxy-апстримов даст цикл.
@@ -409,7 +409,7 @@ proxy-апстримов даст цикл.
 ## Апстрим отвечает 429
 
 **Симптом.** В логе `upstream asked us to slow down`, растёт
-`registry_upstream_requests_total{outcome="throttled"}`. Сборки идут, но
+`fondaco_upstream_requests_total{outcome="throttled"}`. Сборки идут, но
 медленно.
 
 **Что происходит.** Публичные зеркала (Maven Central в первую очередь) режут
@@ -435,7 +435,7 @@ proxy-апстримов даст цикл.
    чексумма (инвариант 5 — она обязательна при инжесте). Кэш это окупает после
    первого раза.
 
-Открытый брейкер (`registry_upstream_breaker_state = 2`) при этом означает
+Открытый брейкер (`fondaco_upstream_breaker_state = 2`) при этом означает
 что-то другое: 5xx или обрывы. Смотреть последние `upstream attempt failed`.
 
 ---
@@ -471,8 +471,8 @@ curl -fsS -H "Authorization: Bearer $TOKEN" "$REGISTRY/api/v1/usage" | jq '
 **Освободить место:**
 
 ```bash
-registry gc                 # dry run: что не нужно ни одному манифесту
-registry gc -delete=true    # собрать
+fondaco gc                 # dry run: что не нужно ни одному манифесту
+fondaco gc -delete=true    # собрать
 ```
 
 GC удаляет блобы, на которые не указывает ни один манифест. Чтобы кэш фида
@@ -485,11 +485,11 @@ GC удаляет блобы, на которые не указывает ни �
 - `scan_enabled: false` — обход выключен (`server.usage_scan`). Скачивания
   всё равно считаются; хранилище будет неизвестно.
 - `scanned_at` старее интервала — смотреть
-  `registry_usage_scan_failures_total` и лог: обход мог не дотянуться до
+  `fondaco_usage_scan_failures_total` и лог: обход мог не дотянуться до
   стораджа. Скачивания при этом свежие: их считают отдельно.
 - Все скачивания нулевые после рестарта — счётчики копятся в памяти и
   флашатся раз в `server.usage_flush`; подождите интервал. Если
-  `registry_usage_flush_failures_total` растёт — недоступна БД, дельты
+  `fondaco_usage_flush_failures_total` растёт — недоступна БД, дельты
   копятся и повторятся.
 
 **Что из этого фида вообще нужно.**
@@ -514,8 +514,8 @@ curl -fsS -H "Authorization: Bearer $TOKEN" \
 ## Сборка мусора в блоб-хранилище
 
 ```bash
-registry gc                                   # dry-run, ничего не удаляет
-registry gc -delete -min-age 168h             # удалить несвязанные блобы
+fondaco gc                                   # dry-run, ничего не удаляет
+fondaco gc -delete -min-age 168h             # удалить несвязанные блобы
 ```
 
 GC держит advisory-lock на весь прогон (две реплики не сметут параллельно) и

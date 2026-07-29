@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 // blobObjectStore adapts a BlobStore to the ObjectStore a StoreSource needs.

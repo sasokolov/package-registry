@@ -9,8 +9,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib.sh"
 
 API=http://registry:8080/api/v1
-admin="$(registry_token "ops-$(date +%s)")"
-plain="$(registry_token "ci-plain-$(date +%s)")"
+admin="$(fondaco_token "ops-$(date +%s)")"
+plain="$(fondaco_token "ci-plain-$(date +%s)")"
 
 api() { # <method> <path> [curl args...]
   local method="$1" path="$2"; shift 2

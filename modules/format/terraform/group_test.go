@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 func versionsBody(t *testing.T, source string, versions ...string) []byte {

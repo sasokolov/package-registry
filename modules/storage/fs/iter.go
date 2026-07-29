@@ -5,7 +5,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 // chanIter adapts a channel-fed walk to api.Iter.

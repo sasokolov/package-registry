@@ -172,7 +172,7 @@ feeds:
 auth:
   oidc_issuers:
     - issuer: http://127.0.0.1:9099
-      audience: package-registry
+      audience: fondaco
       client_id: registry-console
 
 admins:

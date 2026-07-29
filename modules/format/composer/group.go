@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 // Merging for groups. Composer learns what versions exist from the p2

@@ -23,9 +23,9 @@ for site in eu us; do
 done
 
 echo "--> an operator quarantines the coordinate at eu-1"
-compose exec -T registry-eu registry repl quarantine \
+compose exec -T registry-eu fondaco repl quarantine \
   -feed homed -coordinate "$COORD" -reason manual -detail "legal takedown" \
-  -config /etc/registry/config.yaml >/dev/null
+  -config /etc/fondaco/config.yaml >/dev/null
 
 echo "--> eu-1 stops serving it"
 blocked() { # <eu|us>
@@ -41,7 +41,7 @@ fi
 echo "--> and so does us-1, once the decision replicates"
 if ! wait_for 90 blocked us; then
   echo "the takedown never reached us-1" >&2
-  compose exec -T registry-us registry repl status -config /etc/registry/config.yaml >&2 || true
+  compose exec -T registry-us fondaco repl status -config /etc/fondaco/config.yaml >&2 || true
   exit 1
 fi
 
@@ -62,9 +62,9 @@ if [[ "$site_header" != "us-1" ]]; then
 fi
 
 echo "--> releasing at us-1 reaches eu-1 as well"
-compose exec -T registry-us registry repl release \
+compose exec -T registry-us fondaco repl release \
   -feed homed -coordinate "$COORD" -reason manual \
-  -config /etc/registry/config.yaml >/dev/null
+  -config /etc/fondaco/config.yaml >/dev/null
 
 servable() { # <eu|us>
   local status
@@ -74,7 +74,7 @@ servable() { # <eu|us>
 for site in us eu; do
   if ! wait_for 90 servable "$site"; then
     echo "site $site still blocks the coordinate after the release" >&2
-    compose exec -T "registry-$site" registry repl status -config /etc/registry/config.yaml >&2 || true
+    compose exec -T "registry-$site" fondaco repl status -config /etc/fondaco/config.yaml >&2 || true
     exit 1
   fi
 done

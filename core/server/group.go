@@ -11,11 +11,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/sasokolov/package-registry/core/api"
-	"github.com/sasokolov/package-registry/core/config"
-	"github.com/sasokolov/package-registry/core/pipeline"
-	"github.com/sasokolov/package-registry/core/policy"
-	"github.com/sasokolov/package-registry/core/usage"
+	"github.com/fondaco-dev/fondaco/core/api"
+	"github.com/fondaco-dev/fondaco/core/config"
+	"github.com/fondaco-dev/fondaco/core/pipeline"
+	"github.com/fondaco-dev/fondaco/core/policy"
+	"github.com/fondaco-dev/fondaco/core/usage"
 )
 
 // A group is a read-only view over several feeds of one format, so a client

@@ -1,4 +1,8 @@
-# package-registry
+# fondaco
+
+A *fondaco* was the warehouse-and-customs-house of a medieval port: foreign
+goods arrived, were inspected, were stored, and were released under local
+rules. Ports that traded with each other each had one.
 
 Self-hosted package registry: pull-through caching and hosting for several
 package managers behind one core. The core owns the generic pipeline
@@ -102,7 +106,7 @@ Storage comes from a periodic inventory scan (the proxy cache deliberately has
 no database rows, so it can only be counted by walking the store); downloads
 are counted as they happen and folded into PostgreSQL in batches, so no request
 ever waits on a counter. The console shows both on its **Usage** page, and
-`registry_feed_bytes`, `registry_bytes_served_total`,
+`fondaco_feed_bytes`, `registry_bytes_served_total`,
 `registry_upstream_bytes_total` and `registry_group_requests_total` are on
 `/metrics` — by feed and group, never by package.
 
@@ -181,13 +185,13 @@ make test-integration   #     tests that need real PostgreSQL and MinIO
 CLI beyond serving:
 
 ```bash
-registry config check                  # parse and validate without starting
-registry token create -name ci-bot     # secret printed once, hash stored
-registry token revoke -name ci-bot     # propagates to every site
-registry gc                            # dry run; -delete to collect
-registry repl status | peers | conflicts | resolve | resync | backfill
-registry repl quarantine | release     # take a package down mesh-wide
-registry repl retry-parked | trust-reset
+fondaco config check                  # parse and validate without starting
+fondaco token create -name ci-bot     # secret printed once, hash stored
+fondaco token revoke -name ci-bot     # propagates to every site
+fondaco gc                            # dry run; -delete to collect
+fondaco repl status | peers | conflicts | resolve | resync | backfill
+fondaco repl quarantine | release     # take a package down mesh-wide
+fondaco repl retry-parked | trust-reset
 ```
 
 ## Geo replication
@@ -203,7 +207,7 @@ Two properties are worth knowing before operating a mesh:
   canonical state is the lexicographically smallest sha256 — derived from
   content, so every site agrees without coordination — the coordinate is
   quarantined, both sides are recorded, and an operator resolves it with
-  `registry repl resolve`.
+  `fondaco repl resolve`.
 - **Replication can only remove authority.** There is no event that
   creates a token or grants a permission; revocations and quarantines
   propagate, grants do not.

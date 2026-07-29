@@ -3,5 +3,5 @@
 services:
   registry:
     volumes:
-      - ./registry-live.yaml:/etc/registry/config.yaml:ro
+      - ./registry-live.yaml:/etc/fondaco/config.yaml:ro
       - registry-data:/data

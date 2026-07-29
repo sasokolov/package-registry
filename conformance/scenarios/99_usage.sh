@@ -16,7 +16,7 @@ source "$SCRIPT_DIR/../lib.sh"
 BASE=http://registry:8080
 API=$BASE/api/v1
 
-admin="$(registry_token "ops-usage-$(date +%s)")"
+admin="$(fondaco_token "ops-usage-$(date +%s)")"
 
 usage() { client_curl -fsS -H "Authorization: Bearer $admin" "$API/usage"; }
 
@@ -135,13 +135,13 @@ print(sum(f["bytes"] for f in report["feeds"] if not f.get("group")))
 
 echo "--> and the same numbers are on /metrics, by feed and not by package"
 metrics="$(client_curl -fsS "$BASE/metrics")"
-grep -q '^registry_feed_bytes{feed="central"' <<<"$metrics" || {
+grep -q '^fondaco_feed_bytes{feed="central"' <<<"$metrics" || {
   echo "no per-feed storage gauge" >&2; exit 1; }
-grep -q '^registry_store_bytes ' <<<"$metrics" || { echo "no site storage gauge" >&2; exit 1; }
-grep -q '^registry_bytes_served_total{feed="central"' <<<"$metrics" || {
+grep -q '^fondaco_store_bytes ' <<<"$metrics" || { echo "no site storage gauge" >&2; exit 1; }
+grep -q '^fondaco_bytes_served_total{feed="central"' <<<"$metrics" || {
   echo "no per-feed bytes-served counter" >&2; exit 1; }
-grep -q '^registry_group_requests_total{group="maven-public"' <<<"$metrics" || {
-  echo "group traffic is not exported:" >&2; grep '^registry_group' <<<"$metrics" >&2; exit 1; }
+grep -q '^fondaco_group_requests_total{group="maven-public"' <<<"$metrics" || {
+  echo "group traffic is not exported:" >&2; grep '^fondaco_group' <<<"$metrics" >&2; exit 1; }
 # Cardinality is the whole reason these are feed-level: a coordinate in a
 # label would grow without bound.
 if grep -E '^registry_(feed|store|group)[a-z_]*\{[^}]*(coordinate|package|path)=' <<<"$metrics"; then

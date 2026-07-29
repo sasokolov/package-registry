@@ -53,11 +53,18 @@ not.
 
 ## About the name
 
-The project's current name is descriptive, which makes it weak as a
-trademark: descriptive terms are hard to protect and easy to argue about. The
-policy above is written to apply to whatever distinctive name and logo the
-project settles on, and the sentence you are reading is a reminder that
-picking one is a prerequisite for any of this having teeth.
+A *fondaco* was the building where a medieval port received foreign merchants:
+warehouse, customs house and lodging in one. Goods arrived from far away, were
+inspected and weighed, were stored, and were released under the rules of the
+city rather than the rules of wherever they came from. The Fondaco dei
+Tedeschi in Venice is the one still standing. Ports that traded with each
+other each had their own.
+
+The word was chosen because it is distinctive rather than descriptive. That is
+not decoration: a descriptive name — "package registry" — cannot be protected,
+because nobody may be stopped from describing their software accurately, and a
+policy written around one would have nothing to say. This one can be
+protected, which is what makes the paragraphs above mean something.
 
 ## Asking
 

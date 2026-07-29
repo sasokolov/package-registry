@@ -14,8 +14,8 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 
-	"github.com/sasokolov/package-registry/core/api"
-	"github.com/sasokolov/package-registry/core/config"
+	"github.com/fondaco-dev/fondaco/core/api"
+	"github.com/fondaco-dev/fondaco/core/config"
 )
 
 // fakeIssuer is a local OIDC issuer: discovery document, JWKS and signing.
@@ -84,7 +84,7 @@ func (fi *fakeIssuer) sign(t *testing.T, mutate func(b *jwt.Builder)) string {
 	now := time.Now()
 	b := jwt.NewBuilder().
 		Issuer(fi.server.URL).
-		Audience([]string{"package-registry"}).
+		Audience([]string{"fondaco"}).
 		Subject("project_path:group/app:ref_type:branch:ref:main").
 		Claim("project_path", "group/app").
 		Claim("ref", "main").
@@ -108,7 +108,7 @@ func newOIDC(t *testing.T, fi *fakeIssuer, jwksOverride string) *OIDC {
 	t.Helper()
 	return NewOIDC(t.Context(), []config.OIDCIssuer{{
 		Issuer:   fi.server.URL,
-		Audience: "package-registry",
+		Audience: "fondaco",
 		JWKSURL:  jwksOverride,
 	}}, fi.server.Client())
 }

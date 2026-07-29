@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 // metadataTTL bounds maven-metadata.xml freshness (SWR beyond it).

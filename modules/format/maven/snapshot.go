@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 // SNAPSHOT support.
@@ -22,7 +22,7 @@ import (
 //	.../1.0.0-SNAPSHOT/maven-metadata.xml   version-level index (rebuilt)
 //
 // Retention keeps the newest N builds per coordinate; older ones are dropped
-// from the index (blobs are content-addressed and collected by `registry gc`).
+// from the index (blobs are content-addressed and collected by `fondaco gc`).
 
 // snapshotSuffix marks a SNAPSHOT version.
 const snapshotSuffix = "-SNAPSHOT"

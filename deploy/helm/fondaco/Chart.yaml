@@ -1,0 +1,7 @@
+apiVersion: v2
+name: fondaco
+description: Self-hosted modular package registry (proxy cache + hosting)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/fondaco-dev/fondaco

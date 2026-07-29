@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 func snapshotManifest(path, version string) api.HostedManifest {

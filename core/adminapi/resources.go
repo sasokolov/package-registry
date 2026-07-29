@@ -9,7 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"gopkg.in/yaml.v3"
 
-	"github.com/sasokolov/package-registry/core/config"
+	"github.com/fondaco-dev/fondaco/core/config"
 )
 
 // Per-resource endpoints exist because Terraform and a UI form both think in

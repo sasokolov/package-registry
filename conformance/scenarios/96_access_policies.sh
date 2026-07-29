@@ -16,11 +16,11 @@ source "$SCRIPT_DIR/../lib.sh"
 BASE=http://registry:8080
 API=$BASE/api/v1
 
-admin="$(registry_token "ops-access-$(date +%s)")"
-team="$(registry_token "team-example-$(date +%s)")"
-guarded="$(registry_token "guarded-reader-$(date +%s)")"
-oncall="$(registry_token "oncall-$(date +%s)")"
-nobody="$(registry_token "nobody-$(date +%s)")"
+admin="$(fondaco_token "ops-access-$(date +%s)")"
+team="$(fondaco_token "team-example-$(date +%s)")"
+guarded="$(fondaco_token "guarded-reader-$(date +%s)")"
+oncall="$(fondaco_token "oncall-$(date +%s)")"
+nobody="$(fondaco_token "nobody-$(date +%s)")"
 
 publish() { # <token> <feed> <path> <content>
   client_curl -sS -o /dev/null -w '%{http_code}' -X PUT \
@@ -103,7 +103,7 @@ code="$(client_curl -sS -o /dev/null -w '%{http_code}' \
   "$BASE/maven/private/com/example/ok/1.0.0/ok-1.0.0.jar")"
 [[ "$code" == "401" ]] || { echo "the private feed returned $code to a stranger, want 401" >&2; exit 1; }
 # ...and publishers keep publishing.
-ci="$(registry_token "ci-access-$(date +%s)")"
+ci="$(fondaco_token "ci-access-$(date +%s)")"
 code="$(publish "$ci" hosted "com/example/legacy/1.0.0/legacy-1.0.0.jar" "legacy")"
 [[ "$code" == "201" ]] || { echo "a publishers-based identity got $code" >&2; exit 1; }
 

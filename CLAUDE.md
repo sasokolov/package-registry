@@ -1,4 +1,4 @@
-# CLAUDE.md — модульный package registry
+# CLAUDE.md — fondaco, модульный package registry
 
 ## Что это
 
@@ -9,7 +9,12 @@ generic-пайплайном `auth → policy → cache → upstream → store �
 (FS, S3) — тоже модули. Деплой-цель: Kubernetes, N stateless-реплик, блобы в
 S3-совместимом хранилище, динамическое состояние в PostgreSQL.
 
-Язык: Go (актуальный stable). Модуль: `github.com/sasokolov/package-registry`.
+Язык: Go (актуальный stable). Модуль: `github.com/fondaco-dev/fondaco`,
+бинарь и CLI — `fondaco`, образ — `ghcr.io/fondaco-dev/fondaco`, чарт —
+`deploy/helm/fondaco`. Имя продукта — `fondaco`; слово «registry» в коде
+означает обычное существительное (реестр) и не переименовывается — включая
+протокольные заголовки `X-Registry-*`, которые намеренно небрендированы
+(инвариант 11).
 
 ## Архитектурные инварианты (уровень ADR — нарушать нельзя)
 
@@ -146,7 +151,7 @@ type Policy interface {
 ## Структура репозитория
 
 ```
-cmd/registry/          — main, сборка модулей через импорты
+cmd/fondaco/          — main, сборка модулей через импорты
 core/api/              — интерфейсы и канонические типы (без зависимостей)
 core/server/           — HTTP, роутинг фидов, middleware
 core/pipeline/         — generic read-path: cache, singleflight, upstream, SWR

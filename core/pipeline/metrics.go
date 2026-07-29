@@ -16,24 +16,24 @@ type Metrics struct {
 func NewMetrics(reg prometheus.Registerer) *Metrics {
 	m := &Metrics{
 		Requests: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "registry_requests_total",
+			Name: "fondaco_requests_total",
 			Help: "Pipeline requests served, by feed and response source (cache|upstream|stale|local).",
 		}, []string{"feed", "source"}),
 		Failures: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "registry_request_failures_total",
+			Name: "fondaco_request_failures_total",
 			Help: "Pipeline requests failed, by feed and reason.",
 		}, []string{"feed", "reason"}),
 		UpstreamRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "registry_upstream_requests_total",
+			Name: "fondaco_upstream_requests_total",
 			Help: "Upstream fetch outcomes, by feed.",
 		}, []string{"feed", "outcome"}),
 		UpstreamDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Name:    "registry_upstream_request_duration_seconds",
+			Name:    "fondaco_upstream_request_duration_seconds",
 			Help:    "Upstream HTTP attempt latency, by feed.",
 			Buckets: prometheus.DefBuckets,
 		}, []string{"feed"}),
 		BreakerState: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "registry_upstream_breaker_state",
+			Name: "fondaco_upstream_breaker_state",
 			Help: "Circuit breaker state per feed: 0 closed, 1 half-open, 2 open.",
 		}, []string{"feed"}),
 	}

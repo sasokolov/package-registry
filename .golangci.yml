@@ -25,4 +25,4 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/sasokolov/package-registry
+        - github.com/fondaco-dev/fondaco

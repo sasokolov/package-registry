@@ -14,7 +14,7 @@ source "$SCRIPT_DIR/../lib.sh"
 BASE=http://registry:8080
 HOSTED=$BASE/composer/composer-hosted
 GROUP=$BASE/composer/composer-public
-ci="$(registry_token "ci-composer-$(date +%s)")"
+ci="$(fondaco_token "ci-composer-$(date +%s)")"
 
 # The archive is a real Composer dist: the same fixture the fake upstream
 # serves, uploaded here under a version the upstream does not have.
@@ -59,7 +59,7 @@ code="$(tail -n1 <<<"$body")"
   echo "re-upload returned $code" >&2; exit 1; }
 
 echo "--> uploading without the right to publish is refused"
-plain="$(registry_token "plain-composer-$(date +%s)")"
+plain="$(fondaco_token "plain-composer-$(date +%s)")"
 code="$(client_curl -sS -o /dev/null -w '%{http_code}' -X PUT \
   -H "Authorization: Bearer $plain" --data-binary "@$FIXTURE" \
   "$HOSTED/packages/acme/lib-a/8.8.8.zip")"

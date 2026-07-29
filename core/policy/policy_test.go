@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sasokolov/package-registry/core/api"
-	"github.com/sasokolov/package-registry/core/config"
+	"github.com/fondaco-dev/fondaco/core/api"
+	"github.com/fondaco-dev/fondaco/core/config"
 
-	_ "github.com/sasokolov/package-registry/policies/allowlist" // register reference policy
+	_ "github.com/fondaco-dev/fondaco/policies/allowlist" // register reference policy
 )
 
 // scripted is a test policy with a fixed verdict that records invocations.

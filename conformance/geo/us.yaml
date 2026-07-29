@@ -23,7 +23,7 @@ replication:
   internal_listen: ":8081"
   auth:
     type: bearer
-    token_file: /etc/registry/peer-token
+    token_file: /etc/fondaco/peer-token
   topology: mesh
   nudge: true
   journal_retention: 720h

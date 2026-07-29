@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sasokolov/package-registry/core/state"
+	"github.com/fondaco-dev/fondaco/core/state"
 )
 
 // A site can reach the same state two ways: by replaying the journal, or by

@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sasokolov/package-registry/core/config"
-	"github.com/sasokolov/package-registry/core/state"
-	"github.com/sasokolov/package-registry/core/usage"
+	"github.com/fondaco-dev/fondaco/core/config"
+	"github.com/fondaco-dev/fondaco/core/state"
+	"github.com/fondaco-dev/fondaco/core/usage"
 )
 
 func report(t *testing.T, cfg *config.Config, inv []state.FeedUsage, traffic []state.FeedTraffic) map[string]FeedUsage {

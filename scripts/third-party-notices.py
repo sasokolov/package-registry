@@ -29,7 +29,7 @@ from collections import Counter, defaultdict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "THIRD-PARTY-NOTICES.md")
-PROVIDER = "terraform-provider-registry"
+PROVIDER = "terraform-provider-fondaco"
 PROVIDER_OUT = os.path.join(ROOT, PROVIDER, "THIRD-PARTY-NOTICES.md")
 
 LICENCE_FILES = ["LICENSE", "LICENCE", "LICENSE.txt", "LICENSE.md", "COPYING",
@@ -60,7 +60,7 @@ def linked_modules(packages, cwd=ROOT):
     modules = {}
     for line in result.stdout.splitlines():
         parts = line.split(" ", 2)
-        if len(parts) == 3 and parts[0] and not parts[0].startswith("github.com/sasokolov"):
+        if len(parts) == 3 and parts[0] and not parts[0].startswith("github.com/fondaco-dev"):
             modules[parts[0]] = (parts[1], parts[2])
     return modules
 
@@ -131,7 +131,7 @@ def ui_modules():
 
 
 def render():
-    registry = linked_modules(["./cmd/registry"])
+    registry = linked_modules(["./cmd/fondaco"])
     provider = linked_modules(["."], os.path.join(ROOT, PROVIDER))
     console = ui_modules()
 
@@ -169,7 +169,7 @@ anyone remembered to declare it. Regenerate with `make notices`.
 """]
 
     sections = [
-        ("registry", "The registry binary (`cmd/registry`)",
+        ("registry", "The registry binary (`cmd/fondaco`)",
          "Linked into the registry binary. The web console is embedded in the same binary."),
         ("console", "The web console (`ui/`, embedded in the registry binary)",
          "Shipped inside the binary as built assets."),
@@ -324,7 +324,7 @@ def render_notice(existing, notices):
 
 def bundled_notices():
     out = {}
-    for packages, cwd in ((["./cmd/registry"], ROOT), (["."], os.path.join(ROOT, PROVIDER))):
+    for packages, cwd in ((["./cmd/fondaco"], ROOT), (["."], os.path.join(ROOT, PROVIDER))):
         for path, (version, directory) in linked_modules(packages, cwd).items():
             notice = notice_of(directory)
             if notice:

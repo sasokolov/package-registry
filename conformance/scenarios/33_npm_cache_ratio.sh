@@ -10,7 +10,7 @@ source "$SCRIPT_DIR/../lib.sh"
 metric() { # <source>
   local value
   value="$(client_curl -fsS http://registry:8080/metrics |
-    grep -E "^registry_requests_total\{feed=\"npmjs\",source=\"$1\"\}" | awk '{print $2}')"
+    grep -E "^fondaco_requests_total\{feed=\"npmjs\",source=\"$1\"\}" | awk '{print $2}')"
   printf '%.0f' "${value:-0}"
 }
 

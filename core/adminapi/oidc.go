@@ -6,8 +6,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/sasokolov/package-registry/core/api"
-	"github.com/sasokolov/package-registry/core/auth"
+	"github.com/fondaco-dev/fondaco/core/api"
+	"github.com/fondaco-dev/fondaco/core/auth"
 )
 
 // Browser sign-in, the half that has to live on the server.

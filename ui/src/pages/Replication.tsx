@@ -104,7 +104,7 @@ export function Replication() {
             <h3>Pinned peer identities</h3>
             <p className="muted">
               A peer whose UUID changes is a different site under a familiar name; replication
-              stops until an operator runs <code>registry repl trust-reset</code>.
+              stops until an operator runs <code>fondaco repl trust-reset</code>.
             </p>
             {data.peers.length === 0 ? (
               <Empty>No peer has completed a handshake yet.</Empty>

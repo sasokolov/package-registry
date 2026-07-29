@@ -9,13 +9,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib.sh
 source "$SCRIPT_DIR/../lib.sh"
 
-token="$(registry_token "ci-deploy-$(date +%s)")"
+token="$(fondaco_token "ci-deploy-$(date +%s)")"
 
 # The project is mounted read-only; maven needs a writable target/, so the
 # build runs on a copy inside the container.
 deploy() { # <feed> <pom-file>
   local feed="$1" pom="$2"
-  compose run --rm -T -e REGISTRY_TOKEN="$token" --entrypoint sh maven-client -c "
+  compose run --rm -T -e FONDACO_TOKEN="$token" --entrypoint sh maven-client -c "
     set -e
     cp -r /work-deploy /tmp/w && cd /tmp/w
     mvn -B -s settings.xml -f $pom \

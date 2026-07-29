@@ -21,8 +21,8 @@ if ! wait_for 90 replicated us homed "$PATH_JAR" "$CONTENT"; then
   exit 1
 fi
 
-old_uuid="$(compose exec -T registry-us registry repl status \
-  -config /etc/registry/config.yaml 2>/dev/null | awk 'NR==1 {print $3}' | tr -d '()')"
+old_uuid="$(compose exec -T registry-us fondaco repl status \
+  -config /etc/fondaco/config.yaml 2>/dev/null | awk 'NR==1 {print $3}' | tr -d '()')"
 echo "    us-1 identity: $old_uuid"
 
 echo "--> losing us-1's database and storage entirely"
@@ -35,7 +35,7 @@ echo "--> the rebuilt site has a new identity"
 new_uuid=""
 identity_ready() {
   local out
-  out="$(compose exec -T registry-us registry repl status -config /etc/registry/config.yaml 2>/dev/null)" || return 1
+  out="$(compose exec -T registry-us fondaco repl status -config /etc/fondaco/config.yaml 2>/dev/null)" || return 1
   new_uuid="$(awk 'NR==1 {print $3}' <<<"$out" | tr -d '()')"
   [[ -n "$new_uuid" && "$new_uuid" != "$old_uuid" ]]
 }
@@ -53,36 +53,36 @@ refused() {
 }
 if ! wait_for 90 refused; then
   echo "eu-1 kept replicating from a site whose UUID changed" >&2
-  compose exec -T registry-eu registry repl status -config /etc/registry/config.yaml >&2 || true
+  compose exec -T registry-eu fondaco repl status -config /etc/fondaco/config.yaml >&2 || true
   exit 1
 fi
 
 echo "--> the refusal is visible to an operator, not just in the log"
-status="$(compose exec -T registry-eu registry repl status -config /etc/registry/config.yaml 2>/dev/null)"
+status="$(compose exec -T registry-eu fondaco repl status -config /etc/fondaco/config.yaml 2>/dev/null)"
 grep -q 'PEER IDENTITY MISMATCH' <<<"$status" || {
   echo "repl status does not mention the identity problem:" >&2
   echo "$status" >&2
   exit 1; }
 
 echo "--> after an explicit trust reset, eu-1 accepts the rebuilt site"
-compose exec -T registry-eu registry repl trust-reset -peer us-1 \
-  -config /etc/registry/config.yaml >/dev/null
+compose exec -T registry-eu fondaco repl trust-reset -peer us-1 \
+  -config /etc/fondaco/config.yaml >/dev/null
 
 healthy_again() {
   local out
-  out="$(compose exec -T registry-eu registry repl status -config /etc/registry/config.yaml 2>/dev/null)" || return 1
+  out="$(compose exec -T registry-eu fondaco repl status -config /etc/fondaco/config.yaml 2>/dev/null)" || return 1
   ! grep -qi 'identity changed' <<<"$out"
 }
 if ! wait_for 90 healthy_again; then
   echo "eu-1 still refuses the peer after the trust reset" >&2
-  compose exec -T registry-eu registry repl status -config /etc/registry/config.yaml >&2 || true
+  compose exec -T registry-eu fondaco repl status -config /etc/fondaco/config.yaml >&2 || true
   exit 1
 fi
 
 echo "--> the rebuilt site converges back on its own"
 if ! wait_for 180 replicated us homed "$PATH_JAR" "$CONTENT"; then
   echo "the rebuilt site never recovered the artifact" >&2
-  compose exec -T registry-us registry repl status -config /etc/registry/config.yaml >&2 || true
+  compose exec -T registry-us fondaco repl status -config /etc/fondaco/config.yaml >&2 || true
   exit 1
 fi
 

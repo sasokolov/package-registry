@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sasokolov/package-registry/core/api"
-	"github.com/sasokolov/package-registry/core/state"
+	"github.com/fondaco-dev/fondaco/core/api"
+	"github.com/fondaco-dev/fondaco/core/state"
 )
 
 // journalBatch bounds one poll.
@@ -455,7 +455,7 @@ func (m *Manager) bootstrap(ctx context.Context, c *Client, touched map[string]b
 		"peer", c.Name(), "imported", imported, "deferred", deferred)
 	if deferred > 0 {
 		m.logger.Warn("some coordinates are served through peers until their blobs arrive; "+
-			"run `registry repl backfill -dry-run=false` to fetch them",
+			"run `fondaco repl backfill -dry-run=false` to fetch them",
 			"peer", c.Name(), "without_local_blob", deferred)
 	}
 

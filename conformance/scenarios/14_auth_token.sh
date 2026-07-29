@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # anonymous: false feed: 401 without credentials, 200 with a valid static
-# token created via `registry token create`. The blob endpoint requires
+# token created via `fondaco token create`. The blob endpoint requires
 # authentication too.
 set -euo pipefail
 
@@ -22,7 +22,7 @@ if [[ -z "$www" ]]; then
 fi
 
 echo "--> creating a static token via the CLI"
-secret="$(registry_token "conformance-$(date +%s)")"
+secret="$(fondaco_token "conformance-$(date +%s)")"
 if [[ "$secret" != reg_* ]]; then
   echo "token create did not return a secret (got: ${secret:0:8}...)" >&2
   exit 1
@@ -46,7 +46,7 @@ if ! grep -qi 'basic' <<<"$www"; then
 fi
 
 echo "--> real mvn resolve against the private feed using settings.xml credentials"
-out="$(compose run --rm -T -e REGISTRY_TOKEN="$secret" maven-client \
+out="$(compose run --rm -T -e FONDACO_TOKEN="$secret" maven-client \
   -B -s /work/settings-auth.xml -f /work/pom.xml \
   org.apache.maven.plugins:maven-dependency-plugin:3.6.1:resolve 2>&1)" || {
   echo "$out" | tail -30

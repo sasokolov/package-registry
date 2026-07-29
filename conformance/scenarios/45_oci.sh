@@ -26,7 +26,7 @@ PROXY=registry:8080/oci/images-upstream
 HOSTED=registry:8080/oci/oci-hosted
 GROUP=registry:8080/oci/oci-public
 
-token="$(registry_token "ci-oci-$(date +%s)")"
+token="$(fondaco_token "ci-oci-$(date +%s)")"
 
 # Every invocation is a fresh container, so a step that depends on a previous
 # one — a login, a pulled image — has to run inside a single shell.
@@ -147,7 +147,7 @@ headers="$(client_curl -sS -o /dev/null -D - "$BASE/v2/oci/oci-public/demo/app/t
 grep -qi '^x-registry-merged: oci-hosted,images-upstream' <<<"$headers" || { echo "$headers" >&2; exit 1; }
 
 echo "--> pushing without the right is refused"
-nobody="$(registry_token "nobody-oci-$(date +%s)")"
+nobody="$(fondaco_token "nobody-oci-$(date +%s)")"
 code="$(client_curl -sS -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $nobody" \
   "$BASE/v2/oci/oci-hosted/demo/app/blobs/uploads/")"
 [[ "$code" == "403" ]] || { echo "an identity without publish rights got $code" >&2; exit 1; }

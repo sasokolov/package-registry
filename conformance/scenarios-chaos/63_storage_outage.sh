@@ -13,7 +13,7 @@ restore_storage() {
 }
 trap restore_storage EXIT
 
-token="$(registry_token "ci-s3-$(date +%s)")"
+token="$(fondaco_token "ci-s3-$(date +%s)")"
 HOSTED=http://lb/maven/hosted/com/example/s3out/1.0.0/s3out-1.0.0.jar
 
 echo "--> publishing works while storage is up"

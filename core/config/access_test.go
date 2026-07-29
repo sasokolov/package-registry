@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sasokolov/package-registry/core/access"
+	"github.com/fondaco-dev/fondaco/core/access"
 )
 
 func compiled(t *testing.T, c *Config) *access.Engine {

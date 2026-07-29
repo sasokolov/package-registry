@@ -12,7 +12,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CLUSTER="${CLUSTER:-registry-smoke}"
 NAMESPACE=registry
 RELEASE=smoke
-IMAGE="package-registry:smoke"
+IMAGE="fondaco:smoke"
 KEEP_CLUSTER="${KEEP_CLUSTER:-0}"
 
 for tool in kind kubectl helm docker; do
@@ -61,7 +61,7 @@ render_and_check() { # <description> <helm args...>
   chmod -R a+rX "$rendered/replication"
   # Every ${VAR} the config references must be injected by the Deployment.
   if ! docker run --rm -v "$rendered:/cfg:ro" \
-    -v "$rendered/replication:/etc/registry/replication:ro" \
+    -v "$rendered/replication:/etc/fondaco/replication:ro" \
     -e REGISTRY_S3_ACCESS_KEY=access -e REGISTRY_S3_SECRET_KEY=secret \
     -e REGISTRY_DATABASE_DSN=postgres://u:p@h/db \
     "$IMAGE" config check -config /cfg/config.yaml; then
@@ -142,7 +142,7 @@ kubectl -n "$NAMESPACE" rollout status deploy/fake-upstream --timeout=120s >/dev
 echo "==> installing the chart (filesystem storage, no database)"
 helm install "$RELEASE" "$SCRIPT_DIR/registry" \
   --namespace "$NAMESPACE" \
-  --set image.repository=package-registry \
+  --set image.repository=fondaco \
   --set image.tag=smoke \
   --set image.pullPolicy=Never \
   --set storage.type=fs \
@@ -179,7 +179,7 @@ retry() { # <attempts> <command...>
   return 1
 }
 healthz_ok() { [[ "$(run_curl /healthz)" == "ok" ]]; }
-metrics_ok() { run_curl /metrics | grep -q registry_site_info; }
+metrics_ok() { run_curl /metrics | grep -q fondaco_site_info; }
 
 retry 10 healthz_ok || { echo "healthz failed" >&2; run_curl /healthz >&2 || true; exit 1; }
 retry 10 metrics_ok || { echo "metrics missing" >&2; exit 1; }

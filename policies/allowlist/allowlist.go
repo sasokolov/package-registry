@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"path"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 // DenyCode is the machine-readable reason for allowlist denials.

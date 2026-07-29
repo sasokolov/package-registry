@@ -38,7 +38,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sasokolov/package-registry/core/api"
+	"github.com/fondaco-dev/fondaco/core/api"
 )
 
 // indexTTL bounds index freshness; beyond it the pipeline revalidates and,

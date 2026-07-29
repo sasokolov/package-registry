@@ -17,9 +17,9 @@ BASE=http://registry:8080
 API=$BASE/api/v1
 
 stamp="$(date +%s)"
-admin="$(registry_token "ops-api-$stamp")"
+admin="$(fondaco_token "ops-api-$stamp")"
 subject="api-reader-$stamp"
-reader="$(registry_token "$subject")"
+reader="$(fondaco_token "$subject")"
 policy="api-reader-$stamp"
 binding="api-reader-$stamp"
 

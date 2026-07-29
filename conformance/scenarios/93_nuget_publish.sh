@@ -13,7 +13,7 @@ source "$SCRIPT_DIR/../lib.sh"
 BASE=http://registry:8080
 HOSTED=$BASE/nuget/nuget-hosted
 GROUP=$BASE/nuget/nuget-public
-ci="$(registry_token "ci-nuget-$(date +%s)")"
+ci="$(fondaco_token "ci-nuget-$(date +%s)")"
 
 echo "--> the hosted feed advertises where to push; the proxy does not"
 index="$(client_curl -fsS "$HOSTED/v3/index.json")"
@@ -75,7 +75,7 @@ grep -qiE "409|conflict|already" <<<"$out" || {
   echo "republish failed for the wrong reason:" >&2; echo "$out" | tail -20 >&2; exit 1; }
 
 echo "--> publishing without the right to publish is refused"
-plain="$(registry_token "plain-nuget-$(date +%s)")"
+plain="$(fondaco_token "plain-nuget-$(date +%s)")"
 out="$(compose run --rm -T dotnet-client sh -c "
   dotnet nuget push /tmp/out/conformance.lib.9.9.9.nupkg \
     --source $HOSTED/v3/index.json --api-key '$plain'

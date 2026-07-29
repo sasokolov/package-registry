@@ -103,7 +103,7 @@ func TestPeerAndIssuerUseDocumentedJSONNames(t *testing.T) {
 	peer, err := json.Marshal(PeerConfig{
 		Name: "eu", URL: "https://eu.internal:9443",
 		PublicURL: "https://eu.example.com", PullInterval: Duration(2 * time.Second),
-		TokenFile: "/etc/registry/peer-eu.token",
+		TokenFile: "/etc/fondaco/peer-eu.token",
 	})
 	if err != nil {
 		t.Fatalf("marshal peer: %v", err)

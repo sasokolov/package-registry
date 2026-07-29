@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib.sh
 source "$SCRIPT_DIR/../lib.sh"
 
-token="$(registry_token "ci-snapshot-$(date +%s)")"
+token="$(fondaco_token "ci-snapshot-$(date +%s)")"
 BASE=http://registry:8080/maven/snapshots/com/example/snap/1.0.0-SNAPSHOT
 
 deploy_build() { # <timestamp> <build-number> <content>
