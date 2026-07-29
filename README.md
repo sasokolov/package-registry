@@ -118,6 +118,12 @@ make test       # unit tests
 make lint       # golangci-lint
 ```
 
+`make dev` comes with one feed of each kind per format — a proxy of the real
+upstream, a hosted feed, and a group over both — so every read path, publish
+path and merge is in front of you without configuring anything. The console
+is at http://127.0.0.1:8080/ui/, and the compose overlay includes an identity
+provider to sign in through.
+
 Point a client at a feed:
 
 ```bash

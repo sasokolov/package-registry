@@ -56,14 +56,17 @@ wait_for_downloads() { # <feed> <at least>
 }
 
 echo "--> pulling something through a proxy feed and something from a hosted one"
+# Earlier scenarios have used these feeds, so every count below is compared
+# against where it was rather than against zero — otherwise the assertions
+# pass on somebody else's traffic.
+before="$(field "$(usage)" central downloads)"
 client_curl -fsS -o /dev/null "$BASE/maven/central/com/example/liba/1.0.0/liba-1.0.0.pom"
 client_curl -fsS -o /dev/null "$BASE/maven/central/com/example/liba/1.0.0/liba-1.0.0.pom"
 client_curl -fsS -o /dev/null "$BASE/maven/central/com/example/liba/1.0.0/liba-1.0.0.jar"
 
 echo "--> the downloads are counted, and survive being asked for twice"
-wait_for_downloads central 3
+wait_for_downloads central $((before + 3))
 report="$(usage)"
-[[ "$(field "$report" central downloads)" -ge 3 ]] || { echo "$report" >&2; exit 1; }
 [[ "$(field "$report" central bytes_served)" -gt 0 ]] || {
   echo "bytes served were not counted:" >&2; echo "$report" >&2; exit 1; }
 
@@ -100,18 +103,19 @@ for feed in json.load(sys.stdin)["feeds"]:
   echo "a proxy feed has no hit ratio:" >&2; echo "$report" >&2; exit 1; }
 
 echo "--> a request through a group is counted on the group and on the member"
+# Both counts are compared against where they were, not against zero: earlier
+# scenarios have used these feeds, and waiting for "at least one" would be
+# satisfied before this request was ever flushed.
+before_group="$(field "$report" maven-public downloads)"
 before_member="$(field "$report" central downloads)"
 client_curl -fsS -o /dev/null "$BASE/maven/maven-public/com/example/liba/1.0.0/liba-1.0.0.pom"
-wait_for_downloads maven-public 1
-report="$(usage)"
-[[ "$(field "$report" maven-public downloads)" -ge 1 ]] || {
-  echo "the group counted nothing:" >&2; echo "$report" >&2; exit 1; }
+wait_for_downloads maven-public $((before_group + 1))
 # The member that answered is credited too: a group is a view, and content
-# served through it is still that feed being used.
-after_member="$(field "$report" central downloads)"
-(( after_member > before_member )) || {
-  echo "the answering member was not credited ($before_member -> $after_member):" >&2
-  echo "$report" >&2; exit 1; }
+# served through it is still that feed being used. It may land in a later
+# flush than the group's, so this waits rather than reads once.
+wait_for_downloads central $((before_member + 1)) || {
+  echo "the answering member was not credited for the group request" >&2; exit 1; }
+report="$(usage)"
 
 echo "--> a group has no storage of its own; its numbers are its members'"
 [[ "$(field "$report" maven-public artifacts)" -ge "$artifacts" ]] || {

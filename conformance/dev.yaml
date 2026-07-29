@@ -1,15 +1,130 @@
 # Registry config for `make dev`: registry runs on the host,
 # minio and postgres come from the compose stack (project registry-dev).
+site:
+  name: dev
+  # The console's browser sign-in redirects here, so it has to be the address
+  # a browser actually uses.
+  external_url: http://127.0.0.1:8080
+
 server:
   listen: "127.0.0.1:8080"
   shutdown_timeout: 10s
+  # Short enough that a change made through the console or Terraform is
+  # visible before you wonder whether it worked.
+  reload_interval: 5s
+  # Small enough to watch the numbers move while trying things out; an hour
+  # and thirty seconds are the production defaults.
+  usage_scan: 30s
+  usage_flush: 5s
 
 storage:
   type: fs
   fs:
     path: ./.devdata
 
-feeds: []
+database:
+  dsn: postgres://registry:registry@127.0.0.1:5432/registry
+
+# One feed of each kind per format — proxy, hosted, and a group over both —
+# because that is the shape worth having in front of you while developing:
+# every read path, every publish path, and the merge between them.
+#
+# Every proxy feed is rate-limited. Public upstreams limit concurrency rather
+# than rate, and a build fires dozens of parallel requests, so an unlimited
+# feed collects 429s. The registry treats those as backpressure — it retries,
+# honours Retry-After and keeps the circuit breaker closed — but not
+# provoking them is better. Each artifact costs two upstream requests: the
+# file and its checksum, which is mandatory at ingest.
+feeds:
+  # ---- Maven -------------------------------------------------------------
+  - name: central
+    format: maven
+    # If Central rate-limits your egress IP, it is also served from
+    # https://maven-central.storage-download.googleapis.com/maven2.
+    upstream: https://repo1.maven.org/maven2
+    upstream_rps: 4
+    anonymous: true
+
+  - name: releases
+    format: maven
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+
+  - name: maven-public
+    format: maven
+    anonymous: true
+    # Order is priority: a locally published coordinate wins over the
+    # upstream's copy of the same name.
+    members: [releases, central]
+
+  # ---- npm ---------------------------------------------------------------
+  - name: npmjs
+    format: npm
+    upstream: https://registry.npmjs.org
+    upstream_rps: 20
+    anonymous: true
+
+  - name: npm-hosted
+    format: npm
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+
+  - name: npm-public
+    format: npm
+    anonymous: true
+    members: [npm-hosted, npmjs]
+
+  # ---- NuGet -------------------------------------------------------------
+  - name: nugetorg
+    format: nuget
+    # The host, not the service index: NuGet's paths are joined to this, so
+    # https://api.nuget.org/v3/index.json — the address that goes in a
+    # nuget.config — would produce .../index.json/v3-flatcontainer/... and a
+    # 400. The registry publishes its own service index at
+    # /nuget/nugetorg/v3/index.json.
+    upstream: https://api.nuget.org
+    upstream_rps: 10
+    anonymous: true
+
+  - name: nuget-hosted
+    format: nuget
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+
+  - name: nuget-public
+    format: nuget
+    anonymous: true
+    members: [nuget-hosted, nugetorg]
+
+  # ---- Composer ----------------------------------------------------------
+  - name: packagist
+    format: composer
+    upstream: https://repo.packagist.org
+    upstream_rps: 10
+    anonymous: true
+
+  - name: composer-hosted
+    format: composer
+    hosted: true
+    anonymous: true
+    publishers: ["token:ci-*"]
+
+  - name: composer-public
+    format: composer
+    anonymous: true
+    members: [composer-hosted, packagist]
+
+  # ---- Terraform ---------------------------------------------------------
+  # Terraform discovers a registry at the host root, so a site can expose one
+  # terraform feed and no more; the module refuses a second at load.
+  - name: tf
+    format: terraform
+    upstream: https://registry.terraform.io
+    upstream_rps: 10
+    anonymous: true
 
 # The dev identity provider from the compose overlay, so the console's browser
 # sign-in can be tried locally. It signs everybody in as alice@example.com;
@@ -22,3 +137,4 @@ auth:
 
 admins:
   - "oidc:alice@example.com"
+  - "token:ops-*"

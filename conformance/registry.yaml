@@ -1,5 +1,11 @@
 # Registry config used inside the conformance compose stack: blobs in MinIO,
 # state in Postgres, feeds proxying the fake upstream.
+#
+# The proxy feeds carry upstream_rps so the limiter is exercised by every run.
+# The value is generous because the upstream here is a local nginx: a hermetic
+# suite has nothing to protect it from. A real deployment wants a much lower
+# number — public mirrors limit concurrency, not rate, and a build fires
+# dozens of parallel requests (see conformance/registry-live.yaml).
 site:
   name: conformance
   # Composer resolves dist URLs literally, so hosted-URL rewriting needs an
@@ -89,17 +95,20 @@ feeds:
   - name: test
     format: echo
     upstream: http://fake-upstream
+    upstream_rps: 50
     anonymous: true
 
   - name: central
     format: maven
     upstream: http://fake-upstream/maven
+    upstream_rps: 50
     anonymous: true
 
   # Allowlist policy: only com.example:liba may pass.
   - name: guarded
     format: maven
     upstream: http://fake-upstream/maven
+    upstream_rps: 50
     anonymous: true
     policies:
       - name: allowlist
@@ -110,11 +119,13 @@ feeds:
   - name: private
     format: maven
     upstream: http://fake-upstream/maven
+    upstream_rps: 50
     anonymous: false
 
   - name: tf
     format: terraform
     upstream: http://fake-upstream/terraform-upstream
+    upstream_rps: 50
     anonymous: true
 
   # Hosted maven feed: publishing is allowed for the CI token identity only.
@@ -140,6 +151,7 @@ feeds:
   - name: fresh
     format: maven
     upstream: http://fake-upstream/maven
+    upstream_rps: 50
     anonymous: true
     policies:
       - name: quarantine
@@ -150,16 +162,19 @@ feeds:
   - name: npmjs
     format: npm
     upstream: http://fake-upstream/npm
+    upstream_rps: 50
     anonymous: true
 
   - name: packagist
     format: composer
     upstream: http://fake-upstream/composer-upstream
+    upstream_rps: 50
     anonymous: true
 
   - name: nugetorg
     format: nuget
     upstream: http://fake-upstream/nuget-upstream
+    upstream_rps: 50
     anonymous: true
 
   # Hosted npm feed for `npm publish`.
@@ -240,6 +255,7 @@ feeds:
   - name: npm-redirect
     format: npm
     upstream: http://fake-upstream/npm
+    upstream_rps: 50
     anonymous: true
     redirect: true
     redirect_ttl: 5m

@@ -20,13 +20,24 @@ storage:
 database:
   dsn: postgres://registry:registry@postgres:5432/registry
 
+# Live upstreams rate-limit, and Maven Central limits concurrency rather than
+# rate: a build fires dozens of parallel requests and gets 429 back. The
+# registry treats that as backpressure (retries, honours Retry-After, keeps
+# the circuit breaker closed) rather than as an outage, but the cure is to not
+# provoke it. Remember that each artifact costs two upstream requests — the
+# file and its checksum, which is mandatory at ingest.
+#
+# If Central rate-limits your egress IP anyway, it is also served from
+# https://maven-central.storage-download.googleapis.com/maven2.
 feeds:
   - name: central
     format: maven
     upstream: https://repo1.maven.org/maven2
+    upstream_rps: 4
     anonymous: true
 
   - name: tf
     format: terraform
     upstream: https://registry.terraform.io
+    upstream_rps: 10
     anonymous: true
